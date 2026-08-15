@@ -9,7 +9,7 @@ load_dotenv()
 
 # 範例 DATABASE_URL 格式（MySQL + pymysql）:
 # mysql+pymysql://USERNAME:PASSWORD@HOST:PORT/DATABASE_NAME
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("mysql://avnadmin:AVNS_3ETxOMehnck20Qjisx4@mysql-2f37be3e-nimotherb-cd46.i.aivencloud.com:13049/defaultdb?ssl-mode=REQUIRED")
 if not DATABASE_URL:
     raise RuntimeError("環境變數 DATABASE_URL 未設定，請設定為 mysql+pymysql://user:pass@host:port/dbname")
 
