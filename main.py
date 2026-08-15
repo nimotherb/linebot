@@ -5,17 +5,16 @@ from dotenv import load_dotenv
 import os
 import logging
 from datetime import datetime
+import re
 
 # LINE SDK
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
-# 讀取本地 .env（開發時會自動載入；部署到雲端時請在環境設定平台上設定 DATABASE_URL 環境變數）
+# 讀取本地 .env
 load_dotenv()
 
-# 範例 DATABASE_URL 格式（MySQL + pymysql）:
-# mysql+pymysql://USERNAME:PASSWORD@HOST:PORT/DATABASE_NAME
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("環境變數 DATABASE_URL 未設定，請設定為 mysql+pymysql://user:pass@host:port/dbname")
@@ -35,7 +34,6 @@ class User(Base):
     utm_source = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    # relationship to appointments
     appointments = relationship("Appointment", back_populates="user", cascade="all, delete-orphan")
 
 
@@ -49,7 +47,6 @@ class Staff(Base):
     online_start_time = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    # relationship to appointments
     appointments = relationship("Appointment", back_populates="staff", cascade="all, delete-orphan")
 
 
@@ -59,7 +56,7 @@ class Appointment(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     staff_id = Column(Integer, ForeignKey("staffs.id"), nullable=True)
-    duration = Column(Integer, nullable=False)  # 存放 90 或 120（分鐘）
+    duration = Column(Integer, nullable=False)
     start_time = Column(DateTime, nullable=False)
     end_time = Column(DateTime, nullable=False)
     status = Column(String(50), default="pending", nullable=False)
@@ -78,13 +75,13 @@ def get_db() -> Session:
     finally:
         db.close()
 
-# 讀取 LINE 相關環境變數（請在部署平台或 .env 中設定）
+# 讀取 LINE 相關環境變數
 LINE_SECRET_CUSTOMER = os.getenv("LINE_SECRET_CUSTOMER")
 LINE_TOKEN_CUSTOMER = os.getenv("LINE_TOKEN_CUSTOMER")
 LINE_SECRET_STAFF = os.getenv("LINE_SECRET_STAFF")
 LINE_TOKEN_STAFF = os.getenv("LINE_TOKEN_STAFF")
 
-# 建立 LineBotApi / WebhookHandler 實例（若未設定會是 None）
+# 建立 LineBotApi / WebhookHandler 實例
 bot_customer_api = LineBotApi(LINE_TOKEN_CUSTOMER) if LINE_TOKEN_CUSTOMER else None
 handler_customer = WebhookHandler(LINE_SECRET_CUSTOMER) if LINE_SECRET_CUSTOMER else None
 
@@ -94,137 +91,120 @@ handler_staff = WebhookHandler(LINE_SECRET_STAFF) if LINE_SECRET_STAFF else None
 # 設定基本 logging
 logging.basicConfig(level=logging.INFO)
 
-# 為每個 handler 註冊一個簡單的文字 echo 回覆，並在收到訊息時自動建檔
+# --- 客人端：引導建檔與對話邏輯 ---
 if handler_customer:
     @handler_customer.add(MessageEvent, message=TextMessage)
     def handle_customer_message(event):
-        db = SessionLocal()
-        try:
-            # 先嘗試從 event.source 取得 user_id
-            user_id = getattr(getattr(event, "source", None), "user_id", None)
-            if user_id:
-                try:
-                    # 查詢是否已存在
-                    existing = db.query(User).filter(User.line_user_id == user_id).first()
-                    if not existing:
-                        new_user = User(line_user_id=user_id)
-                        db.add(new_user)
-                        db.commit()
-                except Exception:
-                    logging.exception("Error creating/finding user in DB")
-                    try:
-                        db.rollback()
-                    except Exception:
-                        pass
+        user_id = getattr(getattr(event, "source", None), "user_id", None)
+        text = getattr(event.message, "text", "").strip()
+        reply_text = text
 
-            # 保留原本的文字 echo 回覆
+        if user_id:
+            db = SessionLocal()
             try:
-                if bot_customer_api and hasattr(event.message, "text"):
-                    text = event.message.text
-                    bot_customer_api.reply_message(event.reply_token, TextSendMessage(text=text))
+                user = db.query(User).filter(User.line_user_id == user_id).first()
+                if not user:
+                    user = User(line_user_id=user_id)
+                    db.add(user)
+                    db.commit()
+
+                # 如果客人的手機號碼還是空的，啟動引導建檔模式
+                if not user.phone:
+                    if re.match(r"^09\d{8}$", text):
+                        user.phone = text
+                        db.commit()
+                        reply_text = f"太棒了！您的手機號碼 {text} 已綁定成功，隨時可以開始預約囉 🌿"
+                    else:
+                        reply_text = "哈囉！歡迎來到伊果 SPA 🌿 很高興為您服務。\n\n為了能幫您保留專屬的預約紀錄，可以先偷偷告訴我您的手機號碼嗎？\n（請輸入 10 碼數字，例如：0912345678）"
+                else:
+                    # 建檔完成後的預設回覆（未來可改成呼叫選單）
+                    reply_text = f"收到您的訊息：{text}\n（專屬預約選單正在努力建置中，敬請期待！）"
+
             except Exception:
-                logging.exception("Error replying to customer message")
-        finally:
-            db.close()
+                logging.exception("Error in customer message handling")
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            finally:
+                db.close()
+
+        try:
+            if bot_customer_api and text:
+                bot_customer_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+        except Exception:
+            logging.exception("Error replying to customer message")
 
 
+# --- 員工端：引導建檔與上下線邏輯 ---
 if handler_staff:
     @handler_staff.add(MessageEvent, message=TextMessage)
     def handle_staff_message(event):
-        db = SessionLocal()
-        try:
-            # 先嘗試從 event.source 取得 user_id
-            user_id = getattr(getattr(event, "source", None), "user_id", None)
-            staff_obj = None
-            if user_id:
-                try:
-                    staff_obj = db.query(Staff).filter(Staff.line_user_id == user_id).first()
-                    if not staff_obj:
-                        staff_obj = Staff(line_user_id=user_id, name="新進員工")
-                        db.add(staff_obj)
-                        db.commit()
-                        # refresh to get autogenerated fields
-                        db.refresh(staff_obj)
-                except Exception:
-                    logging.exception("Error creating/finding staff in DB")
-                    try:
-                        db.rollback()
-                    except Exception:
-                        pass
+        user_id = getattr(getattr(event, "source", None), "user_id", None)
+        text = getattr(event.message, "text", "").strip()
+        reply_text = text
 
-            # 處理師傅的上下線指令（必須檢查 event.message.text）
+        if user_id:
+            db = SessionLocal()
             try:
-                if bot_staff_api and hasattr(event.message, "text"):
-                    text = event.message.text.strip() if event.message.text else ""
-                    # 若尚未在資料庫找到 staff，試著重新查一次（以防 commit 後未 refresh）
-                    if not staff_obj and user_id:
-                        try:
-                            staff_obj = db.query(Staff).filter(Staff.line_user_id == user_id).first()
-                        except Exception:
-                            logging.exception("Error re-querying staff")
+                staff = db.query(Staff).filter(Staff.line_user_id == user_id).first()
+                if not staff:
+                    staff = Staff(line_user_id=user_id, name="新進員工")
+                    db.add(staff)
+                    db.commit()
 
-                    # 處理上線
-                    if text == "上線":
-                        if staff_obj:
-                            try:
-                                staff_obj.is_online = True
-                                staff_obj.online_start_time = datetime.utcnow()
-                                db.add(staff_obj)
-                                db.commit()
-                                bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="已為您切換為上線模式！"))
-                            except Exception:
-                                logging.exception("Error updating staff online status to True")
-                                try:
-                                    db.rollback()
-                                except Exception:
-                                    pass
-                        else:
-                            # 沒有 staff 資料，回覆並提示
-                            bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="找不到您的員工資料，已嘗試建立，請再傳送一次指令。"))
-
-                    # 處理下線
-                    elif text == "下線":
-                        if staff_obj and staff_obj.is_online:
-                            try:
-                                now = datetime.utcnow()
-                                start = staff_obj.online_start_time
-                                if start is None:
-                                    # 無 start time，允許下線
-                                    staff_obj.is_online = False
-                                    staff_obj.online_start_time = None
-                                    db.add(staff_obj)
-                                    db.commit()
-                                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="辛苦了！已為您切換為下線模式。"))
-                                else:
-                                    elapsed = (now - start).total_seconds()
-                                    if elapsed < 7200:
-                                        bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="目前上線未滿 2 小時，為確保客人能完整預約，請稍後再切換狀態喔！"))
-                                    else:
-                                        staff_obj.is_online = False
-                                        staff_obj.online_start_time = None
-                                        db.add(staff_obj)
-                                        db.commit()
-                                        bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="辛苦了！已為您切換為下線模式。"))
-                            except Exception:
-                                logging.exception("Error updating staff online status to False")
-                                try:
-                                    db.rollback()
-                                except Exception:
-                                    pass
-                        else:
-                            # 如果原本就沒上線，回覆告知
-                            bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="您目前不是上線狀態，無需切換下線。"))
-
+                # 判斷是否為剛加入的新師傅
+                if staff.name == "新進員工":
+                    if text == "我是師傅":
+                        reply_text = "辛苦了！歡迎加入伊果 SPA 團隊。\n\n為了方便店長派單與客人辨識，請直接回覆告訴我您的「姓名」或「稱呼」喔！"
                     else:
-                        # 非指令，維持普通 Echo
-                        bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=text))
+                        # 將師傅輸入的第一句話當作姓名存起來
+                        staff.name = text
+                        db.commit()
+                        reply_text = f"設定完成！{text} 師傅您好，您現在可以輸入「上線」來開啟接單模式囉！"
+                else:
+                    # 已經建檔完成的師傅，進入上下線判斷模式
+                    if text == "上線":
+                        staff.is_online = True
+                        staff.online_start_time = datetime.utcnow()
+                        db.commit()
+                        reply_text = f"【狀態更新】{staff.name} 師傅，已為您切換為上線模式，隨時準備接單！"
+                    elif text == "下線":
+                        if staff.is_online:
+                            if staff.online_start_time:
+                                diff = datetime.utcnow() - staff.online_start_time
+                                if diff.total_seconds() < 7200:
+                                    reply_text = "目前上線未滿 2 小時，為確保客人能完整預約，請稍後再切換狀態喔！"
+                                else:
+                                    staff.is_online = False
+                                    staff.online_start_time = None
+                                    db.commit()
+                                    reply_text = f"辛苦了 {staff.name} 師傅！已為您切換為下線模式，好好休息。"
+                            else:
+                                staff.is_online = False
+                                db.commit()
+                                reply_text = f"辛苦了 {staff.name} 師傅！已為您切換為下線模式。"
+                        else:
+                            reply_text = "您目前已經是下線狀態囉！"
+                    else:
+                        reply_text = f"{staff.name} 師傅您好，目前的指令有：「上線」與「下線」。\n（未來的派單按鈕正在趕工中喔！）"
+
             except Exception:
-                logging.exception("Error replying to staff message")
-        finally:
-            db.close()
+                logging.exception("Error in staff message handling")
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            finally:
+                db.close()
 
+        try:
+            if bot_staff_api and text:
+                bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+        except Exception:
+            logging.exception("Error replying to staff message")
 
-# 處理 webhook 的背景工作：驗證簽章並交由 handler 處理（若簽章錯誤則紀錄）
+# --- 處理 webhook 的背景工作 ---
 def _process_webhook(body: bytes, signature: str, bot_api, handler):
     if not handler:
         logging.warning("No webhook handler configured; skipping processing")
@@ -236,35 +216,26 @@ def _process_webhook(body: bytes, signature: str, bot_api, handler):
     except Exception:
         logging.exception("Exception while handling webhook")
 
-app = FastAPI(title="FastAPI + MySQL Boilerplate with LINE Webhook")
+app = FastAPI(title="SPA 智能客服與預約系統")
 
 # 在啟動時自動建立資料表
 @app.on_event("startup")
 def on_startup():
-    # 這會使用上面定義的 Base 與 engine，在 MySQL 中建立 tables（若已存在則不會覆蓋）
     Base.metadata.create_all(bind=engine)
 
 @app.get("/")
 def read_root():
-    return {"message": "Hello from FastAPI"}
-
-# 保留原本的 /webhook 路由（僅回傳 200）
-@app.post("/webhook")
-async def line_webhook(request: Request):
-    # 目前僅回傳 HTTP 200 OK 給 LINE 平台作為接收端確認
-    # 若需處理訊息，可在這裡讀取 request.json() 或 request.body()
-    return Response(status_code=200)
+    return {"message": "Hello from SPA FastAPI"}
 
 # Customer webhook: 立即回傳 200，實際處理放到 background task 中
 @app.post("/webhook/customer")
 async def webhook_customer(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
     signature = request.headers.get("x-line-signature", "")
-    # 立刻回傳 200，並在背景處理簽章驗證與回覆
     background_tasks.add_task(_process_webhook, body, signature, bot_customer_api, handler_customer)
     return Response(status_code=200)
 
-# Staff webhook: 同上，使用 staff 的 token/secret
+# Staff webhook: 立即回傳 200，實際處理放到 background task 中
 @app.post("/webhook/staff")
 async def webhook_staff(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
