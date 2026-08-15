@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+sqlalchemy
+pymysql
+python-dotenv
+line-bot-sdk==2.0.0
