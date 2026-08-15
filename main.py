@@ -94,10 +94,31 @@ handler_staff = WebhookHandler(LINE_SECRET_STAFF) if LINE_SECRET_STAFF else None
 # 設定基本 logging
 logging.basicConfig(level=logging.INFO)
 
-# 為每個 handler 註冊一個簡單的文字 echo 回覆
+# 為每個 handler 註冊一個簡單的文字 echo 回覆，並在收到訊息時自動建檔
 if handler_customer:
     @handler_customer.add(MessageEvent, message=TextMessage)
     def handle_customer_message(event):
+        # 先嘗試從 event.source 取得 user_id
+        user_id = getattr(getattr(event, "source", None), "user_id", None)
+        if user_id:
+            db = SessionLocal()
+            try:
+                # 查詢是否已存在
+                existing = db.query(User).filter(User.line_user_id == user_id).first()
+                if not existing:
+                    new_user = User(line_user_id=user_id)
+                    db.add(new_user)
+                    db.commit()
+            except Exception:
+                logging.exception("Error creating/finding user in DB")
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            finally:
+                db.close()
+
+        # 保留原本的文字 echo 回覆
         try:
             if bot_customer_api and hasattr(event.message, "text"):
                 text = event.message.text
@@ -108,6 +129,26 @@ if handler_customer:
 if handler_staff:
     @handler_staff.add(MessageEvent, message=TextMessage)
     def handle_staff_message(event):
+        # 先嘗試從 event.source 取得 user_id
+        user_id = getattr(getattr(event, "source", None), "user_id", None)
+        if user_id:
+            db = SessionLocal()
+            try:
+                existing = db.query(Staff).filter(Staff.line_user_id == user_id).first()
+                if not existing:
+                    new_staff = Staff(line_user_id=user_id, name="新進員工")
+                    db.add(new_staff)
+                    db.commit()
+            except Exception:
+                logging.exception("Error creating/finding staff in DB")
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            finally:
+                db.close()
+
+        # 保留原本的文字 echo 回覆
         try:
             if bot_staff_api and hasattr(event.message, "text"):
                 text = event.message.text
