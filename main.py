@@ -1,9 +1,10 @@
 from fastapi import FastAPI, Request, Response, Depends, BackgroundTasks
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey
+from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship
 from dotenv import load_dotenv
 import os
 import logging
+from datetime import datetime
 
 # LINE SDK
 from linebot import LineBotApi, WebhookHandler
@@ -23,6 +24,51 @@ if not DATABASE_URL:
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+# --- SQLAlchemy models: Users, Staffs, Appointments ---
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    line_user_id = Column(String(255), unique=True, nullable=False)
+    phone = Column(String(50), nullable=True)
+    utm_source = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # relationship to appointments
+    appointments = relationship("Appointment", back_populates="user", cascade="all, delete-orphan")
+
+
+class Staff(Base):
+    __tablename__ = "staffs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    line_user_id = Column(String(255), unique=True, nullable=False)
+    name = Column(String(255), nullable=False)
+    is_online = Column(Boolean, default=False, nullable=False)
+    online_start_time = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # relationship to appointments
+    appointments = relationship("Appointment", back_populates="staff", cascade="all, delete-orphan")
+
+
+class Appointment(Base):
+    __tablename__ = "appointments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    staff_id = Column(Integer, ForeignKey("staffs.id"), nullable=True)
+    duration = Column(Integer, nullable=False)  # 存放 90 或 120（分鐘）
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=False)
+    status = Column(String(50), default="pending", nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", back_populates="appointments")
+    staff = relationship("Staff", back_populates="appointments")
+
+# --------------------------------------------------
 
 # DB session dependency
 def get_db() -> Session:
@@ -82,6 +128,12 @@ def _process_webhook(body: bytes, signature: str, bot_api, handler):
         logging.exception("Exception while handling webhook")
 
 app = FastAPI(title="FastAPI + MySQL Boilerplate with LINE Webhook")
+
+# 在啟動時自動建立資料表
+@app.on_event("startup")
+def on_startup():
+    # 這會使用上面定義的 Base 與 engine，在 MySQL 中建立 tables（若已存在則不會覆蓋）
+    Base.metadata.create_all(bind=engine)
 
 @app.get("/")
 def read_root():
