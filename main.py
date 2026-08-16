@@ -10,7 +10,16 @@ import re
 # LINE SDK
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import (
+    MessageEvent,
+    TextMessage,
+    TextSendMessage,
+    PostbackEvent,
+    TemplateSendMessage,
+    ButtonsTemplate,
+    DatetimePickerTemplateAction,
+    PostbackTemplateAction,
+)
 
 # 讀取本地 .env
 load_dotenv()
@@ -99,6 +108,25 @@ if handler_customer:
         text = getattr(event.message, "text", "").strip()
         reply_text = text
 
+        # 如果使用者輸入「預約」，回傳 ButtonsTemplate 並使用 DatetimePicker
+        if text == "預約":
+            try:
+                if bot_customer_api:
+                    datetime_action = DatetimePickerTemplateAction(
+                        label="選擇時間",
+                        data="action=select_date",
+                        mode="datetime",
+                    )
+                    buttons = ButtonsTemplate(
+                        text="請選擇您想預約的時間",
+                        actions=[datetime_action],
+                    )
+                    template_message = TemplateSendMessage(alt_text="請選擇您想預約的時間", template=buttons)
+                    bot_customer_api.reply_message(event.reply_token, template_message)
+            except Exception:
+                logging.exception("Error replying with datetime picker")
+            return
+
         if user_id:
             db = SessionLocal()
             try:
@@ -115,7 +143,7 @@ if handler_customer:
                         db.commit()
                         reply_text = f"太棒了！您的手機號碼 {text} 已綁定成功，隨時可以開始預約囉 🌿"
                     else:
-                        reply_text = "哈囉！歡迎來到伊果 SPA 🌿 很高興為您服務。\n\n為了能幫您保留專屬的預約紀錄，可以先偷偷告訴我您的手機號碼嗎？\n（請輸入 10 碼數字，例如：0912345678）"
+                        reply_text = "哈囉！歡迎來到伊果 SPA 🌿 很高興為您服務。\n\n為了能幫您保留專屬的預約紀錄，可以先偷偷告訴我您的手機號碼嗎？\n��[...]"
                 else:
                     # 建檔完成後的預設回覆（未來可改成呼叫選單）
                     reply_text = f"收到您的訊息：{text}\n（專屬預約選單正在努力建置中，敬請期待！）"
@@ -134,6 +162,29 @@ if handler_customer:
                 bot_customer_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
         except Exception:
             logging.exception("Error replying to customer message")
+
+    @handler_customer.add(PostbackEvent)
+    def handle_customer_postback(event):
+        # 取得 postback 的 data 與 params
+        data = getattr(getattr(event, "postback", None), "data", "")
+        params = getattr(getattr(event, "postback", None), "params", None) or {}
+
+        try:
+            if data == "action=select_date":
+                selected_dt = params.get("datetime")
+                # 回覆選擇服務方案的 ButtonsTemplate
+                text = f"您選擇了 {selected_dt}，請選擇服務方案："
+                actions = [
+                    PostbackTemplateAction(label="90 分鐘", data=f"action=select_plan&plan=90&datetime={selected_dt}"),
+                    PostbackTemplateAction(label="120 分鐘", data=f"action=select_plan&plan=120&datetime={selected_dt}"),
+                ]
+                buttons = ButtonsTemplate(text=text, actions=actions)
+                template_message = TemplateSendMessage(alt_text="請選擇服務方案", template=buttons)
+
+                if bot_customer_api:
+                    bot_customer_api.reply_message(event.reply_token, template_message)
+        except Exception:
+            logging.exception("Error handling customer postback")
 
 
 # --- 員工端：引導建檔與上下線邏輯 ---
