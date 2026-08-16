@@ -6,6 +6,7 @@ import os
 import logging
 from datetime import datetime
 import re
+from urllib.parse import parse_qs
 
 # LINE SDK
 from linebot import LineBotApi, WebhookHandler
@@ -19,6 +20,7 @@ from linebot.models import (
     ButtonsTemplate,
     DatetimePickerTemplateAction,
     PostbackTemplateAction,
+    FlexSendMessage,
 )
 
 # 讀取本地 .env
@@ -138,15 +140,15 @@ if handler_customer:
 
                 # 如果客人的手機號碼還是空的，啟動引導建檔模式
                 if not user.phone:
-                    if re.match(r"^09\d{8}$", text):
+                    if re.match(r"^09\\d{8}$", text):
                         user.phone = text
                         db.commit()
                         reply_text = f"太棒了！您的手機號碼 {text} 已綁定成功，隨時可以開始預約囉 🌿"
                     else:
-                        reply_text = "哈囉！歡迎來到伊果 SPA 🌿 很高興為您服務。\n\n為了能幫您保留專屬的預約紀錄，可以先偷偷告訴我您的手機號碼嗎？\n��[...]"
+                        reply_text = "哈囉！歡迎來到伊果 SPA 🌿 很高興為您服務。\\n\\n為了能幫您保留專屬的預約紀錄，可以先偷偷告訴我您的手機號碼嗎��[...]"
                 else:
                     # 建檔完成後的預設回覆（未來可改成呼叫選單）
-                    reply_text = f"收到您的訊息：{text}\n（專屬預約選單正在努力建置中，敬請期待！）"
+                    reply_text = f"收到您的訊息：{text}\\n（專屬預約選單正在努力建置中，敬請期待！）"
 
             except Exception:
                 logging.exception("Error in customer message handling")
@@ -183,6 +185,114 @@ if handler_customer:
 
                 if bot_customer_api:
                     bot_customer_api.reply_message(event.reply_token, template_message)
+
+            # 處理選擇方案後的下一步：選擇師傅
+            elif "action=select_plan" in data:
+                # 解析 data 中的 plan 與 datetime
+                qs = parse_qs(data)
+                plan = qs.get("plan", [None])[0]
+                selected_dt = qs.get("datetime", [None])[0]
+
+                db = SessionLocal()
+                try:
+                    online_staff = db.query(Staff).filter(Staff.is_online == True).all()
+
+                    if not online_staff:
+                        # 沒有師傅在線上
+                        if bot_customer_api:
+                            bot_customer_api.reply_message(
+                                event.reply_token,
+                                TextSendMessage(text="目前正好沒有師傅在線上，請稍後再試或直接聯繫客服協助喔！"),
+                            )
+                        return
+
+                    # 有師傅在線上，建構 carousel 型態的 Flex Message
+                    bubbles = []
+                    for s in online_staff:
+                        bubble = {
+                            "type": "bubble",
+                            "body": {
+                                "type": "box",
+                                "layout": "vertical",
+                                "contents": [
+                                    {
+                                        "type": "text",
+                                        "text": s.name,
+                                        "weight": "bold",
+                                        "size": "lg",
+                                        "color": "#FFFFFF",
+                                        "align": "center",
+                                    }
+                                ],
+                                "backgroundColor": "#000000",
+                            },
+                            "footer": {
+                                "type": "box",
+                                "layout": "vertical",
+                                "contents": [
+                                    {
+                                        "type": "button",
+                                        "style": "primary",
+                                        "action": {
+                                            "type": "postback",
+                                            "label": "預約這位",
+                                            "data": f"action=confirm_booking&staff_id={s.id}&plan={plan}&datetime={selected_dt}",
+                                        },
+                                    }
+                                ],
+                                "backgroundColor": "#111111",
+                            },
+                        }
+                        bubbles.append(bubble)
+
+                    # 加上一個「不指定師傅」的 bubble
+                    none_bubble = {
+                        "type": "bubble",
+                        "body": {
+                            "type": "box",
+                            "layout": "vertical",
+                            "contents": [
+                                {
+                                    "type": "text",
+                                    "text": "不指定師傅",
+                                    "weight": "bold",
+                                    "size": "lg",
+                                    "color": "#FFFFFF",
+                                    "align": "center",
+                                }
+                            ],
+                            "backgroundColor": "#000000",
+                        },
+                        "footer": {
+                            "type": "box",
+                            "layout": "vertical",
+                            "contents": [
+                                {
+                                    "type": "button",
+                                    "style": "primary",
+                                    "action": {
+                                        "type": "postback",
+                                        "label": "預約這位",
+                                        "data": f"action=confirm_booking&staff_id=none&plan={plan}&datetime={selected_dt}",
+                                    },
+                                }
+                            ],
+                            "backgroundColor": "#111111",
+                        },
+                    }
+                    bubbles.append(none_bubble)
+
+                    flex_contents = {"type": "carousel", "contents": bubbles}
+                    flex_message = FlexSendMessage(alt_text="請選擇想預約的師傅", contents=flex_contents)
+
+                    if bot_customer_api:
+                        bot_customer_api.reply_message(event.reply_token, flex_message)
+
+                except Exception:
+                    logging.exception("Error building staff carousel")
+                finally:
+                    db.close()
+
         except Exception:
             logging.exception("Error handling customer postback")
 
@@ -207,7 +317,7 @@ if handler_staff:
                 # 判斷是否為剛加入的新師傅
                 if staff.name == "新進員工":
                     if text == "我是師傅":
-                        reply_text = "辛苦了！歡迎加入伊果 SPA 團隊。\n\n為了方便店長派單與客人辨識，請直接回覆告訴我您的「姓名」或「稱呼」喔！"
+                        reply_text = "辛苦了！歡迎加入伊果 SPA 團隊。\\n\\n為了方便店長派單與客人辨識，請直接回覆告訴我您的「姓名」或「稱呼」喔！"
                     else:
                         # 將師傅輸入的第一句話當作姓名存起來
                         staff.name = text
@@ -238,7 +348,7 @@ if handler_staff:
                         else:
                             reply_text = "您目前已經是下線狀態囉！"
                     else:
-                        reply_text = f"{staff.name} 師傅您好，目前的指令有：「上線」與「下線」。\n（未來的派單按鈕正在趕工中喔！）"
+                        reply_text = f"{staff.name} 師傅您好，目前的指令有：「上線」與「下線」。\\n（未來的派單按鈕正在趕工中喔！）"
 
             except Exception:
                 logging.exception("Error in staff message handling")
