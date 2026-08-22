@@ -4,7 +4,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship
 from dotenv import load_dotenv
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, date
 import re
 from urllib.parse import parse_qs
 
@@ -135,6 +135,234 @@ def build_phone_confirm_flex(phone_num, action_prefix):
         }
     )
 
+# --- 共用：Root Admin 管理員選單 Flex ---
+def build_root_admin_menu():
+    return FlexSendMessage(
+        alt_text="系統管理員選單",
+        contents={
+            "type": "bubble",
+            "styles": {"body": {"backgroundColor": "#4C1D95"}},
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": "ROOT ADMIN", "weight": "bold", "color": "#FCD34D", "size": "xl"},
+                    {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "查看本日預約", "data": "action=admin_view"}},
+                    {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "sm", "action": {"type": "postback", "label": "管理師傅", "data": "action=admin_staff"}}
+                ]
+            }
+        }
+    )
+
+# --- 共用：生成預約單 Carousel Bubble ---
+def build_appointment_bubble(appointment):
+    """將單筆預約轉換為 Bubble 卡片"""
+    staff_name = appointment.staff.name if appointment.staff else "未指定(由店長安排)"
+    staff_info = ""
+    if appointment.staff:
+        h = appointment.staff.height or "?"
+        w = appointment.staff.weight or "?"
+        staff_info = f"身高: {h} / 體重: {w}"
+    
+    customer_name = "客戶"
+    # 嘗試從 User 獲取名稱
+    if appointment.user:
+        try:
+            profile = bot_staff_api.get_profile(appointment.user.line_user_id)
+            customer_name = profile.display_name
+        except:
+            customer_name = f"用戶 {appointment.user.id}"
+    
+    start_time_str = appointment.start_time.strftime("%m月%d日 %H:%M") if appointment.start_time else "未定"
+    plan_name = appointment.plan_name or "未知方案"
+    
+    # 從 PLANS_INFO 獲取價格，若無則預設為 0
+    price = 0
+    discount = 0
+    for plan_key, plan_info in PLANS_INFO.items():
+        if plan_info["name"] == plan_name:
+            price = plan_info["price"]
+            discount = plan_info["price"]
+            break
+    
+    total = price
+    payment_id = f"#{appointment.created_at.strftime('%y%m%d')}{appointment.id:03d}"
+    
+    bubble = {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "今日預約", "weight": "bold", "color": "#1DB446", "size": "sm"},
+                {"type": "text", "text": staff_name, "weight": "bold", "size": "xxl", "margin": "md"},
+                {"type": "text", "text": staff_info, "size": "xs", "color": "#aaaaaa", "wrap": True},
+                {"type": "separator", "margin": "xxl"},
+                {
+                    "type": "box", "layout": "vertical", "margin": "xxl", "spacing": "sm",
+                    "contents": [
+                        {"type": "box", "layout": "horizontal", "contents": [
+                            {"type": "text", "text": "客戶", "size": "sm", "color": "#555555"},
+                            {"type": "text", "text": customer_name, "size": "sm", "color": "#111111", "align": "end"}
+                        ]},
+                        {"type": "box", "layout": "horizontal", "contents": [
+                            {"type": "text", "text": "時段", "size": "sm", "color": "#555555", "flex": 0},
+                            {"type": "text", "text": start_time_str, "size": "sm", "color": "#111111", "align": "end"}
+                        ]},
+                        {"type": "box", "layout": "horizontal", "contents": [
+                            {"type": "text", "text": "選擇方案", "size": "sm", "color": "#555555", "flex": 0},
+                            {"type": "text", "text": plan_name, "size": "sm", "color": "#111111", "align": "end"}
+                        ]},
+                        {"type": "separator", "margin": "xxl"},
+                        {"type": "box", "layout": "horizontal", "margin": "xxl", "contents": [
+                            {"type": "text", "text": "方案定價", "size": "sm", "color": "#555555"},
+                            {"type": "text", "text": f"NT$ {discount}", "size": "sm", "color": "#111111", "align": "end"}
+                        ]},
+                        {"type": "box", "layout": "horizontal", "contents": [
+                            {"type": "text", "text": "總計", "size": "sm", "color": "#555555"},
+                            {"type": "text", "text": f"NT$ {total}", "size": "sm", "color": "#111111", "align": "end"}
+                        ]}
+                    ]
+                },
+                {"type": "separator", "margin": "xxl"},
+                {"type": "box", "layout": "horizontal", "margin": "md", "contents": [
+                    {"type": "text", "text": "PAYMENT ID", "size": "xs", "color": "#aaaaaa", "flex": 0},
+                    {"type": "text", "text": payment_id, "color": "#aaaaaa", "size": "xs", "align": "end"}
+                ]}
+            ]
+        },
+        "styles": {"footer": {"separator": True}}
+    }
+    return bubble
+
+# --- 共用：生成師傅管理 Carousel Bubble ---
+def build_staff_bubble(staff):
+    """將單位師傅轉換為管理用 Bubble 卡片"""
+    is_online_text = "上線中" if staff.is_online else "下線"
+    height = staff.height or "?"
+    weight = staff.weight or "?"
+    
+    bubble = {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": staff.name,
+                    "wrap": True,
+                    "weight": "bold",
+                    "size": "xxl"
+                },
+                {
+                    "type": "box",
+                    "layout": "baseline",
+                    "contents": [
+                        {
+                            "type": "text",
+                            "text": f"身高: {height} / 體重: {weight} / 狀態: {is_online_text}",
+                            "wrap": True,
+                            "weight": "regular",
+                            "size": "md",
+                            "flex": 0,
+                            "position": "relative"
+                        }
+                    ]
+                }
+            ]
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "sm",
+            "contents": [
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "color": "#e11d48",
+                    "action": {
+                        "type": "postback",
+                        "label": "刪除",
+                        "data": f"action=delete_staff&staff_id={staff.id}"
+                    }
+                },
+                {
+                    "type": "button",
+                    "action": {
+                        "type": "postback",
+                        "label": "暫不上架",
+                        "data": f"action=toggle_staff&staff_id={staff.id}"
+                    }
+                }
+            ]
+        }
+    }
+    return bubble
+
+# --- 共用：Root Action 處理邏輯 ---
+def handle_root_action(data, user_id, db, is_staff_side=False):
+    """處理管理員（root）相關的 Postback 動作"""
+    api = bot_staff_api if is_staff_side else bot_customer_api
+    
+    if "action=admin_view" in data:
+        # 查看本日預約
+        today = date.today()
+        appointments = db.query(Appointment).filter(
+            Appointment.start_time >= datetime.combine(today, datetime.min.time()),
+            Appointment.start_time < datetime.combine(today, datetime.max.time())
+        ).all()
+        
+        if not appointments:
+            return TextSendMessage(text="今日目前無預約")
+        
+        bubbles = [build_appointment_bubble(appt) for appt in appointments]
+        return FlexSendMessage(
+            alt_text="本日預約",
+            contents={"type": "carousel", "contents": bubbles}
+        )
+    
+    elif "action=admin_staff" in data:
+        # 管理師傅
+        staffs = db.query(Staff).all()
+        
+        if not staffs:
+            return TextSendMessage(text="目前無師傅資料")
+        
+        bubbles = [build_staff_bubble(staff) for staff in staffs]
+        return FlexSendMessage(
+            alt_text="師傅管理",
+            contents={"type": "carousel", "contents": bubbles}
+        )
+    
+    elif "action=delete_staff" in data:
+        # 刪除師傅
+        qs = parse_qs(data)
+        staff_id = qs.get("staff_id", [None])[0]
+        if staff_id:
+            staff = db.query(Staff).filter(Staff.id == int(staff_id)).first()
+            if staff:
+                db.delete(staff)
+                db.commit()
+                return TextSendMessage(text=f"已刪除師傅 {staff.name}")
+        return TextSendMessage(text="刪除失敗")
+    
+    elif "action=toggle_staff" in data:
+        # 切換師傅上架狀態
+        qs = parse_qs(data)
+        staff_id = qs.get("staff_id", [None])[0]
+        if staff_id:
+            staff = db.query(Staff).filter(Staff.id == int(staff_id)).first()
+            if staff:
+                staff.is_online = not staff.is_online
+                db.commit()
+                status = "上線" if staff.is_online else "下線"
+                return TextSendMessage(text=f"已將 {staff.name} 切換為 {status}")
+        return TextSendMessage(text="更新失敗")
+    
+    return None
+
 # --- 客人端：引導建檔與對話邏輯 ---
 if handler_customer:
     @handler_customer.add(MessageEvent, message=TextMessage)
@@ -151,12 +379,16 @@ if handler_customer:
                     db.add(user)
                     db.commit()
 
+                if text == "root":
+                    bot_customer_api.reply_message(event.reply_token, build_root_admin_menu())
+                    return
+
                 if text == "預約":
                     if not user.phone:
                         bot_customer_api.reply_message(event.reply_token, TextSendMessage(text="為了保障您的預約權益，請在下方輸入您的 10 碼手機號碼（例如：0912345678）"))
                     else:
                         dt_action = DatetimePickerTemplateAction(label="選擇時間", data="action=select_date", mode="datetime")
-                        bot_customer_api.reply_message(event.reply_token, TemplateSendMessage(alt_text="請選擇時間", template=ButtonsTemplate(text="請選擇您想預約的時間", actions=[dt_action])))
+                        bot_customer_api.reply_message(event.reply_token, TemplateSendMessage(alt_text="請選擇時間", template=ButtonsTemplate(text="請選擇您想預約的時間", actions=[[dt_action]])))
                     return
 
                 if not user.phone and re.match(r"^09\d{8}$", text):
@@ -196,6 +428,12 @@ if handler_customer:
 
         db = SessionLocal()
         try:
+            # 共用 Root Action 處理
+            root_response = handle_root_action(data, user_id, db, is_staff_side=False)
+            if root_response:
+                bot_customer_api.reply_message(event.reply_token, root_response)
+                return
+
             if "action=confirm_customer_phone" in data:
                 qs = parse_qs(data)
                 result = qs.get("result", [None])[0]
@@ -206,7 +444,7 @@ if handler_customer:
                         user.phone_temp = None
                         db.commit()
                         dt_action = DatetimePickerTemplateAction(label="選擇時間", data="action=select_date", mode="datetime")
-                        bot_customer_api.reply_message(event.reply_token, TemplateSendMessage(alt_text="請選擇時間", template=ButtonsTemplate(text="感謝綁定！現在請選擇想預約的時間", actions=[dt_action])))
+                        bot_customer_api.reply_message(event.reply_token, TemplateSendMessage(alt_text="請選擇時間", template=ButtonsTemplate(text="感謝綁定！現在請選擇想預約的時間", actions=[[dt_action]])))
                     else:
                         user.phone_temp = None
                         db.commit()
@@ -332,12 +570,12 @@ if handler_customer:
                                 {
                                     "type": "box", "layout": "vertical", "margin": "xl", "spacing": "sm",
                                     "contents": [
-                                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶 ID", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_vip_id, "size": "sm", "align": "end"}]},
-                                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_name, "size": "sm", "align": "end"}]},
-                                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "時段", "size": "sm", "color": "#555555"}, {"type": "text", "text": time_str, "size": "sm", "align": "end"}]},
-                                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "方案", "size": "sm", "color": "#555555"}, {"type": "text", "text": p_info["name"], "size": "sm", "align": "end"}]},
+                                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶 ID", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_vip_id, "size": "sm", "color": "#111111", "align": "end"}]},
+                                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_name, "size": "sm", "color": "#111111", "align": "end"}]},
+                                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "時段", "size": "sm", "color": "#555555"}, {"type": "text", "text": time_str, "size": "sm", "color": "#111111", "align": "end"}]},
+                                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "方案", "size": "sm", "color": "#555555"}, {"type": "text", "text": p_info["name"], "size": "sm", "color": "#111111", "align": "end"}]},
                                         {"type": "separator", "margin": "lg"},
-                                        {"type": "box", "layout": "horizontal", "margin": "lg", "contents": [{"type": "text", "text": "總計", "size": "md", "color": "#555555"}, {"type": "text", "text": f"NT$ {total_price:,}", "size": "md", "weight": "bold", "align": "end"}]}
+                                        {"type": "box", "layout": "horizontal", "margin": "lg", "contents": [{"type": "text", "text": "總計", "size": "md", "color": "#555555"}, {"type": "text", "text": f"NT$ {total_price}", "size": "md", "color": "#111111", "align": "end"}]},
                                     ]
                                 },
                                 {"type": "separator", "margin": "xl"},
@@ -411,26 +649,13 @@ if handler_staff:
                 if staff.name == "新進員工":
                     staff.name = text
                     db.commit()
-                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"設定完成！{text} 師傅您好。\n請輸入「我的檔案」來完善基本資料，或輸入「上線」開始接單！"))
+                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"設定完成！{text} 師傅您好。\n請輸入「我的檔案」來完善基本資料，或輸入「上線」開始接單。"))
                     return
 
                 # --- 指令區 ---
                 if text == "root":
-                    root_menu = FlexSendMessage(
-                        alt_text="系統管理員選單",
-                        contents={
-                            "type": "bubble", "styles": {"body": {"backgroundColor": "#4C1D95"}},
-                            "body": {
-                                "type": "box", "layout": "vertical",
-                                "contents": [
-                                    {"type": "text", "text": "ROOT ADMIN", "weight": "bold", "color": "#FCD34D", "size": "xl"},
-                                    {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "查看本日預約", "data": "action=admin_view"}},
-                                    {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "sm", "action": {"type": "postback", "label": "管理師傅", "data": "action=admin_staff"}}
-                                ]
-                            }
-                        }
-                    )
-                    bot_staff_api.reply_message(event.reply_token, root_menu)
+                    bot_staff_api.reply_message(event.reply_token, build_root_admin_menu())
+                    return
                 elif text == "上線":
                     staff.is_online = True
                     staff.online_start_time = datetime.utcnow()
@@ -441,7 +666,7 @@ if handler_staff:
                     db.commit()
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"辛苦了 {staff.name} 師傅！已為您切換為下線模式。"))
                 elif text == "我的檔案":
-                    profile_txt = f"【基本資料】\n姓名：{staff.name}\n身高：{staff.height or '未設'}\n體重：{staff.weight or '未設'}\n角色：{staff.role or '未設'}\n\n如需更新，請直接輸入例如：\n「身高 180」\n「體重 75」\n「角色 攻擊手」"
+                    profile_txt = f"【基本資料】\n姓名：{staff.name}\n身高：{staff.height or '未設'}\n體重：{staff.weight or '未設'}\n角色：{staff.role or '未設'}\n\n如需修改，請分別輸入：\n身高 170\n體重 65\n角色 泰式"
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=profile_txt))
                 elif text.startswith("身高 "):
                     staff.height = text.replace("身高 ", "").strip()
@@ -456,7 +681,7 @@ if handler_staff:
                     db.commit()
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"已更新角色為 {staff.role}"))
                 else:
-                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n🟢「上線」：開啟接單\n🔴「下線」：結束排班\n👤「我的檔案」：查看與更新資料\n\n更新資料請輸入例如：「身高 175」"
+                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n🟢「上線」：開啟接單\n🔴「下線」：結束排班\n👤「我的檔案」：查看與更新資料\n🔧「root」：管理員功能"
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=guide_txt))
 
             except Exception:
@@ -471,6 +696,12 @@ if handler_staff:
         
         db = SessionLocal()
         try:
+            # 共用 Root Action 處理
+            root_response = handle_root_action(data, user_id, db, is_staff_side=True)
+            if root_response:
+                bot_staff_api.reply_message(event.reply_token, root_response)
+                return
+
             if "action=confirm_staff_phone" in data:
                 qs = parse_qs(data)
                 result = qs.get("result", [None])[0]
@@ -485,8 +716,6 @@ if handler_staff:
                         staff.phone_temp = None
                         db.commit()
                         bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="請再次輸入您的 10 碼手機號碼："))
-            elif "action=admin_" in data:
-                bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="【系統提示】詳細的資料總覽與排班修改，請至店內的 React 戰情室網頁操作喔！"))
         except Exception:
             pass
         finally:
