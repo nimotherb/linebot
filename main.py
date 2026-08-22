@@ -7,7 +7,6 @@ import logging
 from datetime import datetime
 import re
 from urllib.parse import parse_qs
-import json
 
 # LINE SDK
 from linebot import LineBotApi, WebhookHandler
@@ -280,7 +279,7 @@ if handler_customer:
                                 },
                                 {
                                     "type": "text",
-                                    "text": "👋 很高興為您服務",
+                                    "text": "很高興為您服務",
                                     "size": "sm",
                                     "color": "#555555",
                                     "wrap": True,
@@ -323,7 +322,6 @@ if handler_customer:
 
     @handler_customer.add(PostbackEvent)
     def handle_customer_postback(event):
-        # 取得 postback 的 data 與 params
         data = getattr(getattr(event, "postback", None), "data", "")
         params = getattr(getattr(event, "postback", None), "params", None) or {}
 
@@ -395,7 +393,6 @@ if handler_customer:
 
             # 處理選擇方案後的下一步：選擇師傅
             elif "action=select_plan" in data:
-                # 解析 data 中的 plan 與 datetime
                 qs = parse_qs(data)
                 plan = qs.get("plan", [None])[0]
                 selected_dt = qs.get("datetime", [None])[0]
@@ -405,7 +402,6 @@ if handler_customer:
                     online_staff = db.query(Staff).filter(Staff.is_online == True).all()
 
                     if not online_staff:
-                        # 沒有師傅在線上
                         if bot_customer_api:
                             bot_customer_api.reply_message(
                                 event.reply_token,
@@ -413,7 +409,6 @@ if handler_customer:
                             )
                         return
 
-                    # 有師傅在線上，建構 carousel 型態的 Flex Message
                     bubbles = []
                     for s in online_staff:
                         bubble = {
@@ -452,7 +447,6 @@ if handler_customer:
                         }
                         bubbles.append(bubble)
 
-                    # 加上一個「不指定師傅」的 bubble
                     none_bubble = {
                         "type": "bubble",
                         "body": {
@@ -516,7 +510,6 @@ if handler_customer:
                         logging.error("User not found for booking confirmation")
                         return
 
-                    # 判斷 staff_id 是否為 "none"
                     staff_obj = None
                     staff_name = "未指定"
                     if staff_id != "none":
@@ -524,7 +517,6 @@ if handler_customer:
                         if staff_obj:
                             staff_name = staff_obj.name
 
-                    # 根據 plan 判斷定價
                     plan_int = int(plan)
                     if plan_int == 90:
                         price = 2500
@@ -536,7 +528,6 @@ if handler_customer:
                     discount = 200
                     total = price - discount
 
-                    # 寫入 Appointments 資料庫
                     appointment = Appointment(
                         user_id=user.id,
                         staff_id=int(staff_id) if staff_id != "none" else None,
@@ -549,14 +540,10 @@ if handler_customer:
                     db.commit()
                     db.refresh(appointment)
 
-                    # 取得訂單 id 並格式化 PAYMENT ID
                     order_id = appointment.id
                     payment_id = f"#{datetime.utcnow().strftime('%y%m%d')}{order_id:03d}"
-
-                    # 取得客戶 ID（VIP-{user.id:04d}）
                     customer_vip_id = f"VIP-{user.id:04d}"
 
-                    # 透過 bot_customer_api.get_profile 取得 LINE display_name
                     customer_name = user_id
                     try:
                         profile = bot_customer_api.get_profile(user_id)
@@ -564,14 +551,12 @@ if handler_customer:
                     except Exception as e:
                         logging.warning(f"Unable to get customer profile: {e}")
 
-                    # 格式化預約時間
                     try:
                         appointment_time = datetime.fromisoformat(selected_dt)
                         appointment_time_str = appointment_time.strftime("%Y年%m月%d日 %H:%M")
                     except:
                         appointment_time_str = selected_dt
 
-                    # 動態產生預約明細 FlexSendMessage
                     flex_contents = {
                         "type": "bubble",
                         "body": {
@@ -580,7 +565,7 @@ if handler_customer:
                             "contents": [
                                 {
                                     "type": "text",
-                                    "text": "預約確認",
+                                    "text": "今日預約",
                                     "weight": "bold",
                                     "color": "#1DB446",
                                     "size": "sm"
@@ -818,41 +803,13 @@ if handler_staff:
                 # 判斷是否為剛加入的新師傅
                 if staff.name == "新進員工":
                     if text == "我是師傅":
-                        reply_text = "辛苦了！歡迎加入伊果 SPA 團隊。\\n\\n為了方便店長派單與客人辨識，請直接回覆告訴我您的「姓名」或「稱呼」喔！"
+                        reply_text = "辛苦了！歡迎加入伊果 SPA 團隊。\n\n為了方便店長派單與客人辨識，請直接回覆告訴我您的「姓名」或「稱呼」喔！"
                     else:
-                        # 將師傅輸入的第一句話當作姓名存起來
                         staff.name = text
                         db.commit()
                         reply_text = f"設定完成！{text} 師傅您好，您現在可以輸入「上線」來開啟接單模式囉！"
                 else:
-                    # 任務一：將上下線邏輯註解掉，僅保留建立檔案與普通 Echo
-                    # if text == "上線":
-                    #     staff.is_online = True
-                    #     staff.online_start_time = datetime.utcnow()
-                    #     db.commit()
-                    #     reply_text = f"【狀態更新】{staff.name} 師傅，已為您切換為上線模式，隨時準備接單！"
-                    # elif text == "下線":
-                    #     if staff.is_online:
-                    #         if staff.online_start_time:
-                    #             diff = datetime.utcnow() - staff.online_start_time
-                    #             if diff.total_seconds() < 7200:
-                    #                 reply_text = "目前上線未滿 2 小時，為確保客人能完整預約，請稍後再切換狀態喔！"
-                    #             else:
-                    #                 staff.is_online = False
-                    #                 staff.online_start_time = None
-                    #                 db.commit()
-                    #                 reply_text = f"辛苦了 {staff.name} 師傅！已為您切換為下線模式，好好休息。"
-                    #         else:
-                    #             staff.is_online = False
-                    #             db.commit()
-                    #             reply_text = f"辛苦了 {staff.name} 師傅！已為您切換為下線模式。"
-                    #     else:
-                    #         reply_text = "您目前已經是下線狀態囉！"
-                    # else:
-                    #     reply_text = f"{staff.name} 師傅您好，目前的指令有：「上線」與「下線」。\\n（未來的派單按鈕正在趕工中喔！）"
-                    
-                    # 普通 Echo
-                    reply_text = f"{staff.name} 師傅您好，您說：{text}\\n（上下線功能暫時關閉中...）"
+                    reply_text = f"{staff.name} 師傅您好，您說：{text}\n（上下線功能暫時關閉中...）"
 
             except Exception:
                 logging.exception("Error in staff message handling")
@@ -883,21 +840,21 @@ def _process_webhook(body: bytes, signature: str, bot_api, handler):
 
 app = FastAPI(title="SPA 智能客服與預約系統")
 
-# 在啟動時自動建立資料表
+# 在啟動時自動建立資料表與擴充欄位
 @app.on_event("startup")
 def on_startup():
-Base.metadata.create_all(bind=engine)
-with engine.begin() as conn:
-try:
-conn.execute(text("ALTER TABLE users ADD COLUMN phone_temp VARCHAR(50);"))
-except Exception:
-pass
+    Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("ALTER TABLE users ADD COLUMN phone_temp VARCHAR(50);"))
+        except Exception:
+            pass
 
 @app.get("/")
 def read_root():
     return {"message": "Hello from SPA FastAPI"}
 
-# Customer webhook: 立即回傳 200，實際處理放到 background task 中
+# Customer webhook
 @app.post("/webhook/customer")
 async def webhook_customer(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
@@ -905,7 +862,7 @@ async def webhook_customer(request: Request, background_tasks: BackgroundTasks):
     background_tasks.add_task(_process_webhook, body, signature, bot_customer_api, handler_customer)
     return Response(status_code=200)
 
-# Staff webhook: 立即回傳 200，實際處理放到 background task 中
+# Staff webhook
 @app.post("/webhook/staff")
 async def webhook_staff(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
