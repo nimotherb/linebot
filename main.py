@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, Response, Depends, BackgroundTasks
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, text
 from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship
 from dotenv import load_dotenv
 import os
@@ -886,7 +886,12 @@ app = FastAPI(title="SPA 智能客服與預約系統")
 # 在啟動時自動建立資料表
 @app.on_event("startup")
 def on_startup():
-    Base.metadata.create_all(bind=engine)
+Base.metadata.create_all(bind=engine)
+with engine.begin() as conn:
+try:
+conn.execute(text("ALTER TABLE users ADD COLUMN phone_temp VARCHAR(50);"))
+except Exception:
+pass
 
 @app.get("/")
 def read_root():
