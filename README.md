@@ -4,7 +4,8 @@
 
 - 客戶與師傅 LINE webhook
 - 管理後台登入、預約、排班、員工、方案、優惠、場地與結帳 API
-- 師傅專屬的無密碼排班連結
+- 公開唯讀、師傅免密碼、客服、店長與 Admin 分層權限
+- 可調整的師傅回帳表、現金回帳確認與優惠 Flex 選單
 - MySQL 永久資料，以及日期區間 CSV 匯出
 
 ## 本機啟動
@@ -24,7 +25,7 @@ Copy-Item .env.example .env
 
 - `ADMIN_INITIAL_PIN`、`MANAGER_INITIAL_PIN`：只在第一次建立帳號時需要。登入確認後可從 Render 移除。
 - `ADMIN_ALLOWED_ORIGINS`：管理後台網址與本機網址，逗號分隔。
-- `ROOT_LINE_USER_IDS`、`MANAGER_LINE_USER_IDS`：能在 LINE 使用 `root` 的 LINE user ID。
+- `ADMIN_DASHBOARD_URL`：LINE Bot 傳送的後台／排班網址。
 - `STAFF_HEALTH_ENCRYPTION_KEY`：Fernet 金鑰。請另外安全備份，遺失後無法解密私密健康資料。
 - `STAFF_SCHEDULE_BASE_URL`：師傅班表連結的網址前綴。
 
@@ -45,6 +46,8 @@ Fernet 金鑰可在本機產生：
 - `師傅在線` 已停用，是否能安排服務由正式班表與預約決定。
 - 健康資料只允許 Admin 讀寫，並在 MySQL 中以加密內容保存。
 - 刪除師傅採「暫時退役」，不會破壞歷史訂單。
+- LINE 管理員必須先輸入 `root`，再輸入對應後台 PIN 才會綁定；管理選單可登出並解除綁定。
+- 公開 API 會遮罩客戶、電話、備註、付款、回帳與營收；師傅工作階段只回傳自己的班表與訂單。
 
 ## 測試
 
