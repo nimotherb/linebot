@@ -43,6 +43,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     line_user_id = Column(String(255), unique=True, nullable=False)
     phone = Column(String(50), nullable=True)
+    phone_temp = Column(String(50), nullable=True)  # 暫存未確認的手機號碼
     utm_source = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -182,23 +183,112 @@ if handler_customer:
 
                 # 檢查客人輸入是否為 10 碼手機號碼且 user.phone 為空
                 if re.match(r"^09\d{8}$", text) and not user.phone:
-                    # 將 text 存入 user.phone 並 commit
-                    user.phone = text
-                    db.commit()
-                    
-                    # 直接回傳 DatetimePickerTemplateAction 按鈕
-                    datetime_action = DatetimePickerTemplateAction(
-                        label="選擇時間",
-                        data="action=select_date",
-                        mode="datetime",
-                    )
-                    buttons = ButtonsTemplate(
-                        text="感謝您！現在請選擇想預約的時間",
-                        actions=[datetime_action],
-                    )
-                    template_message = TemplateSendMessage(alt_text="請選擇您想預約的時間", template=buttons)
-                    if bot_customer_api:
-                        bot_customer_api.reply_message(event.reply_token, template_message)
+                    # 檢查是否是第一次輸入或確認
+                    if not user.phone_temp:
+                        # 第一次輸入：暫存手機號碼，要求雙重確認
+                        user.phone_temp = text
+                        db.commit()
+                        
+                        flex_message = FlexSendMessage(
+                            alt_text="確認手機號碼",
+                            contents={
+                                "type": "bubble",
+                                "body": {
+                                    "type": "box",
+                                    "layout": "vertical",
+                                    "contents": [
+                                        {
+                                            "type": "text",
+                                            "text": "請確認您的手機號碼",
+                                            "weight": "bold",
+                                            "size": "lg",
+                                            "color": "#1DB446",
+                                            "wrap": True
+                                        },
+                                        {
+                                            "type": "box",
+                                            "layout": "vertical",
+                                            "margin": "md",
+                                            "spacing": "sm",
+                                            "contents": [
+                                                {
+                                                    "type": "text",
+                                                    "text": f"📱 {text}",
+                                                    "weight": "bold",
+                                                    "size": "md",
+                                                    "color": "#111111",
+                                                    "align": "center"
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "type": "text",
+                                            "text": "請再次輸入此號碼以確認無誤",
+                                            "size": "xs",
+                                            "color": "#aaaaaa",
+                                            "wrap": True,
+                                            "margin": "md"
+                                        }
+                                    ]
+                                }
+                            }
+                        )
+                        if bot_customer_api:
+                            bot_customer_api.reply_message(event.reply_token, flex_message)
+                    elif user.phone_temp == text:
+                        # 第二次輸入且符合：正式保存
+                        user.phone = text
+                        user.phone_temp = None
+                        db.commit()
+                        
+                        # 直接回傳 DatetimePickerTemplateAction 按鈕
+                        datetime_action = DatetimePickerTemplateAction(
+                            label="選擇時間",
+                            data="action=select_date",
+                            mode="datetime",
+                        )
+                        buttons = ButtonsTemplate(
+                            text="感謝您！現在請選擇想預約的時間",
+                            actions=[datetime_action],
+                        )
+                        template_message = TemplateSendMessage(alt_text="請選擇您想預約的時間", template=buttons)
+                        if bot_customer_api:
+                            bot_customer_api.reply_message(event.reply_token, template_message)
+                    else:
+                        # 第二次輸入但不符合：提示錯誤
+                        user.phone_temp = None
+                        db.commit()
+                        
+                        flex_message = FlexSendMessage(
+                            alt_text="手機號碼不符",
+                            contents={
+                                "type": "bubble",
+                                "body": {
+                                    "type": "box",
+                                    "layout": "vertical",
+                                    "contents": [
+                                        {
+                                            "type": "text",
+                                            "text": "⚠️ 手機號碼不符",
+                                            "weight": "bold",
+                                            "size": "lg",
+                                            "color": "#FF0000",
+                                            "wrap": True
+                                        },
+                                        {
+                                            "type": "text",
+                                            "text": "您輸入的號碼與第一次不符，請重新輸入您的 10 碼手機號碼",
+                                            "size": "sm",
+                                            "color": "#555555",
+                                            "wrap": True,
+                                            "margin": "md"
+                                        }
+                                    ]
+                                }
+                            }
+                        )
+                        if bot_customer_api:
+                            bot_customer_api.reply_message(event.reply_token, flex_message)
                     return
 
                 # 其他任何文字：回傳歡迎的 FlexSendMessage
