@@ -8,6 +8,8 @@ from datetime import datetime, date
 import re
 from urllib.parse import parse_qs
 
+from scheduling import appointment_end, parse_local_datetime
+
 # LINE SDK
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -30,7 +32,10 @@ if not DATABASE_URL:
     raise RuntimeError("環境變數 DATABASE_URL 未設定")
 
 # 建立 SQLAlchemy engine 與 Session 工廠
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+engine_options = {"pool_pre_ping": True}
+if DATABASE_URL.startswith("sqlite"):
+    engine_options["connect_args"] = {"check_same_thread": False}
+engine = create_engine(DATABASE_URL, **engine_options)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -41,6 +46,7 @@ class User(Base):
     line_user_id = Column(String(255), unique=True, nullable=False)
     phone = Column(String(50), nullable=True)
     phone_temp = Column(String(50), nullable=True)
+    display_name = Column(String(255), nullable=True)
     utm_source = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     appointments = relationship("Appointment", back_populates="user", cascade="all, delete-orphan")
@@ -55,6 +61,8 @@ class Staff(Base):
     height = Column(String(20), nullable=True)
     weight = Column(String(20), nullable=True)
     role = Column(String(50), nullable=True)
+    category = Column(String(50), nullable=True)
+    employment_status = Column(String(30), default="active", nullable=False)
     is_online = Column(Boolean, default=False, nullable=False)
     online_start_time = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -86,6 +94,22 @@ LINE_SECRET_CUSTOMER = os.getenv("LINE_SECRET_CUSTOMER")
 LINE_TOKEN_CUSTOMER = os.getenv("LINE_TOKEN_CUSTOMER")
 LINE_SECRET_STAFF = os.getenv("LINE_SECRET_STAFF")
 LINE_TOKEN_STAFF = os.getenv("LINE_TOKEN_STAFF")
+
+ROOT_LINE_USER_IDS = {
+    value.strip()
+    for value in os.getenv("ROOT_LINE_USER_IDS", "").split(",")
+    if value.strip()
+}
+MANAGER_LINE_USER_IDS = {
+    value.strip()
+    for value in os.getenv("MANAGER_LINE_USER_IDS", "").split(",")
+    if value.strip()
+}
+
+
+def is_line_manager(user_id: str | None) -> bool:
+    """LINE 端的 root 選單只開放明確列入環境變數的帳號。"""
+    return bool(user_id and user_id in ROOT_LINE_USER_IDS | MANAGER_LINE_USER_IDS)
 
 bot_customer_api = LineBotApi(LINE_TOKEN_CUSTOMER) if LINE_TOKEN_CUSTOMER else None
 handler_customer = WebhookHandler(LINE_SECRET_CUSTOMER) if LINE_SECRET_CUSTOMER else None
@@ -241,7 +265,11 @@ def build_staff_bubble(staff):
     }
 
 def handle_root_action(data, user_id, db, is_staff_side=False):
-    api = bot_staff_api if is_staff_side else bot_customer_api
+    """處理管理員（root）相關的 Postback 動作"""
+    if not any(action in data for action in ("action=admin_", "action=delete_staff", "action=toggle_staff")):
+        return None
+    if not is_line_manager(user_id):
+        return TextSendMessage(text="此功能只開放管理帳號使用。")
     
     if "action=admin_view" in data:
         today = date.today()
@@ -257,32 +285,34 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         return FlexSendMessage(alt_text="本日預約", contents={"type": "carousel", "contents": bubbles})
     
     elif "action=admin_staff" in data:
-        staffs = db.query(Staff).all()
+        # 管理師傅
+        staffs = db.query(Staff).filter(Staff.employment_status == "active").all()
         if not staffs:
             return TextSendMessage(text="目前無師傅資料")
         bubbles = [build_staff_bubble(staff) for staff in staffs]
         return FlexSendMessage(alt_text="師傅管理", contents={"type": "carousel", "contents": bubbles})
     
     elif "action=delete_staff" in data:
+        # 保留歷史訂單，僅將師傅標為暫時退役
         qs = parse_qs(data)
         staff_id = qs.get("staff_id", [None])[0]
         if staff_id:
             staff = db.query(Staff).filter(Staff.id == int(staff_id)).first()
             if staff:
-                db.delete(staff)
+                staff.employment_status = "retired"
                 db.commit()
-                return TextSendMessage(text=f"已刪除師傅 {staff.name}")
+                return TextSendMessage(text=f"已將師傅 {staff.name} 設為暫時退役")
+        return TextSendMessage(text="更新失敗")
     
     elif "action=toggle_staff" in data:
+        # 舊的「在線」功能已停用；接單資格改由正式班表決定
         qs = parse_qs(data)
         staff_id = qs.get("staff_id", [None])[0]
         if staff_id:
             staff = db.query(Staff).filter(Staff.id == int(staff_id)).first()
             if staff:
-                staff.is_online = not staff.is_online
-                db.commit()
-                status = "上線" if staff.is_online else "下線"
-                return TextSendMessage(text=f"已將 {staff.name} 切換為 {status}")
+                return TextSendMessage(text=f"{staff.name} 的接單狀態請由正式班表管理。")
+        return TextSendMessage(text="查無師傅資料")
     return None
 
 # --- 客人端：引導建檔與對話邏輯 ---
@@ -302,7 +332,8 @@ if handler_customer:
                     db.commit()
 
                 if text == "root":
-                    bot_customer_api.reply_message(event.reply_token, build_root_admin_menu())
+                    response = build_root_admin_menu() if is_line_manager(user_id) else TextSendMessage(text="此功能只開放管理帳號使用。")
+                    bot_customer_api.reply_message(event.reply_token, response)
                     return
 
                 if text == "預約":
@@ -404,20 +435,20 @@ if handler_customer:
                 selected_dt = qs.get("datetime", [None])[0]
                 offset = int(qs.get("offset", ["0"])[0])
 
-                # 每次往資料庫抓 10 個
-                online_staff = db.query(Staff).filter(Staff.is_online == True).offset(offset).limit(10).all()
-                
-                if not online_staff and offset == 0:
-                    bot_customer_api.reply_message(event.reply_token, TextSendMessage(text="目前正好沒有師傅在線上，請稍後再試喔！"))
-                    return
-                elif not online_staff:
-                    bot_customer_api.reply_message(event.reply_token, TextSendMessage(text="沒有更多師傅囉！"))
+                # 正式班表取代「師傅在線」；保留原本 LINE 10 張卡片的分頁方式。
+                active_staff = db.query(Staff).filter(
+                    Staff.employment_status == "active"
+                ).offset(offset).limit(10).all()
+
+                if not active_staff:
+                    message = "目前沒有可安排的師傅，請聯絡客服協助。" if offset == 0 else "沒有更多師傅囉！"
+                    bot_customer_api.reply_message(event.reply_token, TextSendMessage(text=message))
                     return
 
                 # 判斷是否滿 10 個（代表還有下一頁）
-                has_more = len(online_staff) == 10
+                has_more = len(active_staff) == 10
                 # 畫面上最多只顯示 9 位師傅
-                display_staff = online_staff[:9]
+                display_staff = active_staff[:9]
 
                 bubbles = []
                 for s in display_staff:
@@ -474,14 +505,35 @@ if handler_customer:
                     staff_obj = db.query(Staff).filter(Staff.id == int(staff_id)).first()
 
                 p_info = PLANS_INFO.get(plan_key, {"duration": 60, "price": 0, "name": "未知方案"})
-                
+                booking_start = parse_local_datetime(selected_dt)
+                booking_end = appointment_end(booking_start, p_info["duration"])
+
+                if staff_obj:
+                    conflict = db.query(Appointment).filter(
+                        Appointment.staff_id == staff_obj.id,
+                        Appointment.status.notin_(["cancelled", "已取消"]),
+                        Appointment.start_time < booking_end,
+                        Appointment.end_time > booking_start,
+                    ).first()
+                    if conflict:
+                        bot_customer_api.reply_message(
+                            event.reply_token,
+                            TextSendMessage(text="這位師傅在該時段已有預約，請重新選擇時間或師傅。"),
+                        )
+                        return
+
+                try:
+                    profile = bot_customer_api.get_profile(user_id)
+                    user.display_name = profile.display_name
+                except Exception:
+                    logging.exception("無法讀取 LINE 顯示名稱 user_id=%s", user_id)
                 appointment = Appointment(
                     user_id=user.id,
                     staff_id=int(staff_id) if staff_id != "none" else None,
                     duration=p_info["duration"],
                     plan_name=p_info["name"],
-                    start_time=datetime.fromisoformat(selected_dt),
-                    end_time=datetime.fromisoformat(selected_dt),
+                    start_time=booking_start,
+                    end_time=booking_end,
                     status="confirmed"
                 )
                 db.add(appointment)
@@ -518,15 +570,16 @@ if handler_customer:
                         }
                     )
                     if staff_id == "none":
-                        online_staff = db.query(Staff).filter(Staff.is_online == True).all()
-                        for s in online_staff:
+                        # 尚未指定師傅時通知所有在職師傅，由店長依正式班表安排
+                        active_staff = db.query(Staff).filter(Staff.employment_status == "active").all()
+                        for s in active_staff:
                             bot_staff_api.push_message(s.line_user_id, notify_msg)
                     else:
                         if staff_obj:
                             bot_staff_api.push_message(staff_obj.line_user_id, notify_msg)
 
-        except Exception as e:
-            logging.error(f"Customer Postback Error: {e}")
+        except Exception:
+            logging.exception("處理客戶 postback 失敗")
         finally:
             db.close()
 
@@ -563,17 +616,13 @@ if handler_staff:
                     return
 
                 if text == "root":
-                    bot_staff_api.reply_message(event.reply_token, build_root_admin_menu())
+                    response = build_root_admin_menu() if is_line_manager(user_id) else TextSendMessage(text="此功能只開放管理帳號使用。")
+                    bot_staff_api.reply_message(event.reply_token, response)
                     return
                 elif text == "上線":
-                    staff.is_online = True
-                    staff.online_start_time = datetime.utcnow()
-                    db.commit()
-                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"【狀態更新】{staff.name} 師傅，已為您切換為上線模式！"))
+                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="「師傅在線」已停用，請使用個人班表連結新增正式排班。"))
                 elif text == "下線":
-                    staff.is_online = False
-                    db.commit()
-                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"辛苦了 {staff.name} 師傅！已為您切換為下線模式。"))
+                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="「師傅在線」已停用；如需取消班表，請使用個人班表連結，鎖定時段請洽店長。"))
                 elif text == "我的檔案":
                     profile_txt = f"【基本資料】\n姓名：{staff.name}\n身高：{staff.height or '未設'}\n體重：{staff.weight or '未設'}\n角色：{staff.role or '未設'}\n\n如需修改，請分別輸入：\n身高 170\n體重 65\n角色 泰式"
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=profile_txt))
@@ -590,11 +639,11 @@ if handler_staff:
                     db.commit()
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"已更新角色為 {staff.role}"))
                 else:
-                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n🟢「上線」：開啟接單\n🔴「下線」：結束排班\n👤「我的檔案」：查看與更新資料\n🔧「root」：管理員功能"
+                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n👤「我的檔案」：查看與更新資料\n📅 排班：請使用您的個人班表連結\n🔧「root」：僅限管理帳號"
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=guide_txt))
 
             except Exception:
-                pass
+                logging.exception("處理師傅訊息失敗")
             finally:
                 db.close()
 
@@ -625,7 +674,7 @@ if handler_staff:
                         db.commit()
                         bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="請再次輸入您的 10 碼手機號碼："))
         except Exception:
-            pass
+            logging.exception("處理師傅 postback 失敗")
         finally:
             db.close()
 
@@ -646,11 +695,14 @@ def on_startup():
     with engine.begin() as conn:
         queries = [
             "ALTER TABLE users ADD COLUMN phone_temp VARCHAR(50);",
+            "ALTER TABLE users ADD COLUMN display_name VARCHAR(255);",
             "ALTER TABLE staffs ADD COLUMN phone VARCHAR(50);",
             "ALTER TABLE staffs ADD COLUMN phone_temp VARCHAR(50);",
             "ALTER TABLE staffs ADD COLUMN height VARCHAR(20);",
             "ALTER TABLE staffs ADD COLUMN weight VARCHAR(20);",
             "ALTER TABLE staffs ADD COLUMN role VARCHAR(50);",
+            "ALTER TABLE staffs ADD COLUMN category VARCHAR(50);",
+            "ALTER TABLE staffs ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active';",
             "ALTER TABLE appointments ADD COLUMN plan_name VARCHAR(50);"
         ]
         for q in queries:
@@ -658,29 +710,12 @@ def on_startup():
                 conn.execute(text(q))
             except Exception:
                 pass
-    
-    # 自動建立假資料測試
-    db = SessionLocal()
-    try:
-        if db.query(Staff).count() == 0:
-            seed_staff = []
-            for i in range(1, 15):
-                seed_staff.append(
-                    Staff(
-                        line_user_id=f"seed{i}", 
-                        name=f"測試師傅 {i}號", 
-                        height="175", 
-                        weight="70", 
-                        role="M痘", 
-                        is_online=True
-                    )
-                )
-            db.add_all(seed_staff)
-            db.commit()
-    except Exception:
-        pass
-    finally:
-        db.close()
+        if engine.dialect.name == "mysql":
+            conn.execute(text(
+                "UPDATE appointments "
+                "SET end_time = DATE_ADD(start_time, INTERVAL duration MINUTE) "
+                "WHERE end_time <= start_time"
+            ))
 
 @app.get("/")
 def read_root():
@@ -699,3 +734,16 @@ async def webhook_staff(request: Request, background_tasks: BackgroundTasks):
     signature = request.headers.get("x-line-signature", "")
     background_tasks.add_task(_process_webhook, body, signature, bot_staff_api, handler_staff)
     return Response(status_code=200)
+
+
+from admin_api import register_admin_api
+
+register_admin_api(
+    app,
+    Base=Base,
+    engine=engine,
+    SessionLocal=SessionLocal,
+    User=User,
+    Staff=Staff,
+    Appointment=Appointment,
+)

@@ -1,6 +1,9 @@
-fastapi
-uvicorn
-sqlalchemy
-pymysql
-python-dotenv
-line-bot-sdk
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+sqlalchemy>=2.0,<3
+pymysql>=1.1,<2
+python-dotenv>=1.0,<2
+line-bot-sdk>=3.13,<4
+pwdlib[argon2]>=0.2,<1
+cryptography>=43,<47
+tzdata>=2025.2
