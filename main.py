@@ -121,7 +121,7 @@ if handler_customer:
                     db.add(user)
                     db.commit()
 
-                # 任務二：更新客戶文字處理邏輯
+                # 預約防呆流程第一步：若客人輸入「預約」
                 if text == "預約":
                     # 檢查 user.phone 是否有值
                     if not user.phone:
@@ -166,7 +166,7 @@ if handler_customer:
                         if bot_customer_api:
                             bot_customer_api.reply_message(event.reply_token, flex_message)
                     else:
-                        # 若 user.phone 已有值，回傳含 DatetimePickerTemplateAction 的 FlexSendMessage
+                        # 若 user.phone 已有值，直接回傳 DatetimePickerTemplateAction 按鈕
                         datetime_action = DatetimePickerTemplateAction(
                             label="選擇時間",
                             data="action=select_date",
@@ -181,114 +181,84 @@ if handler_customer:
                             bot_customer_api.reply_message(event.reply_token, template_message)
                     return
 
-                # 檢查客人輸入是否為 10 碼手機號碼且 user.phone 為空
-                if re.match(r"^09\d{8}$", text) and not user.phone:
-                    # 檢查是否是第一次輸入或確認
-                    if not user.phone_temp:
-                        # 第一次輸入：暫存手機號碼，要求雙重確認
-                        user.phone_temp = text
-                        db.commit()
-                        
-                        flex_message = FlexSendMessage(
-                            alt_text="確認手機號碼",
-                            contents={
-                                "type": "bubble",
-                                "body": {
-                                    "type": "box",
-                                    "layout": "vertical",
-                                    "contents": [
-                                        {
-                                            "type": "text",
-                                            "text": "請確認您的手機號碼",
-                                            "weight": "bold",
-                                            "size": "lg",
-                                            "color": "#1DB446",
-                                            "wrap": True
-                                        },
-                                        {
-                                            "type": "box",
-                                            "layout": "vertical",
-                                            "margin": "md",
-                                            "spacing": "sm",
-                                            "contents": [
-                                                {
-                                                    "type": "text",
-                                                    "text": f"📱 {text}",
-                                                    "weight": "bold",
-                                                    "size": "md",
-                                                    "color": "#111111",
-                                                    "align": "center"
-                                                }
-                                            ]
-                                        },
-                                        {
-                                            "type": "text",
-                                            "text": "請再次輸入此號碼以確認無誤",
-                                            "size": "xs",
-                                            "color": "#aaaaaa",
-                                            "wrap": True,
-                                            "margin": "md"
+                # 預約防呆流程第一步：若客人的 user.phone 為空，且輸入 10 碼數字
+                if not user.phone and re.match(r"^09\d{8}$", text):
+                    # 將 10 碼存入 user.phone_temp 並 commit
+                    user.phone_temp = text
+                    db.commit()
+                    
+                    # 回傳 FlexSendMessage，包含兩個按鈕
+                    flex_message = FlexSendMessage(
+                        alt_text="確認手機號碼",
+                        contents={
+                            "type": "bubble",
+                            "body": {
+                                "type": "box",
+                                "layout": "vertical",
+                                "contents": [
+                                    {
+                                        "type": "text",
+                                        "text": "確認手機號碼",
+                                        "weight": "bold",
+                                        "size": "lg",
+                                        "color": "#1DB446",
+                                        "wrap": True
+                                    },
+                                    {
+                                        "type": "box",
+                                        "layout": "vertical",
+                                        "margin": "md",
+                                        "spacing": "sm",
+                                        "contents": [
+                                            {
+                                                "type": "text",
+                                                "text": f"您輸入的手機號碼是 {text}",
+                                                "weight": "bold",
+                                                "size": "md",
+                                                "color": "#111111",
+                                                "wrap": True
+                                            },
+                                            {
+                                                "type": "text",
+                                                "text": "請問正確嗎？",
+                                                "size": "sm",
+                                                "color": "#555555",
+                                                "wrap": True,
+                                                "margin": "sm"
+                                            }
+                                        ]
+                                    }
+                                ]
+                            },
+                            "footer": {
+                                "type": "box",
+                                "layout": "horizontal",
+                                "spacing": "sm",
+                                "contents": [
+                                    {
+                                        "type": "button",
+                                        "style": "primary",
+                                        "action": {
+                                            "type": "postback",
+                                            "label": "正確",
+                                            "data": "action=confirm_phone&result=yes"
                                         }
-                                    ]
-                                }
-                            }
-                        )
-                        if bot_customer_api:
-                            bot_customer_api.reply_message(event.reply_token, flex_message)
-                    elif user.phone_temp == text:
-                        # 第二次輸入且符合：正式保存
-                        user.phone = text
-                        user.phone_temp = None
-                        db.commit()
-                        
-                        # 直接回傳 DatetimePickerTemplateAction 按鈕
-                        datetime_action = DatetimePickerTemplateAction(
-                            label="選擇時間",
-                            data="action=select_date",
-                            mode="datetime",
-                        )
-                        buttons = ButtonsTemplate(
-                            text="感謝您！現在請選擇想預約的時間",
-                            actions=[datetime_action],
-                        )
-                        template_message = TemplateSendMessage(alt_text="請選擇您想預約的時間", template=buttons)
-                        if bot_customer_api:
-                            bot_customer_api.reply_message(event.reply_token, template_message)
-                    else:
-                        # 第二次輸入但不符合：提示錯誤
-                        user.phone_temp = None
-                        db.commit()
-                        
-                        flex_message = FlexSendMessage(
-                            alt_text="手機號碼不符",
-                            contents={
-                                "type": "bubble",
-                                "body": {
-                                    "type": "box",
-                                    "layout": "vertical",
-                                    "contents": [
-                                        {
-                                            "type": "text",
-                                            "text": "⚠️ 手機號碼不符",
-                                            "weight": "bold",
-                                            "size": "lg",
-                                            "color": "#FF0000",
-                                            "wrap": True
-                                        },
-                                        {
-                                            "type": "text",
-                                            "text": "您輸入的號碼與第一次不符，請重新輸入您的 10 碼手機號碼",
-                                            "size": "sm",
-                                            "color": "#555555",
-                                            "wrap": True,
-                                            "margin": "md"
+                                    },
+                                    {
+                                        "type": "button",
+                                        "style": "secondary",
+                                        "action": {
+                                            "type": "postback",
+                                            "label": "重新輸入",
+                                            "data": "action=confirm_phone&result=no"
                                         }
-                                    ]
-                                }
+                                    }
+                                ]
                             }
-                        )
-                        if bot_customer_api:
-                            bot_customer_api.reply_message(event.reply_token, flex_message)
+                        }
+                    )
+                    if bot_customer_api:
+                        bot_customer_api.reply_message(event.reply_token, flex_message)
                     return
 
                 # 其他任何文字：回傳歡迎的 FlexSendMessage
@@ -358,7 +328,58 @@ if handler_customer:
         params = getattr(getattr(event, "postback", None), "params", None) or {}
 
         try:
-            if data == "action=select_date":
+            # 預約防呆流程第二步：處理手機號碼確認
+            if "action=confirm_phone" in data:
+                qs = parse_qs(data)
+                result = qs.get("result", [None])[0]
+                
+                user_id = getattr(getattr(event, "source", None), "user_id", None)
+                
+                db = SessionLocal()
+                try:
+                    user = db.query(User).filter(User.line_user_id == user_id).first()
+                    if not user:
+                        logging.error("User not found for phone confirmation")
+                        return
+                    
+                    if result == "yes":
+                        # 將 user.phone_temp 的值正式存入 user.phone
+                        user.phone = user.phone_temp
+                        user.phone_temp = None
+                        db.commit()
+                        
+                        # 回傳「線上預約」的 datetimepicker 按鈕
+                        datetime_action = DatetimePickerTemplateAction(
+                            label="選擇時間",
+                            data="action=select_date",
+                            mode="datetime",
+                        )
+                        buttons = ButtonsTemplate(
+                            text="感謝您！現在請選擇想預約的時間",
+                            actions=[datetime_action],
+                        )
+                        template_message = TemplateSendMessage(alt_text="請選擇您想預約的時間", template=buttons)
+                        if bot_customer_api:
+                            bot_customer_api.reply_message(event.reply_token, template_message)
+                    
+                    elif result == "no":
+                        # 將 user.phone_temp 清空設為 None 並 commit
+                        user.phone_temp = None
+                        db.commit()
+                        
+                        # 回覆文字
+                        if bot_customer_api:
+                            bot_customer_api.reply_message(
+                                event.reply_token,
+                                TextSendMessage(text="沒問題，請再次輸入您的 10 碼手機號碼：")
+                            )
+                
+                except Exception:
+                    logging.exception("Error handling phone confirmation")
+                finally:
+                    db.close()
+
+            elif data == "action=select_date":
                 selected_dt = params.get("datetime")
                 # 回覆選擇服務方案的 ButtonsTemplate
                 text = f"您選擇了 {selected_dt}，請選擇服務方案："
