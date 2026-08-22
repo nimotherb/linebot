@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 import re
 from urllib.parse import parse_qs
+import json
 
 # LINE SDK
 from linebot import LineBotApi, WebhookHandler
@@ -110,25 +111,6 @@ if handler_customer:
         text = getattr(event.message, "text", "").strip()
         reply_text = text
 
-        # 如果使用者輸入「預約」，回傳 ButtonsTemplate 並使用 DatetimePicker
-        if text == "預約":
-            try:
-                if bot_customer_api:
-                    datetime_action = DatetimePickerTemplateAction(
-                        label="選擇時間",
-                        data="action=select_date",
-                        mode="datetime",
-                    )
-                    buttons = ButtonsTemplate(
-                        text="請選擇您想預約的時間",
-                        actions=[datetime_action],
-                    )
-                    template_message = TemplateSendMessage(alt_text="請選擇您想預約的時間", template=buttons)
-                    bot_customer_api.reply_message(event.reply_token, template_message)
-            except Exception:
-                logging.exception("Error replying with datetime picker")
-            return
-
         if user_id:
             db = SessionLocal()
             try:
@@ -138,17 +120,137 @@ if handler_customer:
                     db.add(user)
                     db.commit()
 
-                # 如果客人的手機號碼還是空的，啟動引導建檔模式
-                if not user.phone:
-                    if re.match(r"^09\\d{8}$", text):
-                        user.phone = text
-                        db.commit()
-                        reply_text = f"太棒了！您的手機號碼 {text} 已綁定成功，隨時可以開始預約囉 🌿"
+                # 任務二：更新客戶文字處理邏輯
+                if text == "預約":
+                    # 檢查 user.phone 是否有值
+                    if not user.phone:
+                        # 若沒有，回傳提示卡片（FlexSendMessage）
+                        flex_message = FlexSendMessage(
+                            alt_text="請輸入手機號碼",
+                            contents={
+                                "type": "bubble",
+                                "body": {
+                                    "type": "box",
+                                    "layout": "vertical",
+                                    "contents": [
+                                        {
+                                            "type": "text",
+                                            "text": "為了保障您的預約權益",
+                                            "weight": "bold",
+                                            "size": "lg",
+                                            "color": "#1DB446",
+                                            "wrap": True
+                                        },
+                                        {
+                                            "type": "text",
+                                            "text": "請在下方對話框輸入您的 10 碼手機號碼",
+                                            "size": "sm",
+                                            "color": "#555555",
+                                            "wrap": True,
+                                            "margin": "md"
+                                        },
+                                        {
+                                            "type": "text",
+                                            "text": "例如：0912345678",
+                                            "size": "xs",
+                                            "color": "#aaaaaa",
+                                            "wrap": True,
+                                            "margin": "sm",
+                                            "style": "italic"
+                                        }
+                                    ]
+                                }
+                            }
+                        )
+                        if bot_customer_api:
+                            bot_customer_api.reply_message(event.reply_token, flex_message)
                     else:
-                        reply_text = "哈囉！歡迎來到伊果 SPA 🌿 很高興為您服務。\\n\\n為了能幫您保留專屬的預約紀錄，可以先偷偷告訴我您的手機號碼嗎��[...]"
-                else:
-                    # 建檔完成後的預設回覆（未來可改成呼叫選單）
-                    reply_text = f"收到您的訊息：{text}\\n（專屬預約選單正在努力建置中，敬請期待！）"
+                        # 若 user.phone 已有值，回傳含 DatetimePickerTemplateAction 的 FlexSendMessage
+                        datetime_action = DatetimePickerTemplateAction(
+                            label="選擇時間",
+                            data="action=select_date",
+                            mode="datetime",
+                        )
+                        buttons = ButtonsTemplate(
+                            text="請選擇您想預約的時間",
+                            actions=[datetime_action],
+                        )
+                        template_message = TemplateSendMessage(alt_text="請選擇您想預約的時間", template=buttons)
+                        if bot_customer_api:
+                            bot_customer_api.reply_message(event.reply_token, template_message)
+                    return
+
+                # 檢查客人輸入是否為 10 碼手機號碼且 user.phone 為空
+                if re.match(r"^09\d{8}$", text) and not user.phone:
+                    # 將 text 存入 user.phone 並 commit
+                    user.phone = text
+                    db.commit()
+                    
+                    # 直接回傳 DatetimePickerTemplateAction 按鈕
+                    datetime_action = DatetimePickerTemplateAction(
+                        label="選擇時間",
+                        data="action=select_date",
+                        mode="datetime",
+                    )
+                    buttons = ButtonsTemplate(
+                        text="感謝您！現在請選擇想預約的時間",
+                        actions=[datetime_action],
+                    )
+                    template_message = TemplateSendMessage(alt_text="請選擇您想預約的時間", template=buttons)
+                    if bot_customer_api:
+                        bot_customer_api.reply_message(event.reply_token, template_message)
+                    return
+
+                # 其他任何文字：回傳歡迎的 FlexSendMessage
+                flex_message = FlexSendMessage(
+                    alt_text="歡迎預約",
+                    contents={
+                        "type": "bubble",
+                        "body": {
+                            "type": "box",
+                            "layout": "vertical",
+                            "contents": [
+                                {
+                                    "type": "text",
+                                    "text": "歡迎來到伊果 SPA",
+                                    "weight": "bold",
+                                    "size": "lg",
+                                    "color": "#1DB446",
+                                    "wrap": True
+                                },
+                                {
+                                    "type": "text",
+                                    "text": "👋 很高興為您服務",
+                                    "size": "sm",
+                                    "color": "#555555",
+                                    "wrap": True,
+                                    "margin": "md"
+                                }
+                            ]
+                        },
+                        "footer": {
+                            "type": "box",
+                            "layout": "vertical",
+                            "spacing": "sm",
+                            "contents": [
+                                {
+                                    "type": "button",
+                                    "style": "link",
+                                    "height": "sm",
+                                    "action": {
+                                        "type": "message",
+                                        "label": "線上預約",
+                                        "text": "預約"
+                                    }
+                                }
+                            ],
+                            "flex": 0
+                        }
+                    }
+                )
+                if bot_customer_api:
+                    bot_customer_api.reply_message(event.reply_token, flex_message)
+                return
 
             except Exception:
                 logging.exception("Error in customer message handling")
@@ -158,12 +260,6 @@ if handler_customer:
                     pass
             finally:
                 db.close()
-
-        try:
-            if bot_customer_api and text:
-                bot_customer_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
-        except Exception:
-            logging.exception("Error replying to customer message")
 
     @handler_customer.add(PostbackEvent)
     def handle_customer_postback(event):
@@ -293,6 +389,300 @@ if handler_customer:
                 finally:
                     db.close()
 
+            # 任務三：實作預約完成的動態收據
+            elif "action=confirm_booking" in data:
+                qs = parse_qs(data)
+                staff_id = qs.get("staff_id", [None])[0]
+                plan = qs.get("plan", [None])[0]
+                selected_dt = qs.get("datetime", [None])[0]
+
+                user_id = getattr(getattr(event, "source", None), "user_id", None)
+
+                db = SessionLocal()
+                try:
+                    user = db.query(User).filter(User.line_user_id == user_id).first()
+                    if not user:
+                        logging.error("User not found for booking confirmation")
+                        return
+
+                    # 判斷 staff_id 是否為 "none"
+                    staff_obj = None
+                    staff_name = "未指定"
+                    if staff_id != "none":
+                        staff_obj = db.query(Staff).filter(Staff.id == int(staff_id)).first()
+                        if staff_obj:
+                            staff_name = staff_obj.name
+
+                    # 根據 plan 判斷定價
+                    plan_int = int(plan)
+                    if plan_int == 90:
+                        price = 2500
+                    elif plan_int == 120:
+                        price = 3000
+                    else:
+                        price = 0
+
+                    discount = 200
+                    total = price - discount
+
+                    # 寫入 Appointments 資料庫
+                    appointment = Appointment(
+                        user_id=user.id,
+                        staff_id=int(staff_id) if staff_id != "none" else None,
+                        duration=plan_int,
+                        start_time=datetime.fromisoformat(selected_dt),
+                        end_time=datetime.fromisoformat(selected_dt),
+                        status="confirmed"
+                    )
+                    db.add(appointment)
+                    db.commit()
+                    db.refresh(appointment)
+
+                    # 取得訂單 id 並格式化 PAYMENT ID
+                    order_id = appointment.id
+                    payment_id = f"#{datetime.utcnow().strftime('%y%m%d')}{order_id:03d}"
+
+                    # 取得客戶 ID（VIP-{user.id:04d}）
+                    customer_vip_id = f"VIP-{user.id:04d}"
+
+                    # 透過 bot_customer_api.get_profile 取得 LINE display_name
+                    customer_name = user_id
+                    try:
+                        profile = bot_customer_api.get_profile(user_id)
+                        customer_name = profile.display_name
+                    except Exception as e:
+                        logging.warning(f"Unable to get customer profile: {e}")
+
+                    # 格式化預約時間
+                    try:
+                        appointment_time = datetime.fromisoformat(selected_dt)
+                        appointment_time_str = appointment_time.strftime("%Y年%m月%d日 %H:%M")
+                    except:
+                        appointment_time_str = selected_dt
+
+                    # 動態產生預約明細 FlexSendMessage
+                    flex_contents = {
+                        "type": "bubble",
+                        "body": {
+                            "type": "box",
+                            "layout": "vertical",
+                            "contents": [
+                                {
+                                    "type": "text",
+                                    "text": "預約確認",
+                                    "weight": "bold",
+                                    "color": "#1DB446",
+                                    "size": "sm"
+                                },
+                                {
+                                    "type": "text",
+                                    "text": staff_name,
+                                    "weight": "bold",
+                                    "size": "xxl",
+                                    "margin": "md"
+                                },
+                                {
+                                    "type": "text",
+                                    "text": "師傅簡介(身高體重)",
+                                    "size": "xs",
+                                    "color": "#aaaaaa",
+                                    "wrap": True
+                                },
+                                {
+                                    "type": "separator",
+                                    "margin": "xxl"
+                                },
+                                {
+                                    "type": "box",
+                                    "layout": "vertical",
+                                    "margin": "xxl",
+                                    "spacing": "sm",
+                                    "contents": [
+                                        {
+                                            "type": "box",
+                                            "layout": "horizontal",
+                                            "contents": [
+                                                {
+                                                    "type": "text",
+                                                    "text": "客戶 ID",
+                                                    "size": "sm",
+                                                    "color": "#555555"
+                                                },
+                                                {
+                                                    "type": "text",
+                                                    "text": customer_vip_id,
+                                                    "size": "sm",
+                                                    "color": "#111111",
+                                                    "align": "end"
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "type": "box",
+                                            "layout": "horizontal",
+                                            "contents": [
+                                                {
+                                                    "type": "text",
+                                                    "text": "客戶",
+                                                    "size": "sm",
+                                                    "color": "#555555"
+                                                },
+                                                {
+                                                    "type": "text",
+                                                    "text": customer_name,
+                                                    "size": "sm",
+                                                    "color": "#111111",
+                                                    "align": "end"
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "type": "box",
+                                            "layout": "horizontal",
+                                            "contents": [
+                                                {
+                                                    "type": "text",
+                                                    "text": "時段",
+                                                    "size": "sm",
+                                                    "color": "#555555",
+                                                    "flex": 0
+                                                },
+                                                {
+                                                    "type": "text",
+                                                    "text": appointment_time_str,
+                                                    "size": "sm",
+                                                    "color": "#111111",
+                                                    "align": "end"
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "type": "box",
+                                            "layout": "horizontal",
+                                            "contents": [
+                                                {
+                                                    "type": "text",
+                                                    "text": "選擇方案",
+                                                    "size": "sm",
+                                                    "color": "#555555",
+                                                    "flex": 0
+                                                },
+                                                {
+                                                    "type": "text",
+                                                    "text": f"{plan} 分鐘",
+                                                    "size": "sm",
+                                                    "color": "#111111",
+                                                    "align": "end"
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "type": "separator",
+                                            "margin": "xxl"
+                                        },
+                                        {
+                                            "type": "box",
+                                            "layout": "horizontal",
+                                            "margin": "xxl",
+                                            "contents": [
+                                                {
+                                                    "type": "text",
+                                                    "text": "方案定價",
+                                                    "size": "sm",
+                                                    "color": "#555555"
+                                                },
+                                                {
+                                                    "type": "text",
+                                                    "text": f"NT$ {price:,}",
+                                                    "size": "sm",
+                                                    "color": "#111111",
+                                                    "align": "end"
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "type": "box",
+                                            "layout": "horizontal",
+                                            "contents": [
+                                                {
+                                                    "type": "text",
+                                                    "text": "優惠",
+                                                    "size": "sm",
+                                                    "color": "#555555"
+                                                },
+                                                {
+                                                    "type": "text",
+                                                    "text": f"-NT$ {discount:,}",
+                                                    "size": "sm",
+                                                    "color": "#111111",
+                                                    "align": "end"
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "type": "box",
+                                            "layout": "horizontal",
+                                            "contents": [
+                                                {
+                                                    "type": "text",
+                                                    "text": "總計",
+                                                    "size": "sm",
+                                                    "color": "#555555"
+                                                },
+                                                {
+                                                    "type": "text",
+                                                    "text": f"NT$ {total:,}",
+                                                    "size": "sm",
+                                                    "color": "#111111",
+                                                    "align": "end"
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                },
+                                {
+                                    "type": "separator",
+                                    "margin": "xxl"
+                                },
+                                {
+                                    "type": "box",
+                                    "layout": "horizontal",
+                                    "margin": "md",
+                                    "contents": [
+                                        {
+                                            "type": "text",
+                                            "text": "PAYMENT ID",
+                                            "size": "xs",
+                                            "color": "#aaaaaa",
+                                            "flex": 0
+                                        },
+                                        {
+                                            "type": "text",
+                                            "text": payment_id,
+                                            "color": "#aaaaaa",
+                                            "size": "xs",
+                                            "align": "end"
+                                        }
+                                    ]
+                                }
+                            ]
+                        },
+                        "styles": {
+                            "footer": {
+                                "separator": True
+                            }
+                        }
+                    }
+
+                    flex_message = FlexSendMessage(alt_text="預約確認", contents=flex_contents)
+                    if bot_customer_api:
+                        bot_customer_api.reply_message(event.reply_token, flex_message)
+
+                except Exception:
+                    logging.exception("Error handling booking confirmation")
+                finally:
+                    db.close()
+
         except Exception:
             logging.exception("Error handling customer postback")
 
@@ -324,31 +714,34 @@ if handler_staff:
                         db.commit()
                         reply_text = f"設定完成！{text} 師傅您好，您現在可以輸入「上線」來開啟接單模式囉！"
                 else:
-                    # 已經建檔完成的師傅，進入上下線判斷模式
-                    if text == "上線":
-                        staff.is_online = True
-                        staff.online_start_time = datetime.utcnow()
-                        db.commit()
-                        reply_text = f"【狀態更新】{staff.name} 師傅，已為您切換為上線模式，隨時準備接單！"
-                    elif text == "下線":
-                        if staff.is_online:
-                            if staff.online_start_time:
-                                diff = datetime.utcnow() - staff.online_start_time
-                                if diff.total_seconds() < 7200:
-                                    reply_text = "目前上線未滿 2 小時，為確保客人能完整預約，請稍後再切換狀態喔！"
-                                else:
-                                    staff.is_online = False
-                                    staff.online_start_time = None
-                                    db.commit()
-                                    reply_text = f"辛苦了 {staff.name} 師傅！已為您切換為下線模式，好好休息。"
-                            else:
-                                staff.is_online = False
-                                db.commit()
-                                reply_text = f"辛苦了 {staff.name} 師傅！已為您切換為下線模式。"
-                        else:
-                            reply_text = "您目前已經是下線狀態囉！"
-                    else:
-                        reply_text = f"{staff.name} 師傅您好，目前的指令有：「上線」與「下線」。\\n（未來的派單按鈕正在趕工中喔！）"
+                    # 任務一：將上下線邏輯註解掉，僅保留建立檔案與普通 Echo
+                    # if text == "上線":
+                    #     staff.is_online = True
+                    #     staff.online_start_time = datetime.utcnow()
+                    #     db.commit()
+                    #     reply_text = f"【狀態更新】{staff.name} 師傅，已為您切換為上線模式，隨時準備接單！"
+                    # elif text == "下線":
+                    #     if staff.is_online:
+                    #         if staff.online_start_time:
+                    #             diff = datetime.utcnow() - staff.online_start_time
+                    #             if diff.total_seconds() < 7200:
+                    #                 reply_text = "目前上線未滿 2 小時，為確保客人能完整預約，請稍後再切換狀態喔！"
+                    #             else:
+                    #                 staff.is_online = False
+                    #                 staff.online_start_time = None
+                    #                 db.commit()
+                    #                 reply_text = f"辛苦了 {staff.name} 師傅！已為您切換為下線模式，好好休息。"
+                    #         else:
+                    #             staff.is_online = False
+                    #             db.commit()
+                    #             reply_text = f"辛苦了 {staff.name} 師傅！已為您切換為下線模式。"
+                    #     else:
+                    #         reply_text = "您目前已經是下線狀態囉！"
+                    # else:
+                    #     reply_text = f"{staff.name} 師傅您好，目前的指令有：「上線」與「下線」。\\n（未來的派單按鈕正在趕工中喔！）"
+                    
+                    # 普通 Echo
+                    reply_text = f"{staff.name} 師傅您好，您說：{text}\\n（上下線功能暫時關閉中...）"
 
             except Exception:
                 logging.exception("Error in staff message handling")
