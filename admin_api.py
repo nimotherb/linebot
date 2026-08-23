@@ -15,8 +15,12 @@ import logging
 import os
 import re
 import secrets
+import threading
 from datetime import datetime, timedelta
 from typing import Any, Callable, Literal
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import Depends, Header, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +28,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from pwdlib import PasswordHash
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from scheduling import (
@@ -43,6 +48,10 @@ DUMMY_PIN_HASH = password_hash.hash("000000-not-a-real-pin")
 SESSION_HOURS = 8
 MAX_LOGIN_FAILURES = 5
 LOCK_MINUTES = 15
+PUBLIC_BOOKING_WINDOW_MINUTES = 10
+PUBLIC_BOOKING_MAX_ATTEMPTS = 8
+_PUBLIC_BOOKING_ATTEMPTS: dict[str, list[datetime]] = {}
+_PUBLIC_BOOKING_LOCK = threading.Lock()
 
 STATUS_TO_ZH = {
     "pending": "待確認",
@@ -164,6 +173,19 @@ class CustomerPatchIn(BaseModel):
     phones: list[str] = Field(min_length=1, max_length=10)
 
 
+class PublicBookingCreateIn(BaseModel):
+    customer_name: str = Field(min_length=1, max_length=120)
+    phone: str = Field(min_length=8, max_length=30)
+    service_plan_id: int
+    start_time: datetime
+    staff_id: int | None = None
+    promotion_id: int | None = None
+    notes: str | None = Field(default=None, max_length=1000)
+    id_token: str | None = Field(default=None, max_length=4096)
+    idempotency_key: str = Field(min_length=16, max_length=80)
+    website: str = Field(default="", max_length=0)
+
+
 class StaffAppointmentCreateIn(AppointmentCreateIn):
     staff_id: int | None = None
 
@@ -234,6 +256,51 @@ def _model_dump_unset(value: BaseModel) -> dict[str, Any]:
     if hasattr(value, "model_dump"):
         return value.model_dump(exclude_unset=True)
     return value.dict(exclude_unset=True)
+
+
+def _verify_line_id_token(id_token: str) -> dict[str, str]:
+    """Verify LIFF identity on LINE's server; never trust client-decoded profile data."""
+    channel_id = os.getenv("LINE_LOGIN_CHANNEL_ID", "").strip()
+    if not channel_id:
+        raise HTTPException(status_code=503, detail="LINE LIFF 身分驗證尚未完成設定")
+    request = UrlRequest(
+        "https://api.line.me/oauth2/v2.1/verify",
+        data=urlencode({"id_token": id_token, "client_id": channel_id}).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        logger.warning("LINE ID token was rejected status=%s", exc.code)
+        raise HTTPException(status_code=401, detail="LINE 登入已失效，請重新開啟預約頁") from exc
+    except (URLError, TimeoutError, ValueError) as exc:
+        logger.exception("Unable to verify LINE ID token")
+        raise HTTPException(status_code=503, detail="暫時無法驗證 LINE 身分，請稍後再試") from exc
+    if payload.get("aud") != channel_id or not payload.get("sub"):
+        raise HTTPException(status_code=401, detail="LINE 身分驗證資料不正確")
+    return {"sub": str(payload["sub"]), "name": str(payload.get("name") or "").strip()}
+
+
+def _public_request_key(request: Request) -> str:
+    forwarded = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()[:80]
+    return (request.client.host if request.client else "unknown")[:80]
+
+
+def _enforce_public_booking_rate(request: Request, phone: str) -> None:
+    phone_key = re.sub(r"\D", "", phone)[-10:]
+    key = f"{_public_request_key(request)}:{phone_key}"
+    now = now_taipei_naive()
+    cutoff = now - timedelta(minutes=PUBLIC_BOOKING_WINDOW_MINUTES)
+    with _PUBLIC_BOOKING_LOCK:
+        recent = [item for item in _PUBLIC_BOOKING_ATTEMPTS.get(key, []) if item > cutoff]
+        if len(recent) >= PUBLIC_BOOKING_MAX_ATTEMPTS:
+            raise HTTPException(status_code=429, detail="預約送出次數過多，請稍後再試或聯絡真人客服")
+        recent.append(now)
+        _PUBLIC_BOOKING_ATTEMPTS[key] = recent
 
 
 def register_admin_api(
@@ -442,6 +509,14 @@ def register_admin_api(
         note = Column(Text, nullable=True)
         created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
 
+    class PublicBookingRequest(Base):
+        __tablename__ = "public_booking_requests"
+        id = Column(Integer, primary_key=True)
+        idempotency_key = Column(String(80), unique=True, nullable=False, index=True)
+        appointment_id = Column(Integer, ForeignKey("appointments.id"), unique=True, nullable=True, index=True)
+        source = Column(String(30), nullable=False, default="web")
+        created_at = Column(DateTime, nullable=False, default=now_taipei_naive, index=True)
+
     app.state.admin_models = {
         "AdminUser": AdminUser,
         "AdminSession": AdminSession,
@@ -460,6 +535,7 @@ def register_admin_api(
         "ReturnRuleSet": ReturnRuleSet,
         "ReturnRule": ReturnRule,
         "StaffReturn": StaffReturn,
+        "PublicBookingRequest": PublicBookingRequest,
     }
 
     def normalize_phone(value: str | None) -> str:
@@ -510,6 +586,85 @@ def register_admin_api(
                 db.add(CustomerPhone(user_id=customer.id, phone=phone, is_primary=index == 0))
         customer.phone = normalized_values[0]
         return normalized_values
+
+    def attach_customer_phone(db: Session, customer, phone: str) -> str:
+        normalized = normalize_phone(phone)
+        owner = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
+        if owner and owner.user_id != customer.id:
+            raise HTTPException(status_code=409, detail="此手機號碼已綁定其他客戶，請聯絡真人客服協助合併")
+        if not owner:
+            db.add(CustomerPhone(user_id=customer.id, phone=normalized, is_primary=not bool(customer.phone)))
+        if not customer.phone:
+            customer.phone = normalized
+        return normalized
+
+    def resolve_public_customer(db: Session, payload: PublicBookingCreateIn):
+        phone_customer, contact_phone = customer_for_phone(db, payload.phone)
+        line_identity = _verify_line_id_token(payload.id_token) if payload.id_token else None
+        customer = None
+        if line_identity:
+            customer = db.query(User).filter(User.line_user_id == line_identity["sub"]).first()
+            if customer and phone_customer and customer.id != phone_customer.id:
+                raise HTTPException(status_code=409, detail="LINE 帳號與手機屬於不同客戶，請聯絡真人客服協助合併")
+            if not customer and phone_customer:
+                if not str(phone_customer.line_user_id).startswith("manual:"):
+                    raise HTTPException(status_code=409, detail="此手機已綁定其他 LINE，請聯絡真人客服")
+                phone_customer.line_user_id = line_identity["sub"]
+                customer = phone_customer
+            if not customer:
+                customer = User(
+                    line_user_id=line_identity["sub"],
+                    phone=contact_phone,
+                    display_name=line_identity.get("name") or payload.customer_name.strip(),
+                )
+                db.add(customer)
+                db.flush()
+            attach_customer_phone(db, customer, contact_phone)
+            if not getattr(customer, "display_name", None):
+                customer.display_name = line_identity.get("name") or payload.customer_name.strip()
+            return customer, contact_phone, "liff"
+
+        customer = phone_customer
+        if not customer:
+            customer = User(
+                line_user_id=f"manual:{secrets.token_hex(16)}",
+                phone=contact_phone,
+                display_name=payload.customer_name.strip(),
+            )
+            db.add(customer)
+            db.flush()
+        attach_customer_phone(db, customer, contact_phone)
+        if not getattr(customer, "display_name", None):
+            customer.display_name = payload.customer_name.strip()
+        return customer, contact_phone, "web"
+
+    def available_staff(db: Session, start_dt: datetime, end_dt: datetime) -> list:
+        result = []
+        active_staff = db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.name).all()
+        for staff_obj in active_staff:
+            on_shift = db.query(Shift).filter(
+                Shift.staff_id == staff_obj.id,
+                Shift.status == "active",
+                Shift.start_time <= start_dt,
+                Shift.end_time >= end_dt,
+            ).first()
+            if on_shift and not staff_appointment_conflict(db, staff_obj.id, start_dt, end_dt):
+                result.append(staff_obj)
+        return result
+
+    def room_capacity_available(db: Session, start_dt: datetime, end_dt: datetime) -> bool:
+        room_count = db.query(Room).filter(Room.active.is_(True)).count()
+        if room_count < 1:
+            return False
+        overlapping = db.query(Appointment).join(
+            AppointmentDetail, AppointmentDetail.appointment_id == Appointment.id,
+        ).filter(
+            Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES),
+            AppointmentDetail.location_type.in_(["onsite", "pending"]),
+            Appointment.start_time < end_dt,
+            Appointment.end_time > start_dt,
+        ).count()
+        return overlapping < room_count
 
     def issue_staff_magic_link(staff_obj, db: Session) -> str:
         raw_token = secrets.token_urlsafe(40)
@@ -957,6 +1112,48 @@ def register_admin_api(
             "return_rule_sets": [],
         }
 
+    @app.get("/api/public/booking/options")
+    def public_booking_options(db: Session = Depends(get_db)):
+        now = now_taipei_naive()
+        services = db.query(ServicePlan).filter(ServicePlan.active.is_(True)).order_by(ServicePlan.id).all()
+        promotions = db.query(Promotion).filter(
+            Promotion.active.is_(True),
+            Promotion.calculation_type.in_(["fixed_discount", "percent_discount"]),
+        ).order_by(Promotion.id).all()
+        promotions = [item for item in promotions if (not item.starts_at or item.starts_at <= now) and (not item.ends_at or item.ends_at >= now)]
+        liff_id = os.getenv("LINE_LIFF_ID", "").strip()
+        return {
+            "services": [service_dict(item) for item in services],
+            "promotions": [promotion_dict(item) for item in promotions],
+            "minimum_lead_minutes": 90,
+            "support_url": os.getenv("CUSTOMER_SERVICE_URL", "https://lin.ee/vOq3Xvt"),
+            "liff_id": liff_id or None,
+            "line_login_enabled": bool(liff_id and os.getenv("LINE_LOGIN_CHANNEL_ID", "").strip()),
+        }
+
+    @app.get("/api/public/booking/availability")
+    def public_booking_availability(service_plan_id: int, start_time: datetime, db: Session = Depends(get_db)):
+        plan = db.query(ServicePlan).filter(ServicePlan.id == service_plan_id, ServicePlan.active.is_(True)).first()
+        if not plan:
+            raise HTTPException(status_code=404, detail="找不到啟用中的服務方案")
+        start_dt = parse_local_datetime(start_time)
+        try:
+            validate_booking_start(start_dt)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        end_dt = appointment_end(start_dt, plan.duration_minutes)
+        staff_items = available_staff(db, start_dt, end_dt)
+        if not staff_items:
+            raise HTTPException(status_code=409, detail="這個時段目前沒有可預約師傅，請改選其他時間")
+        if plan.location_type == "onsite" and not room_capacity_available(db, start_dt, end_dt):
+            raise HTTPException(status_code=409, detail="這個時段兩間房都已使用，請改選其他時間")
+        return {
+            "start_time": _iso(start_dt),
+            "end_time": _iso(end_dt),
+            "can_choose_staff": plan.can_choose_staff,
+            "staff": [{"id": item.id, "name": item.name, "category": item.category} for item in staff_items],
+        }
+
     @app.post("/api/staff/auth/login")
     def staff_login(payload: StaffLoginIn, db: Session = Depends(get_db)):
         if not payload.staff_id or not payload.phone:
@@ -1216,6 +1413,104 @@ def register_admin_api(
             except Exception:
                 logger.exception("Unable to push appointment notification appointment_id=%s", appointment.id)
         return appointment_dict(db, appointment)
+
+    @app.post("/api/public/booking/appointments", status_code=201)
+    def create_public_booking(payload: PublicBookingCreateIn, request: Request, db: Session = Depends(get_db)):
+        _enforce_public_booking_rate(request, payload.phone)
+        claim = PublicBookingRequest(idempotency_key=payload.idempotency_key, source="liff" if payload.id_token else "web")
+        db.add(claim)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            existing = db.query(PublicBookingRequest).filter(PublicBookingRequest.idempotency_key == payload.idempotency_key).first()
+            if existing and existing.appointment_id:
+                appointment = db.query(Appointment).filter(Appointment.id == existing.appointment_id).first()
+                if appointment:
+                    return {"duplicate": True, "appointment": appointment_dict(db, appointment)}
+            raise HTTPException(status_code=409, detail="預約正在處理中，請勿重複送出")
+
+        plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id, ServicePlan.active.is_(True)).first()
+        if not plan:
+            raise HTTPException(status_code=404, detail="找不到啟用中的服務方案")
+        promotion = None
+        if payload.promotion_id:
+            promotion = db.query(Promotion).filter(Promotion.id == payload.promotion_id, Promotion.active.is_(True)).first()
+            if not promotion or promotion_discount(promotion, plan.price) <= 0:
+                raise HTTPException(status_code=404, detail="這個優惠目前無法使用")
+
+        start_dt = parse_local_datetime(payload.start_time)
+        try:
+            validate_booking_start(start_dt)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        end_dt = appointment_end(start_dt, plan.duration_minutes)
+        staff_items = available_staff(db, start_dt, end_dt)
+        if not staff_items:
+            raise HTTPException(status_code=409, detail="這個時段目前沒有可預約師傅，請改選其他時間")
+        available_ids = {item.id for item in staff_items}
+        if payload.staff_id:
+            if not plan.can_choose_staff:
+                raise HTTPException(status_code=422, detail="這個方案由店長安排師傅")
+            if payload.staff_id not in available_ids:
+                raise HTTPException(status_code=409, detail="這位師傅在該時段已無法預約")
+        if plan.location_type == "onsite" and not room_capacity_available(db, start_dt, end_dt):
+            raise HTTPException(status_code=409, detail="這個時段兩間房都已使用，請改選其他時間")
+
+        customer, contact_phone, source = resolve_public_customer(db, payload)
+        customer = db.query(User).filter(User.id == customer.id).with_for_update().first()
+        duplicate = db.query(Appointment).filter(
+            Appointment.user_id == customer.id,
+            Appointment.start_time == start_dt,
+            Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES),
+        ).first()
+        if duplicate:
+            claim.appointment_id = duplicate.id
+            db.commit()
+            return {"duplicate": True, "appointment": appointment_dict(db, duplicate)}
+
+        appointment = Appointment(
+            user_id=customer.id,
+            staff_id=payload.staff_id,
+            duration=plan.duration_minutes,
+            plan_name=f"{plan.code}-{plan.name}",
+            start_time=start_dt,
+            end_time=end_dt,
+            status="confirmed",
+        )
+        db.add(appointment)
+        db.flush()
+        discount = promotion_discount(promotion, plan.price)
+        source_label = "LINE LIFF 備用預約" if source == "liff" else "網頁備用預約"
+        notes = f"來源：{source_label}"
+        if payload.notes and payload.notes.strip():
+            notes += f"\n客戶備註：{payload.notes.strip()}"
+        db.add(AppointmentDetail(
+            appointment_id=appointment.id,
+            service_plan_id=plan.id,
+            promotion_id=promotion.id if promotion else None,
+            contact_phone=contact_phone,
+            base_price=plan.price,
+            discount_amount=discount,
+            total_amount=max(0, plan.price - discount),
+            location_type="external" if plan.location_type == "external" else "pending",
+            notes=notes,
+        ))
+        claim.appointment_id = appointment.id
+        audit(db, None, "create_public_booking", "appointment", appointment.id, reason=source_label, after={
+            "start": start_dt,
+            "end": end_dt,
+            "staff_id": payload.staff_id,
+            "promotion_id": payload.promotion_id,
+        })
+        db.commit()
+        db.refresh(appointment)
+        if appointment_notifier:
+            try:
+                appointment_notifier(appointment, db, origin=source_label)
+            except Exception:
+                logger.exception("Unable to push public booking notification appointment_id=%s", appointment.id)
+        return {"duplicate": False, "appointment": appointment_dict(db, appointment)}
 
     @app.post("/api/staff/appointments", status_code=201)
     def create_staff_appointment(payload: StaffAppointmentCreateIn, db: Session = Depends(get_db), staff_obj=Depends(current_staff)):

@@ -44,6 +44,7 @@ Base = declarative_base()
 LINE_ADMIN_PENDING: dict[str, datetime] = {}
 VALID_STAFF_ROLES = {"攻擊手", "守備方", "無特定", "攻守兼備"}
 SUPPORT_URL = os.getenv("CUSTOMER_SERVICE_URL", "https://lin.ee/vOq3Xvt")
+BOOKING_WEB_URL = os.getenv("BOOKING_WEB_URL", "https://equalspa-ops-preview.c83500699.chatgpt.site/booking")
 RENDER_LOGS_URL = os.getenv("RENDER_LOGS_URL", "https://dashboard.render.com/web/srv-da059bgjo6nc73doq380/logs")
 _DISPATCH_ALERTED_AT: dict[str, datetime] = {}
 _HEARTBEAT_STOP = threading.Event()
@@ -251,7 +252,7 @@ def reply_with_fallback(bot_api, reply_token: str, message, *, db: Session | Non
         fallback = (
             f"系統暫時無法顯示管理選單。請稍後再試。\n追蹤碼：{trace_id}\n系統紀錄：{RENDER_LOGS_URL}"
             if admin else
-            f"系統暫時無法顯示選單，請稍後再試，或聯絡真人客服：{SUPPORT_URL}\n追蹤碼：{trace_id}"
+            f"系統暫時無法顯示選單。您可改用備用網頁預約：{BOOKING_WEB_URL}\n真人客服：{SUPPORT_URL}\n追蹤碼：{trace_id}"
         )
         try:
             bot_api.reply_message(reply_token, TextSendMessage(text=fallback))
@@ -650,6 +651,16 @@ if handler_customer:
                     db.add(user)
                     db.commit()
 
+                if text in {"網頁預約", "備用預約", "預約網頁"}:
+                    reply_with_fallback(
+                        bot_customer_api,
+                        event.reply_token,
+                        TextSendMessage(text=f"請由備用預約頁完成預約：\n{BOOKING_WEB_URL}\n\n若仍無法操作，請聯絡真人客服：{SUPPORT_URL}"),
+                        db=db,
+                        context="備用網頁預約連結",
+                    )
+                    return
+
                 if text == "預約":
                     if not user.phone:
                         bot_customer_api.reply_message(event.reply_token, TextSendMessage(text="為了保障您的預約權益，請在下方輸入您的 10 碼手機號碼（例如：0912345678）"))
@@ -677,13 +688,17 @@ if handler_customer:
                         },
                         "footer": {
                             "type": "box", "layout": "vertical",
-                            "contents": [{"type": "button", "style": "primary", "action": {"type": "message", "label": "線上預約", "text": "預約"}}]
+                            "contents": [
+                                {"type": "button", "style": "primary", "action": {"type": "message", "label": "LINE 內預約", "text": "預約"}},
+                                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "uri", "label": "備用網頁預約", "uri": BOOKING_WEB_URL}},
+                            ]
                         }
                     }
                 )
-                bot_customer_api.reply_message(event.reply_token, flex_message)
+                reply_with_fallback(bot_customer_api, event.reply_token, flex_message, db=db, context="客戶歡迎選單")
             except Exception:
-                pass
+                logging.exception("處理客戶文字訊息失敗 user_id=%s", user_id)
+                reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text=f"系統暫時忙碌，請改用備用網頁預約：{BOOKING_WEB_URL}"), db=db, context="客戶文字訊息")
             finally:
                 db.close()
 
