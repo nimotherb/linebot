@@ -23,7 +23,9 @@ Copy-Item .env.example .env
 
 沿用既有的 `DATABASE_URL` 與四個 LINE 變數，再依照 [.env.example](./.env.example) 增加：
 
-- `ADMIN_INITIAL_PIN`、`MANAGER_INITIAL_PIN`：只在第一次建立帳號時需要。登入確認後可從 Render 移除。
+- `ADMIN_INITIAL_PIN`、`MANAGER_INITIAL_PIN`：只在第一次建立帳號時需要；未設定時預設建立 `admin / 0206` 與 `jerry / 1355`。登入確認後可在 Render 明確設定並妥善保存。
+- `CUSTOMER_SERIAL_START`：客戶顯示流水的起始值，預設為 `4800`。
+- `THERAPIST_IMAGE_BASE_URL`：47 位師傅公開照片的基底網址；兩隻 LINE Bot 共用 MySQL 師傅資料與此圖片欄位。
 - `ADMIN_ALLOWED_ORIGINS`：管理後台網址與本機網址，逗號分隔。
 - `ADMIN_DASHBOARD_URL`：LINE Bot 傳送的後台／排班網址。
 - `STAFF_HEALTH_ENCRYPTION_KEY`：Fernet 金鑰。請另外安全備份，遺失後無法解密私密健康資料。
@@ -52,6 +54,9 @@ Fernet 金鑰可在本機產生：
 - `師傅在線` 已停用，是否能安排服務由正式班表與預約決定。
 - 健康資料只允許 Admin 讀寫，並在 MySQL 中以加密內容保存。
 - 刪除師傅採「暫時退役」，不會破壞歷史訂單。
+- 47 位公開師傅資料會依姓名補齊到 MySQL；既有 LINE、電話與退役狀態不會被覆蓋，Flex 選單顯示官網公開照片。
+- 師傅在派單 Bot 輸入「預約」可查看未來 7 天自己的預約 Flex 卡。
+- 後台刪除帳號採停用並立即撤銷工作階段；店長只能新增／停用客服，Admin 可管理所有後台角色。
 - LINE 管理員必須先輸入 `root`，再輸入對應後台 PIN 才會綁定；管理選單可登出並解除綁定。
 - LINE 客戶先看簡易確認 Flex，按下確認才寫入訂單；正式建立後再回傳完整訂單 Flex。
 - 備用網頁預約同樣檢查正式班表、師傅撞期、兩間房容量、90 分鐘與重複送出；啟用 LIFF 後由後端驗證 LINE ID Token。

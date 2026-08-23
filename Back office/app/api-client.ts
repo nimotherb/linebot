@@ -7,6 +7,7 @@ export type AdminIdentity = {
   username: string;
   display_name: string;
   role: 'admin' | 'manager' | 'clerk';
+  is_active?: boolean;
 };
 
 export type StaffIdentity = { id: number; name: string; role: 'staff' };
@@ -57,6 +58,9 @@ type RawStaff = {
   employment_status: 'active' | 'retired';
   line_connected: boolean;
   return_rule_set_id?: number;
+  photo_url?: string;
+  height?: string;
+  weight?: string;
 };
 
 type RawShift = {
@@ -80,10 +84,13 @@ export type PromotionView = {
 };
 
 export type AdminUserView = {
+  id: number;
   username: string;
   displayName: string;
   role: string;
+  roleKey: AdminIdentity['role'];
   status: string;
+  isActive: boolean;
   lastLogin: string;
 };
 
@@ -194,6 +201,9 @@ export const mapStaff = (item: RawStaff): StaffMember => ({
   lineConnected: item.line_connected,
   privateProfile: true,
   returnRuleSetId: item.return_rule_set_id,
+  photoUrl: item.photo_url,
+  height: item.height,
+  weight: item.weight,
 });
 
 export const mapShift = (item: RawShift): Shift => {
@@ -245,10 +255,13 @@ export const mapCustomer = (item: NonNullable<BootstrapData['customers']>[number
 });
 
 export const mapAdminUser = (item: AdminIdentity): AdminUserView => ({
+  id: item.id,
   username: item.username,
   displayName: item.display_name,
-  role: item.role === 'admin' ? '系統管理員' : item.role === 'manager' ? '店長' : '櫃台',
-  status: '啟用',
+  role: item.role === 'admin' ? '系統管理員' : item.role === 'manager' ? '店長' : '客服',
+  roleKey: item.role,
+  status: item.is_active === false ? '已停用' : '啟用',
+  isActive: item.is_active !== false,
   lastLogin: '—',
 });
 
@@ -398,6 +411,10 @@ export class SpaApi {
 
   createUser(payload: Record<string, unknown>) {
     return this.request<AdminIdentity>('/api/admin/users', { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  deactivateUser(id: number) {
+    return this.request<AdminIdentity>(`/api/admin/users/${id}`, { method: 'DELETE' });
   }
 
   publicSchedule(token: string) {

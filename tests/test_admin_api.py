@@ -11,8 +11,10 @@ _database_file.close()
 os.environ["DATABASE_URL"] = f"sqlite:///{Path(_database_file.name).as_posix()}"
 os.environ["ADMIN_INITIAL_PIN"] = "123456"
 os.environ["MANAGER_INITIAL_PIN"] = "654321"
+os.environ["CUSTOMER_SERIAL_START"] = "4800"
 
-from main import Base, SessionLocal, Staff, app, engine  # noqa: E402
+from main import Base, SessionLocal, Staff, app, build_staff_week_appointments, engine  # noqa: E402
+from identifiers import customer_serial  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -36,6 +38,10 @@ def test_login_is_required_and_bootstrap_seeds_two_rooms(client):
     response = client.get("/api/admin/bootstrap", headers=headers)
     assert response.status_code == 200
     assert [room["name"] for room in response.json()["rooms"]] == ["房間 1", "房間 2"]
+    staff_rows = response.json()["staff"]
+    assert len(staff_rows) == 47
+    assert all(item["photo_url"].startswith("https://") for item in staff_rows)
+    assert customer_serial(1) == "VIP-4800"
 
 
 def test_appointment_end_and_staff_room_conflicts(client):
@@ -64,6 +70,12 @@ def test_appointment_end_and_staff_room_conflicts(client):
     first = client.post("/api/admin/appointments", headers=headers, json=payload)
     assert first.status_code == 201, first.text
     assert first.json()["end_time"] == "2026-08-24T17:30"
+    assert first.json()["customer_serial"] == "VIP-4800"
+
+    with SessionLocal() as db:
+        staff_obj = db.query(Staff).filter(Staff.id == staff["id"]).first()
+        weekly = build_staff_week_appointments(staff_obj, db)
+        assert weekly.alt_text == f"{staff_obj.name}未來一週預約"
 
     staff_conflict = client.post(
         "/api/admin/appointments",
@@ -97,6 +109,13 @@ def test_manager_can_only_create_clerk_account(client):
         json={"username": "frontdesk", "display_name": "櫃台", "pin": "112233", "role": "clerk"},
     )
     assert allowed.status_code == 201
+    clerk_id = allowed.json()["id"]
+    removed = client.delete(f"/api/admin/users/{clerk_id}", headers=manager_headers)
+    assert removed.status_code == 200
+    assert removed.json()["is_active"] is False
+
+    admin_user = next(item for item in client.get("/api/admin/users", headers=manager_headers).json() if item["username"] == "admin")
+    assert client.delete(f"/api/admin/users/{admin_user['id']}", headers=manager_headers).status_code == 403
 
 
 def test_public_bootstrap_is_read_only_and_redacts_sensitive_fields(client):

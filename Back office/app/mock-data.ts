@@ -50,6 +50,9 @@ export type StaffMember = {
   lineConnected: boolean;
   privateProfile: boolean;
   returnRuleSetId?: number;
+  photoUrl?: string;
+  height?: string;
+  weight?: string;
 };
 
 export type Shift = {
@@ -123,11 +126,11 @@ export const initialShifts: Shift[] = [
 ];
 
 export const customers: Customer[] = [
-  { id: 'VIP-0001', vipSerial: 'VIP-0001', name: '王先生', lineName: 'Kai', phone: '0912•••678', phones: ['0912•••678'], visits: 8, spent: 19600, lastVisit: '2026-08-22', note: '偏好指壓，力道中等' },
-  { id: 'VIP-0002', vipSerial: 'VIP-0002', name: '林先生', lineName: 'Lin', phone: '0988•••021', phones: ['0988•••021'], visits: 4, spent: 10800, lastVisit: '2026-08-22', note: '通常指定沐恩' },
-  { id: 'VIP-0003', vipSerial: 'VIP-0003', name: '陳先生', lineName: 'Chen C.', phone: '0921•••166', phones: ['0921•••166'], visits: 2, spent: 4000, lastVisit: '2026-08-22', note: '可接受外出場地' },
-  { id: 'VIP-0004', vipSerial: 'VIP-0004', name: '張先生', lineName: 'Sean', phone: '0933•••905', phones: ['0933•••905'], visits: 6, spent: 15000, lastVisit: '2026-08-22', note: '晚間時段' },
-  { id: 'VIP-0005', vipSerial: 'VIP-0005', name: '何先生', lineName: 'Hao', phone: '0955•••100', phones: ['0955•••100'], visits: 1, spent: 1500, lastVisit: '2026-08-22', note: '新客' },
+  { id: 'VIP-4800', vipSerial: 'VIP-4800', name: '王先生', lineName: 'Kai', phone: '0912•••678', phones: ['0912•••678'], visits: 8, spent: 19600, lastVisit: '2026-08-22', note: '偏好指壓，力道中等' },
+  { id: 'VIP-4801', vipSerial: 'VIP-4801', name: '林先生', lineName: 'Lin', phone: '0988•••021', phones: ['0988•••021'], visits: 4, spent: 10800, lastVisit: '2026-08-22', note: '通常指定沐恩' },
+  { id: 'VIP-4802', vipSerial: 'VIP-4802', name: '陳先生', lineName: 'Chen C.', phone: '0921•••166', phones: ['0921•••166'], visits: 2, spent: 4000, lastVisit: '2026-08-22', note: '可接受外出場地' },
+  { id: 'VIP-4803', vipSerial: 'VIP-4803', name: '張先生', lineName: 'Sean', phone: '0933•••905', phones: ['0933•••905'], visits: 6, spent: 15000, lastVisit: '2026-08-22', note: '晚間時段' },
+  { id: 'VIP-4804', vipSerial: 'VIP-4804', name: '何先生', lineName: 'Hao', phone: '0955•••100', phones: ['0955•••100'], visits: 1, spent: 1500, lastVisit: '2026-08-22', note: '新客' },
 ];
 
 export const promotions = [
@@ -142,9 +145,9 @@ export const promotions = [
 ];
 
 export const adminUsers = [
-  { username: 'admin', displayName: 'Admin', role: '系統管理員', status: '啟用', lastLogin: '今天 15:42' },
-  { username: 'jerry', displayName: 'Jerry', role: '店長', status: '啟用', lastLogin: '今天 14:06' },
-  { username: 'counter-01', displayName: '晚班櫃台', role: '櫃台', status: '啟用', lastLogin: '昨天 23:18' },
+  { id: 1, username: 'admin', displayName: 'Admin', role: '系統管理員', roleKey: 'admin', status: '啟用', isActive: true, lastLogin: '今天 15:42' },
+  { id: 2, username: 'jerry', displayName: 'Jerry', role: '店長', roleKey: 'manager', status: '啟用', isActive: true, lastLogin: '今天 14:06' },
+  { id: 3, username: 'counter-01', displayName: '晚班櫃台', role: '客服', roleKey: 'clerk', status: '啟用', isActive: true, lastLogin: '昨天 23:18' },
 ];
 
 export const weekDays = [
