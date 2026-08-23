@@ -13,6 +13,7 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 from datetime import datetime, timedelta
 from typing import Any, Callable, Literal
@@ -31,6 +32,7 @@ from scheduling import (
     now_taipei_naive,
     parse_local_datetime,
     staff_may_change_shift,
+    validate_booking_start,
     validate_shift_period,
 )
 
@@ -153,6 +155,15 @@ class StaffLoginIn(BaseModel):
     phone: str | None = Field(default=None, min_length=8, max_length=50)
 
 
+class StaffMagicLoginIn(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
+
+
+class CustomerPatchIn(BaseModel):
+    display_name: str = Field(min_length=1, max_length=255)
+    phones: list[str] = Field(min_length=1, max_length=10)
+
+
 class StaffAppointmentCreateIn(AppointmentCreateIn):
     staff_id: int | None = None
 
@@ -232,8 +243,10 @@ def register_admin_api(
     engine,
     SessionLocal,
     User,
+    CustomerPhone,
     Staff,
     Appointment,
+    appointment_notifier=None,
 ) -> None:
     """Register models, startup seeding, and all API endpoints."""
 
@@ -330,6 +343,7 @@ def register_admin_api(
         promotion_id = Column(Integer, ForeignKey("promotions.id"), nullable=True)
         room_id = Column(Integer, ForeignKey("rooms.id"), nullable=True)
         venue_id = Column(Integer, ForeignKey("venues.id"), nullable=True)
+        contact_phone = Column(String(20), nullable=True)
         base_price = Column(Integer, nullable=False, default=0)
         discount_amount = Column(Integer, nullable=False, default=0)
         extra_amount = Column(Integer, nullable=False, default=0)
@@ -387,6 +401,15 @@ def register_admin_api(
         expires_at = Column(DateTime, nullable=False, index=True)
         created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
 
+    class StaffMagicLink(Base):
+        __tablename__ = "staff_magic_links"
+        id = Column(Integer, primary_key=True)
+        staff_id = Column(Integer, ForeignKey("staffs.id"), nullable=False, index=True)
+        token_hash = Column(String(64), unique=True, nullable=False, index=True)
+        expires_at = Column(DateTime, nullable=False, index=True)
+        used_at = Column(DateTime, nullable=True)
+        created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
+
     class ReturnRuleSet(Base):
         __tablename__ = "return_rule_sets"
         id = Column(Integer, primary_key=True)
@@ -433,10 +456,73 @@ def register_admin_api(
         "StaffScheduleToken": StaffScheduleToken,
         "StaffPrivateHealth": StaffPrivateHealth,
         "StaffSession": StaffSession,
+        "StaffMagicLink": StaffMagicLink,
         "ReturnRuleSet": ReturnRuleSet,
         "ReturnRule": ReturnRule,
         "StaffReturn": StaffReturn,
     }
+
+    def normalize_phone(value: str | None) -> str:
+        cleaned = re.sub(r"[\s()\-]", "", (value or "").strip())
+        if cleaned.startswith("+886"):
+            cleaned = "0" + cleaned[4:]
+        if not re.fullmatch(r"09\d{8}", cleaned):
+            raise HTTPException(status_code=422, detail="手機號碼必須是 09 開頭的 10 碼數字")
+        return cleaned
+
+    def customer_phone_rows(db: Session, customer) -> list:
+        rows = db.query(CustomerPhone).filter(CustomerPhone.user_id == customer.id).order_by(CustomerPhone.is_primary.desc(), CustomerPhone.id).all()
+        if not rows and customer.phone:
+            try:
+                normalized = normalize_phone(customer.phone)
+            except HTTPException:
+                return []
+            owner = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
+            if not owner:
+                owner = CustomerPhone(user_id=customer.id, phone=normalized, is_primary=True)
+                db.add(owner)
+                db.flush()
+                rows = [owner]
+        return rows
+
+    def customer_for_phone(db: Session, phone: str):
+        normalized = normalize_phone(phone)
+        record = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
+        if record:
+            return db.query(User).filter(User.id == record.user_id).first(), normalized
+        return db.query(User).filter(User.phone == normalized).first(), normalized
+
+    def sync_customer_phones(db: Session, customer, values: list[str]) -> list[str]:
+        normalized_values = list(dict.fromkeys(normalize_phone(value) for value in values))
+        for phone in normalized_values:
+            owner = db.query(CustomerPhone).filter(CustomerPhone.phone == phone, CustomerPhone.user_id != customer.id).first()
+            if owner:
+                raise HTTPException(status_code=409, detail=f"手機號碼 {phone} 已屬於其他客戶")
+        existing = {row.phone: row for row in db.query(CustomerPhone).filter(CustomerPhone.user_id == customer.id).all()}
+        for phone, row in existing.items():
+            if phone not in normalized_values:
+                db.delete(row)
+        for index, phone in enumerate(normalized_values):
+            row = existing.get(phone)
+            if row:
+                row.is_primary = index == 0
+            else:
+                db.add(CustomerPhone(user_id=customer.id, phone=phone, is_primary=index == 0))
+        customer.phone = normalized_values[0]
+        return normalized_values
+
+    def issue_staff_magic_link(staff_obj, db: Session) -> str:
+        raw_token = secrets.token_urlsafe(40)
+        db.query(StaffMagicLink).filter(StaffMagicLink.staff_id == staff_obj.id, StaffMagicLink.used_at.is_(None)).update({StaffMagicLink.used_at: now_taipei_naive()})
+        db.add(StaffMagicLink(
+            staff_id=staff_obj.id,
+            token_hash=_token_hash(raw_token),
+            expires_at=now_taipei_naive() + timedelta(minutes=15),
+        ))
+        db.commit()
+        return raw_token
+
+    app.state.issue_staff_magic_link = issue_staff_magic_link
 
     allowed_origins = [value.strip() for value in os.getenv("ADMIN_ALLOWED_ORIGINS", "http://localhost:3000").split(",") if value.strip()]
     app.add_middleware(
@@ -678,8 +764,9 @@ def register_admin_api(
             "id": item.id,
             "order_id": f"AP-{item.start_time.strftime('%m%d')}-{item.id:03d}",
             "customer_id": item.user_id,
-            "customer_name": getattr(user, "display_name", None) or f"VIP-{item.user_id:04d}",
-            "phone": user.phone if user else None,
+            "customer_serial": f"VIP-{item.user_id:04d}",
+            "customer_name": getattr(user, "display_name", None) or "未命名客戶",
+            "phone": (detail.contact_phone if detail and detail.contact_phone else user.phone) if user else None,
             "staff_id": item.staff_id,
             "staff_name": staff_obj.name if staff_obj else "未指定",
             "service_plan_id": plan.id if plan else None,
@@ -710,7 +797,7 @@ def register_admin_api(
 
     def public_appointment_dict(db: Session, item) -> dict[str, Any]:
         row = appointment_dict(db, item)
-        for key in ("customer_id", "customer_name", "phone", "base_price", "discount_amount", "extra_amount", "total_amount", "notes", "payment_method", "cash_return_status", "expected_return_amount", "staff_return_status"):
+        for key in ("customer_id", "customer_serial", "customer_name", "phone", "base_price", "discount_amount", "extra_amount", "total_amount", "notes", "payment_method", "cash_return_status", "expected_return_amount", "staff_return_status"):
             row.pop(key, None)
         row["customer_name"] = "已隱藏"
         row["phone"] = None
@@ -727,11 +814,13 @@ def register_admin_api(
         for appointment in visits:
             detail = db.query(AppointmentDetail).filter(AppointmentDetail.appointment_id == appointment.id).first()
             spent += detail.total_amount if detail else appointment_price_from_legacy(appointment)
+        phones = [row.phone for row in customer_phone_rows(db, item)]
         return {
             "id": item.id,
-            "vip_id": f"VIP-{item.id:04d}",
+            "vip_serial": f"VIP-{item.id:04d}",
             "display_name": getattr(item, "display_name", None),
-            "phone": item.phone,
+            "primary_phone": phones[0] if phones else item.phone,
+            "phones": phones or ([item.phone] if item.phone else []),
             "visits": len(visits),
             "spent": spent,
             "last_visit": _iso(max((appointment.start_time for appointment in visits), default=None)),
@@ -870,17 +959,39 @@ def register_admin_api(
 
     @app.post("/api/staff/auth/login")
     def staff_login(payload: StaffLoginIn, db: Session = Depends(get_db)):
-        if payload.staff_id:
-            staff_obj = db.query(Staff).filter(Staff.id == payload.staff_id, Staff.employment_status == "active").first()
-        elif payload.phone:
-            staff_obj = db.query(Staff).filter(Staff.phone == payload.phone.strip(), Staff.employment_status == "active").first()
-        else:
-            raise HTTPException(status_code=422, detail="請選擇姓名或輸入手機 ID")
+        if not payload.staff_id or not payload.phone:
+            raise HTTPException(status_code=422, detail="請同時選擇自己的名字並輸入手機號碼")
+        phone = normalize_phone(payload.phone)
+        staff_obj = db.query(Staff).filter(
+            Staff.id == payload.staff_id,
+            Staff.phone == phone,
+            Staff.employment_status == "active",
+        ).first()
         if not staff_obj:
-            raise HTTPException(status_code=404, detail="找不到在職員工")
+            raise HTTPException(status_code=401, detail="姓名與手機號碼不相符")
         raw_token = secrets.token_urlsafe(40)
         db.add(StaffSession(staff_id=staff_obj.id, token_hash=_token_hash(raw_token), expires_at=now_taipei_naive() + timedelta(hours=24)))
         audit(db, None, "staff_login", "staff", staff_obj.id, reason="passwordless staff identity")
+        db.commit()
+        return {"access_token": raw_token, "expires_in": 86400, "staff": {"id": staff_obj.id, "name": staff_obj.name, "role": "staff"}}
+
+    @app.post("/api/staff/auth/line")
+    def staff_line_login(payload: StaffMagicLoginIn, db: Session = Depends(get_db)):
+        now = now_taipei_naive()
+        link = db.query(StaffMagicLink).filter(
+            StaffMagicLink.token_hash == _token_hash(payload.token),
+            StaffMagicLink.used_at.is_(None),
+            StaffMagicLink.expires_at > now,
+        ).with_for_update().first()
+        if not link:
+            raise HTTPException(status_code=401, detail="LINE 登入連結已失效，請回到派單 Bot 重新輸入「後台」")
+        staff_obj = db.query(Staff).filter(Staff.id == link.staff_id, Staff.employment_status == "active").first()
+        if not staff_obj:
+            raise HTTPException(status_code=401, detail="員工帳號目前不可使用")
+        raw_token = secrets.token_urlsafe(40)
+        link.used_at = now
+        db.add(StaffSession(staff_id=staff_obj.id, token_hash=_token_hash(raw_token), expires_at=now + timedelta(hours=24)))
+        audit(db, None, "staff_line_login", "staff", staff_obj.id, reason="signed LINE magic link")
         db.commit()
         return {"access_token": raw_token, "expires_in": 86400, "staff": {"id": staff_obj.id, "name": staff_obj.name, "role": "staff"}}
 
@@ -1001,6 +1112,24 @@ def register_admin_api(
             query = query.filter(Appointment.start_time < parse_local_datetime(end))
         return [appointment_dict(db, item) for item in query.order_by(Appointment.start_time.desc()).limit(1000).all()]
 
+    @app.get("/api/admin/customers")
+    def list_customers(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
+        return [customer_dict(db, item) for item in db.query(User).order_by(User.created_at.desc()).limit(1000).all()]
+
+    @app.patch("/api/admin/customers/{customer_id}")
+    def update_customer(customer_id: int, payload: CustomerPatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
+        customer = db.query(User).filter(User.id == customer_id).with_for_update().first()
+        if not customer:
+            raise HTTPException(status_code=404, detail="找不到客戶")
+        before = customer_dict(db, customer)
+        customer.display_name = payload.display_name.strip()
+        sync_customer_phones(db, customer, payload.phones)
+        db.flush()
+        after = customer_dict(db, customer)
+        audit(db, actor, "update", "customer", customer.id, before=before, after=after)
+        db.commit()
+        return after
+
     @app.post("/api/admin/appointments", status_code=201)
     def create_appointment(payload: AppointmentCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
         plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id, ServicePlan.active.is_(True)).first()
@@ -1012,6 +1141,10 @@ def register_admin_api(
             if not promotion:
                 raise HTTPException(status_code=404, detail="找不到啟用中的優惠")
         start_dt = parse_local_datetime(payload.start_time)
+        try:
+            validate_booking_start(start_dt)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         end_dt = appointment_end(start_dt, plan.duration_minutes)
 
         if payload.staff_id:
@@ -1032,13 +1165,22 @@ def register_admin_api(
             if conflict:
                 raise HTTPException(status_code=409, detail=f"房間與訂單 AP-{conflict.id} 時間重疊")
 
-        customer = db.query(User).filter(User.phone == payload.phone).first()
+        customer, contact_phone = customer_for_phone(db, payload.phone)
         if not customer:
-            customer = User(line_user_id=f"manual:{secrets.token_hex(16)}", phone=payload.phone, display_name=payload.customer_name)
+            customer = User(line_user_id=f"manual:{secrets.token_hex(16)}", phone=contact_phone, display_name=payload.customer_name)
             db.add(customer)
             db.flush()
+            sync_customer_phones(db, customer, [contact_phone])
         elif not getattr(customer, "display_name", None):
             customer.display_name = payload.customer_name
+        customer = db.query(User).filter(User.id == customer.id).with_for_update().first()
+        duplicate = db.query(Appointment).filter(
+            Appointment.user_id == customer.id,
+            Appointment.start_time == start_dt,
+            Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES),
+        ).first()
+        if duplicate:
+            raise HTTPException(status_code=409, detail=f"此客戶在相同時間已有訂單 AP-{duplicate.id}")
 
         appointment = Appointment(
             user_id=customer.id,
@@ -1057,6 +1199,7 @@ def register_admin_api(
             promotion_id=promotion.id if promotion else None,
             room_id=payload.room_id,
             venue_id=payload.venue_id,
+            contact_phone=contact_phone,
             base_price=plan.price,
             discount_amount=promotion_discount(promotion, plan.price),
             total_amount=plan.price - promotion_discount(promotion, plan.price),
@@ -1067,6 +1210,11 @@ def register_admin_api(
         audit(db, actor, "create", "appointment", appointment.id, after={"start": start_dt, "end": end_dt, "staff_id": payload.staff_id, "room_id": payload.room_id, "promotion_id": payload.promotion_id})
         db.commit()
         db.refresh(appointment)
+        if appointment_notifier:
+            try:
+                appointment_notifier(appointment, db, origin="後台建立")
+            except Exception:
+                logger.exception("Unable to push appointment notification appointment_id=%s", appointment.id)
         return appointment_dict(db, appointment)
 
     @app.post("/api/staff/appointments", status_code=201)
@@ -1092,7 +1240,14 @@ def register_admin_api(
         if customer and payload.customer_name is not None:
             customer.display_name = payload.customer_name
         if customer and payload.phone is not None:
-            customer.phone = payload.phone
+            contact_phone = normalize_phone(payload.phone)
+            owner = db.query(CustomerPhone).filter(CustomerPhone.phone == contact_phone).first()
+            if owner and owner.user_id != customer.id:
+                raise HTTPException(status_code=409, detail="此手機號碼已屬於其他客戶")
+            if not owner:
+                db.add(CustomerPhone(user_id=customer.id, phone=contact_phone, is_primary=not bool(customer.phone)))
+            if not customer.phone:
+                customer.phone = contact_phone
         plan = None
         if payload.service_plan_id is not None:
             plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id).first()
@@ -1105,6 +1260,11 @@ def register_admin_api(
             if not promotion:
                 raise HTTPException(status_code=404, detail="找不到啟用中的優惠")
         start_dt = parse_local_datetime(payload.start_time) if payload.start_time else appointment.start_time
+        if payload.start_time is not None:
+            try:
+                validate_booking_start(start_dt)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         duration = plan.duration_minutes if plan else appointment.duration
         end_dt = appointment_end(start_dt, duration)
         staff_id = payload.staff_id if "staff_id" in changes else appointment.staff_id
@@ -1122,6 +1282,8 @@ def register_admin_api(
         if not detail:
             detail = AppointmentDetail(appointment_id=appointment.id, base_price=0, total_amount=0)
             db.add(detail)
+        if payload.phone is not None:
+            detail.contact_phone = normalize_phone(payload.phone)
         if plan:
             detail.service_plan_id = plan.id
             detail.base_price = plan.price
@@ -1487,14 +1649,15 @@ def register_admin_api(
                 staff_obj = db.query(Staff).filter(Staff.id == item.staff_id).first()
                 writer.writerow([item.id, staff_obj.name if staff_obj else item.staff_id, item.start_time.date(), item.start_time.strftime("%H:%M"), item.end_time.strftime("%H:%M"), item.source, item.status])
         elif dataset == "customers":
-            writer.writerow(["客戶編號", "LINE 顯示名稱", "電話", "建立日期"])
+            writer.writerow(["客戶流水", "客戶名稱", "客戶 ID（手機，可多支）", "建立日期"])
             query = db.query(User)
             if start:
                 query = query.filter(User.created_at >= parse_local_datetime(start))
             if end:
                 query = query.filter(User.created_at < parse_local_datetime(end))
             for item in query.order_by(User.id).all():
-                writer.writerow([f"VIP-{item.id:04d}", getattr(item, "display_name", None), item.phone, item.created_at])
+                phones = [row.phone for row in customer_phone_rows(db, item)]
+                writer.writerow([f"VIP-{item.id:04d}", getattr(item, "display_name", None) or "未命名客戶", "、".join(phones), item.created_at])
         else:
             writer.writerow(["回帳編號", "訂單編號", "師傅", "應回帳", "狀態", "建立時間", "確認時間"])
             query = db.query(StaffReturn)

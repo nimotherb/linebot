@@ -3,10 +3,12 @@ from datetime import datetime, timedelta
 import pytest
 
 from scheduling import (
+    BOOKING_LEAD_MINUTES,
     MIN_SHIFT_MINUTES,
     appointment_end,
     periods_overlap,
     staff_may_change_shift,
+    validate_booking_start,
     validate_shift_period,
 )
 
@@ -38,3 +40,10 @@ def test_staff_shift_lock_is_exactly_ninety_minutes():
     now = datetime(2026, 8, 22, 16, 0)
     assert not staff_may_change_shift(datetime(2026, 8, 22, 17, 30), now=now)
     assert staff_may_change_shift(datetime(2026, 8, 22, 17, 31), now=now)
+
+
+def test_booking_requires_ninety_minutes_lead_time():
+    now = datetime(2026, 8, 22, 9, 0)
+    with pytest.raises(ValueError):
+        validate_booking_start(now + timedelta(minutes=BOOKING_LEAD_MINUTES - 1), now=now)
+    assert validate_booking_start(datetime(2026, 8, 22, 10, 30), now=now) == datetime(2026, 8, 22, 10, 30)

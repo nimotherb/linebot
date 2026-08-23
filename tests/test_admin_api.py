@@ -12,7 +12,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{Path(_database_file.name).as_posix()}"
 os.environ["ADMIN_INITIAL_PIN"] = "123456"
 os.environ["MANAGER_INITIAL_PIN"] = "654321"
 
-from main import Base, SessionLocal, app, engine  # noqa: E402
+from main import Base, SessionLocal, Staff, app, engine  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -115,9 +115,17 @@ def test_public_bootstrap_is_read_only_and_redacts_sensitive_fields(client):
 
 
 def test_staff_passwordless_session_only_returns_own_data(client):
-    public = client.get("/api/public/bootstrap").json()
-    staff = public["staff"][0]
-    login_response = client.post("/api/staff/auth/login", json={"staff_id": staff["id"]})
+    headers = login(client)
+    created = client.post(
+        "/api/admin/staff",
+        headers=headers,
+        json={"name": "登入測試師傅", "category": "gay", "phone": "0987654321"},
+    )
+    assert created.status_code == 201, created.text
+    staff = created.json()
+    assert client.post("/api/staff/auth/login", json={"staff_id": staff["id"]}).status_code == 422
+    assert client.post("/api/staff/auth/login", json={"staff_id": staff["id"], "phone": "0911111111"}).status_code == 401
+    login_response = client.post("/api/staff/auth/login", json={"staff_id": staff["id"], "phone": "0987654321"})
     assert login_response.status_code == 200, login_response.text
     headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
     bootstrap = client.get("/api/staff/bootstrap", headers=headers)
@@ -127,6 +135,54 @@ def test_staff_passwordless_session_only_returns_own_data(client):
     assert data["staff_user"]["id"] == staff["id"]
     assert all(item["staff_id"] == staff["id"] for item in data["appointments"])
     assert all(item["staff_id"] == staff["id"] for item in data["shifts"])
+
+
+def test_staff_line_magic_link_is_short_lived_and_single_use(client):
+    db = SessionLocal()
+    try:
+        staff = db.query(Staff).filter(Staff.phone == "0987654321").first()
+        token = app.state.issue_staff_magic_link(staff, db)
+    finally:
+        db.close()
+
+    first = client.post("/api/staff/auth/line", json={"token": token})
+    assert first.status_code == 200, first.text
+    assert first.json()["staff"]["name"] == "登入測試師傅"
+    assert client.post("/api/staff/auth/line", json={"token": token}).status_code == 401
+
+
+def test_customer_name_serial_and_multiple_phone_ids(client):
+    headers = login(client)
+    bootstrap = client.get("/api/admin/bootstrap", headers=headers).json()
+    plan = bootstrap["services"][0]
+    room = bootstrap["rooms"][0]
+    created = client.post(
+        "/api/admin/appointments",
+        headers=headers,
+        json={
+            "customer_name": "多手機客戶",
+            "phone": "0966000001",
+            "service_plan_id": plan["id"],
+            "start_time": "2026-08-25T19:00:00",
+            "room_id": room["id"],
+            "location_type": "onsite",
+        },
+    )
+    assert created.status_code == 201, created.text
+    row = created.json()
+    assert row["customer_name"] == "多手機客戶"
+    assert row["customer_serial"].startswith("VIP-")
+    customer_id = row["customer_id"]
+
+    updated = client.patch(
+        f"/api/admin/customers/{customer_id}",
+        headers=headers,
+        json={"display_name": "王先生", "phones": ["0966000001", "0966000002"]},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["display_name"] == "王先生"
+    assert updated.json()["phones"] == ["0966000001", "0966000002"]
+    assert updated.json()["vip_serial"] == row["customer_serial"]
 
 
 def test_return_tables_promotions_and_line_pin_binding(client):
