@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 TAIPEI = ZoneInfo("Asia/Taipei")
 SHIFT_LOCK_MINUTES = 90
 MIN_SHIFT_MINUTES = 120
+BOOKING_LEAD_MINUTES = 90
 CANCELLED_APPOINTMENT_STATUSES = {"cancelled", "已取消"}
 
 
@@ -37,6 +38,15 @@ def appointment_end(start: str | datetime, duration_minutes: int) -> datetime:
     if duration_minutes <= 0:
         raise ValueError("服務時間必須大於 0 分鐘")
     return parse_local_datetime(start) + timedelta(minutes=duration_minutes)
+
+
+def validate_booking_start(start: str | datetime, *, now: datetime | None = None) -> datetime:
+    """Every booking channel must schedule at least 90 minutes ahead."""
+    current = parse_local_datetime(now or now_taipei_naive())
+    start_dt = parse_local_datetime(start)
+    if start_dt < current + timedelta(minutes=BOOKING_LEAD_MINUTES):
+        raise ValueError("預約時間必須至少晚於現在 90 分鐘；例如 09:00 最早可預約 10:30")
+    return start_dt
 
 
 def periods_overlap(

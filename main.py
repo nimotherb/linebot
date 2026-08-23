@@ -4,11 +4,13 @@ from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship
 from dotenv import load_dotenv
 import os
 import logging
+import secrets
+import threading
 from datetime import datetime, date, timedelta
 import re
 from urllib.parse import parse_qs
 
-from scheduling import appointment_end, parse_local_datetime
+from scheduling import appointment_end, parse_local_datetime, validate_booking_start
 
 # LINE SDK
 from linebot import LineBotApi, WebhookHandler
@@ -39,8 +41,12 @@ engine = create_engine(DATABASE_URL, **engine_options)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-BASE_VIP_ID = 4560
 LINE_ADMIN_PENDING: dict[str, datetime] = {}
+VALID_STAFF_ROLES = {"攻擊手", "守備方", "無特定", "攻守兼備"}
+SUPPORT_URL = os.getenv("CUSTOMER_SERVICE_URL", "https://lin.ee/vOq3Xvt")
+RENDER_LOGS_URL = os.getenv("RENDER_LOGS_URL", "https://dashboard.render.com/web/srv-da059bgjo6nc73doq380/logs")
+_DISPATCH_ALERTED_AT: dict[str, datetime] = {}
+_HEARTBEAT_STOP = threading.Event()
 
 # --- SQLAlchemy models ---
 class User(Base):
@@ -53,6 +59,17 @@ class User(Base):
     utm_source = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     appointments = relationship("Appointment", back_populates="user", cascade="all, delete-orphan")
+    phones = relationship("CustomerPhone", back_populates="user", cascade="all, delete-orphan")
+
+
+class CustomerPhone(Base):
+    __tablename__ = "customer_phones"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    phone = Column(String(20), unique=True, nullable=False, index=True)
+    is_primary = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    user = relationship("User", back_populates="phones")
 
 class Staff(Base):
     __tablename__ = "staffs"
@@ -146,6 +163,104 @@ handler_staff = WebhookHandler(LINE_SECRET_STAFF) if LINE_SECRET_STAFF else None
 
 logging.basicConfig(level=logging.INFO)
 
+
+def normalize_phone(value: str | None) -> str:
+    """Normalize a Taiwanese mobile number used as a customer/staff identity."""
+    cleaned = re.sub(r"[\s()\-]", "", (value or "").strip())
+    if cleaned.startswith("+886"):
+        cleaned = "0" + cleaned[4:]
+    if not re.fullmatch(r"09\d{8}", cleaned):
+        raise ValueError("手機號碼必須是 09 開頭的 10 碼數字")
+    return cleaned
+
+
+def vip_serial(user: User | None) -> str:
+    return f"VIP-{user.id:04d}" if user and user.id is not None else "VIP-Unknown"
+
+
+def valid_staff_role(value: str | None) -> str | None:
+    normalized = (value or "").strip()
+    return normalized if normalized in VALID_STAFF_ROLES else None
+
+
+def customer_phone_values(db: Session, user: User | None) -> list[str]:
+    if not user:
+        return []
+    values = [row.phone for row in db.query(CustomerPhone).filter(CustomerPhone.user_id == user.id).order_by(CustomerPhone.is_primary.desc(), CustomerPhone.id).all()]
+    if not values and user.phone:
+        values.append(user.phone)
+    return values
+
+
+def customer_by_phone(db: Session, phone: str) -> User | None:
+    normalized = normalize_phone(phone)
+    record = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
+    if record:
+        return db.query(User).filter(User.id == record.user_id).first()
+    return db.query(User).filter(User.phone == normalized).first()
+
+
+def add_customer_phone(db: Session, user: User, phone: str, *, primary: bool = False) -> str:
+    normalized = normalize_phone(phone)
+    existing = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
+    if existing and existing.user_id != user.id:
+        raise ValueError("此手機號碼已屬於其他客戶")
+    if primary:
+        db.query(CustomerPhone).filter(CustomerPhone.user_id == user.id).update({CustomerPhone.is_primary: False})
+    if not existing:
+        db.add(CustomerPhone(user_id=user.id, phone=normalized, is_primary=primary))
+    elif primary:
+        existing.is_primary = True
+    if primary or not user.phone:
+        user.phone = normalized
+    return normalized
+
+
+def _trace_id() -> str:
+    return f"{datetime.utcnow().strftime('%m%d%H%M%S')}-{secrets.token_hex(2)}"
+
+
+def notify_dispatch_error(db: Session, context: str, trace_id: str) -> None:
+    """Alert bound customer-service accounts, never ordinary staff accounts."""
+    if not bot_staff_api or not hasattr(app.state, "admin_models"):
+        return
+    cooldown_key = context.split(":", 1)[0]
+    now = datetime.utcnow()
+    if now - _DISPATCH_ALERTED_AT.get(cooldown_key, datetime.min) < timedelta(minutes=5):
+        return
+    _DISPATCH_ALERTED_AT[cooldown_key] = now
+    AdminUser = app.state.admin_models.get("AdminUser")
+    if not AdminUser:
+        return
+    alert = TextSendMessage(text=f"⚠️ LINE Bot 顯示失敗\n位置：{context}\n追蹤碼：{trace_id}\n系統紀錄：{RENDER_LOGS_URL}")
+    for admin_user in db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.line_user_id.isnot(None)).all():
+        try:
+            bot_staff_api.push_message(admin_user.line_user_id, alert)
+        except Exception:
+            logging.exception("無法推送客服錯誤通知 admin_user_id=%s trace=%s", admin_user.id, trace_id)
+
+
+def reply_with_fallback(bot_api, reply_token: str, message, *, db: Session | None = None, context: str = "LINE 選單", admin: bool = False) -> bool:
+    """Reply safely and fall back to plain text when a Flex payload is rejected."""
+    try:
+        bot_api.reply_message(reply_token, message)
+        return True
+    except Exception:
+        trace_id = _trace_id()
+        logging.exception("LINE 回覆失敗 context=%s trace=%s", context, trace_id)
+        fallback = (
+            f"系統暫時無法顯示管理選單。請稍後再試。\n追蹤碼：{trace_id}\n系統紀錄：{RENDER_LOGS_URL}"
+            if admin else
+            f"系統暫時無法顯示選單，請稍後再試，或聯絡真人客服：{SUPPORT_URL}\n追蹤碼：{trace_id}"
+        )
+        try:
+            bot_api.reply_message(reply_token, TextSendMessage(text=fallback))
+        except Exception:
+            logging.exception("LINE 文字備援也失敗 context=%s trace=%s", context, trace_id)
+        if db is not None:
+            notify_dispatch_error(db, context, trace_id)
+        return False
+
 # 方案設定字典
 PLANS_INFO = {
     "A": {"name": "A-舒壓方案", "duration": 60, "price": 1500, "desc": "不指定優惠 / 指油壓"},
@@ -166,7 +281,7 @@ def build_promotion_flex(promotions, plan_key: str, selected_dt: str):
     bubbles = []
     for promotion_id, name, amount_text, description in choices:
         promotion_value = promotion_id or 0
-        next_action = "confirm_booking" if plan_key == "A" else "select_staff"
+        next_action = "preview_booking" if plan_key == "A" else "select_staff"
         next_data = f"action={next_action}&staff_id=none&plan={plan_key}&promotion_id={promotion_value}&datetime={selected_dt}&offset=0"
         bubbles.append({
             "type": "bubble",
@@ -185,6 +300,50 @@ def build_promotion_flex(promotions, plan_key: str, selected_dt: str):
             },
         })
     return FlexSendMessage(alt_text="請選擇優惠", contents={"type": "carousel", "contents": bubbles})
+
+
+def build_booking_preview_flex(*, staff, plan_key: str, promotion, selected_dt: str):
+    plan = PLANS_INFO.get(plan_key, {"name": "未知方案", "duration": 60, "price": 0})
+    base_price = plan["price"]
+    discount = 0
+    if promotion:
+        if promotion.calculation_type == "fixed_discount":
+            discount = min(base_price, promotion.value)
+        elif promotion.calculation_type == "percent_discount":
+            discount = min(base_price, round(base_price * promotion.value / 100))
+    staff_name = staff.name if staff else "不指定（由店長安排）"
+    promotion_name = promotion.name if promotion else "不使用優惠"
+    time_text = parse_local_datetime(selected_dt).strftime("%m月%d日 %H:%M")
+    staff_value = staff.id if staff else "none"
+    promotion_value = promotion.id if promotion else 0
+    confirm_data = f"action=confirm_booking&staff_id={staff_value}&plan={plan_key}&promotion_id={promotion_value}&datetime={selected_dt}"
+    rows = [
+        ("時間", time_text),
+        ("方案", f"{plan['name']}・{plan['duration']} 分"),
+        ("師傅", staff_name),
+        ("優惠", promotion_name),
+        ("預估金額", f"NT$ {max(0, base_price - discount)}"),
+    ]
+    return FlexSendMessage(
+        alt_text="請確認預約內容",
+        contents={
+            "type": "bubble",
+            "styles": {"header": {"backgroundColor": "#123F37"}, "footer": {"backgroundColor": "#F7F3EA"}},
+            "header": {"type": "box", "layout": "vertical", "contents": [
+                {"type": "text", "text": "送出前再次確認", "weight": "bold", "size": "xl", "color": "#F7D7A3"},
+                {"type": "text", "text": "此時尚未建立訂單", "size": "sm", "color": "#D1FAE5", "margin": "sm"},
+            ]},
+            "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
+                *[{"type": "box", "layout": "horizontal", "contents": [
+                    {"type": "text", "text": label, "size": "sm", "color": "#777777", "flex": 2},
+                    {"type": "text", "text": value, "size": "sm", "color": "#222222", "weight": "bold", "align": "end", "wrap": True, "flex": 5},
+                ]} for label, value in rows],
+            ]},
+            "footer": {"type": "box", "layout": "vertical", "contents": [
+                {"type": "button", "style": "primary", "color": "#9ECE6A", "action": {"type": "postback", "label": "確認並送出預約", "data": confirm_data}},
+            ]},
+        },
+    )
 
 # --- 共用：手機號碼確認 Flex ---
 def build_phone_confirm_flex(phone_num, action_prefix):
@@ -242,8 +401,11 @@ def build_root_admin_menu(identity=None):
     )
 
 
-def build_staff_backend_link(staff):
+def build_staff_backend_link(staff, db: Session):
     dashboard_url = os.getenv("ADMIN_DASHBOARD_URL", "https://equalspa-ops-preview.c83500699.chatgpt.site/").rstrip("/")
+    issuer = getattr(getattr(app, "state", None), "issue_staff_magic_link", None)
+    login_token = issuer(staff, db) if issuer else None
+    target_url = f"{dashboard_url}/?staff_login={login_token}" if login_token else dashboard_url
     return FlexSendMessage(
         alt_text="開啟伊果 SPA 師傅後台",
         contents={
@@ -254,7 +416,7 @@ def build_staff_backend_link(staff):
                 {"type": "text", "text": f"{staff.name}，可查看自己的訂單並設定排班。", "size": "sm", "color": "#D1FAE5", "wrap": True, "margin": "md"},
             ]},
             "footer": {"type": "box", "layout": "vertical", "contents": [
-                {"type": "button", "style": "primary", "color": "#D8A862", "action": {"type": "uri", "label": "開啟後台／排班", "uri": f"{dashboard_url}/?staff_id={staff.id}"}},
+                {"type": "button", "style": "primary", "color": "#D8A862", "action": {"type": "uri", "label": "開啟後台／排班", "uri": target_url}},
             ]},
         },
     )
@@ -262,17 +424,27 @@ def build_staff_backend_link(staff):
 # --- 共用：生成預約單 Carousel Bubble ---
 def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_return=False):
     staff_name = appointment.staff.name if appointment.staff else "未指定(由店長安排)"
-    staff_info = ""
+    staff_info_parts = []
     if appointment.staff:
-        h = appointment.staff.height or "?"
-        w = appointment.staff.weight or "?"
-        role = appointment.staff.role or "?"
-        staff_info = f"身高: {h} / 體重: {w} / 角色: {role}"
+        if appointment.staff.height:
+            staff_info_parts.append(f"身高: {appointment.staff.height}")
+        if appointment.staff.weight:
+            staff_info_parts.append(f"體重: {appointment.staff.weight}")
+        role = valid_staff_role(appointment.staff.role)
+        if role:
+            staff_info_parts.append(f"角色: {role}")
+    staff_info = " / ".join(staff_info_parts)
     
     customer_name = "客戶"
     if appointment.user:
-        customer_name = appointment.user.display_name or f"用戶 {appointment.user.id}"
-    customer_vip_id = f"VIP-{appointment.user.id + BASE_VIP_ID:04d}" if appointment.user else "VIP-Unknown"
+        customer_name = appointment.user.display_name or "未命名客戶"
+    customer_vip_id = vip_serial(appointment.user)
+    customer_phone = appointment.user.phone if appointment.user else None
+    if db is not None and hasattr(app.state, "admin_models"):
+        AppointmentDetail = app.state.admin_models.get("AppointmentDetail")
+        if AppointmentDetail:
+            contact = db.query(AppointmentDetail).filter(AppointmentDetail.appointment_id == appointment.id).first()
+            customer_phone = getattr(contact, "contact_phone", None) or customer_phone
     
     start_time_str = appointment.start_time.strftime("%m月%d日 %H:%M") if appointment.start_time else "未定"
     plan_name = appointment.plan_name or "未知方案"
@@ -324,13 +496,14 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
             "contents": [
                 {"type": "text", "text": "🔔 新派單通知" if is_staff_notify else "今日預約", "weight": "bold", "color": "#EAB308" if is_staff_notify else "#1DB446", "size": "sm"},
                 {"type": "text", "text": staff_name, "weight": "bold", "size": "xxl", "margin": "md"},
-                {"type": "text", "text": staff_info, "size": "xs", "color": "#aaaaaa", "wrap": True},
+                *([{"type": "text", "text": staff_info, "size": "xs", "color": "#aaaaaa", "wrap": True}] if staff_info else []),
                 {"type": "separator", "margin": "xxl"},
                 {
                     "type": "box", "layout": "vertical", "margin": "xxl", "spacing": "sm",
                     "contents": [
-                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶 ID", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_vip_id, "size": "sm", "color": "#111111", "align": "end"}]},
+                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶流水", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_vip_id, "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_name, "size": "sm", "color": "#111111", "align": "end"}]},
+                        *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶 ID（手機）", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": customer_phone, "size": "sm", "color": "#111111", "align": "end"}]}] if customer_phone else []),
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "時段", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": start_time_str, "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "方案", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": plan_name, "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "separator", "margin": "xxl"},
@@ -349,9 +522,14 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
     return bubble
 
 def build_staff_bubble(staff):
-    is_online_text = "上線中" if staff.is_online else "下線"
-    height = staff.height or "?"
-    weight = staff.weight or "?"
+    profile = []
+    if staff.height:
+        profile.append(f"身高: {staff.height}")
+    if staff.weight:
+        profile.append(f"體重: {staff.weight}")
+    role = valid_staff_role(staff.role)
+    if role:
+        profile.append(f"角色: {role}")
     
     return {
         "type": "bubble",
@@ -362,7 +540,7 @@ def build_staff_bubble(staff):
                 {
                     "type": "box", "layout": "baseline",
                     "contents": [
-                        {"type": "text", "text": f"身高: {height} / 體重: {weight} / 狀態: {is_online_text}", "wrap": True, "weight": "regular", "size": "md", "flex": 0}
+                        {"type": "text", "text": " / ".join(profile) or "基本資料尚未設定", "wrap": True, "weight": "regular", "size": "md", "flex": 0}
                     ]
                 }
             ]
@@ -403,11 +581,25 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         return FlexSendMessage(alt_text="本日預約", contents={"type": "carousel", "contents": bubbles})
     
     elif "action=admin_staff" in data:
-        # 管理師傅
-        staffs = db.query(Staff).filter(Staff.employment_status == "active").all()
+        # LINE carousel 上限為 12 張；以 10 位師傅加 1 張下一頁卡片分頁。
+        qs = parse_qs(data)
+        offset = max(0, int(qs.get("offset", ["0"])[0] or 0))
+        staffs = db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.id).offset(offset).limit(11).all()
         if not staffs:
             return TextSendMessage(text="目前無師傅資料")
-        bubbles = [build_staff_bubble(staff) for staff in staffs]
+        has_more = len(staffs) > 10
+        bubbles = [build_staff_bubble(staff) for staff in staffs[:10]]
+        if has_more:
+            bubbles.append({
+                "type": "bubble",
+                "body": {"type": "box", "layout": "vertical", "paddingAll": "28px", "contents": [
+                    {"type": "text", "text": "更多師傅", "weight": "bold", "size": "xl", "align": "center"},
+                    {"type": "text", "text": f"繼續查看第 {offset + 11} 位起的資料", "size": "sm", "color": "#777777", "wrap": True, "align": "center", "margin": "md"},
+                ]},
+                "footer": {"type": "box", "layout": "vertical", "contents": [
+                    {"type": "button", "style": "primary", "action": {"type": "postback", "label": "下一頁", "data": f"action=admin_staff&offset={offset + 10}"}}
+                ]},
+            })
         return FlexSendMessage(alt_text="師傅管理", contents={"type": "carousel", "contents": bubbles})
     
     elif "action=delete_staff" in data:
@@ -449,7 +641,12 @@ if handler_customer:
                     return
                 user = db.query(User).filter(User.line_user_id == user_id).first()
                 if not user:
-                    user = User(line_user_id=user_id)
+                    display_name = None
+                    try:
+                        display_name = bot_customer_api.get_profile(user_id).display_name
+                    except Exception:
+                        logging.info("暫時無法取得 LINE 顯示名稱 user_id=%s", user_id)
+                    user = User(line_user_id=user_id, display_name=display_name)
                     db.add(user)
                     db.commit()
 
@@ -462,7 +659,7 @@ if handler_customer:
                     return
 
                 if not user.phone and re.match(r"^09\d{8}$", text):
-                    user.phone_temp = text
+                    user.phone_temp = normalize_phone(text)
                     db.commit()
                     bot_customer_api.reply_message(event.reply_token, build_phone_confirm_flex(text, "confirm_customer_phone"))
                     return
@@ -500,7 +697,7 @@ if handler_customer:
         try:
             root_response = handle_root_action(data, user_id, db, is_staff_side=False)
             if root_response:
-                bot_customer_api.reply_message(event.reply_token, root_response)
+                reply_with_fallback(bot_customer_api, event.reply_token, root_response, db=db, context="客戶端管理員選單", admin=True)
                 return
 
             if "action=confirm_customer_phone" in data:
@@ -509,11 +706,32 @@ if handler_customer:
                 user = db.query(User).filter(User.line_user_id == user_id).first()
                 if user:
                     if result == "yes":
-                        user.phone = user.phone_temp
+                        confirmed_phone = normalize_phone(user.phone_temp)
+                        existing_customer = customer_by_phone(db, confirmed_phone)
+                        if existing_customer and existing_customer.id != user.id:
+                            if existing_customer.line_user_id.startswith("manual:") and not user.appointments:
+                                line_name = user.display_name
+                                db.delete(user)
+                                db.flush()
+                                existing_customer.line_user_id = user_id
+                                existing_customer.display_name = line_name or existing_customer.display_name
+                                user = existing_customer
+                            else:
+                                user.phone_temp = None
+                                db.commit()
+                                reply_with_fallback(
+                                    bot_customer_api,
+                                    event.reply_token,
+                                    TextSendMessage(text=f"此手機號碼已綁定其他客戶資料，請聯絡真人客服協助：{SUPPORT_URL}"),
+                                    db=db,
+                                    context="客戶手機綁定衝突",
+                                )
+                                return
+                        add_customer_phone(db, user, confirmed_phone, primary=True)
                         user.phone_temp = None
                         db.commit()
                         dt_action = DatetimePickerTemplateAction(label="選擇時間", data="action=select_date", mode="datetime")
-                        bot_customer_api.reply_message(event.reply_token, TemplateSendMessage(alt_text="請選擇時間", template=ButtonsTemplate(text="感謝綁定！現在請選擇想預約的時間", actions=[dt_action])))
+                        reply_with_fallback(bot_customer_api, event.reply_token, TemplateSendMessage(alt_text="請選擇時間", template=ButtonsTemplate(text="感謝綁定！現在請選擇想預約的時間", actions=[dt_action])), db=db, context="客戶手機綁定完成")
                     else:
                         user.phone_temp = None
                         db.commit()
@@ -565,14 +783,34 @@ if handler_customer:
                 selected_dt = qs.get("datetime", [None])[0]
                 offset = int(qs.get("offset", ["0"])[0])
 
-                # 正式班表取代「師傅在線」；保留原本 LINE 10 張卡片的分頁方式。
-                active_staff = db.query(Staff).filter(
-                    Staff.employment_status == "active"
-                ).offset(offset).limit(10).all()
+                p_info = PLANS_INFO.get(plan, {"duration": 60})
+                booking_start = parse_local_datetime(selected_dt)
+                booking_end = appointment_end(booking_start, p_info["duration"])
+                models = getattr(app.state, "admin_models", {})
+                Shift = models.get("Shift")
+                staff_query = db.query(Staff).filter(Staff.employment_status == "active")
+                if Shift:
+                    scheduled_ids = [row[0] for row in db.query(Shift.staff_id).filter(
+                        Shift.status == "active",
+                        Shift.start_time <= booking_start,
+                        Shift.end_time >= booking_end,
+                    ).distinct().all()]
+                    staff_query = staff_query.filter(Staff.id.in_(scheduled_ids)) if scheduled_ids else staff_query.filter(Staff.id == -1)
+                eligible_staff = []
+                for candidate in staff_query.order_by(Staff.id).all():
+                    conflict = db.query(Appointment).filter(
+                        Appointment.staff_id == candidate.id,
+                        Appointment.status.notin_(["cancelled", "已取消"]),
+                        Appointment.start_time < booking_end,
+                        Appointment.end_time > booking_start,
+                    ).first()
+                    if not conflict:
+                        eligible_staff.append(candidate)
+                active_staff = eligible_staff[offset:offset + 10]
 
                 if not active_staff:
-                    message = "目前沒有可安排的師傅，請聯絡客服協助。" if offset == 0 else "沒有更多師傅囉！"
-                    bot_customer_api.reply_message(event.reply_token, TextSendMessage(text=message))
+                    message = f"目前此時段沒有可安排的師傅，請改選時間或聯絡真人客服：{SUPPORT_URL}" if offset == 0 else "沒有更多師傅囉！"
+                    reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text=message), db=db, context="選擇師傅無可用班表")
                     return
 
                 # 判斷是否滿 10 個（代表還有下一頁）
@@ -582,7 +820,15 @@ if handler_customer:
 
                 bubbles = []
                 for s in display_staff:
-                    info_text = f"身高:{s.height or '?'} 體重:{s.weight or '?'} 角色:{s.role or '?'}"
+                    info_parts = []
+                    if s.height:
+                        info_parts.append(f"身高:{s.height}")
+                    if s.weight:
+                        info_parts.append(f"體重:{s.weight}")
+                    role = valid_staff_role(s.role)
+                    if role:
+                        info_parts.append(f"角色:{role}")
+                    info_text = " ".join(info_parts) or "基本資料更新中"
                     bubbles.append({
                         "type": "bubble",
                         "hero": {
@@ -598,7 +844,7 @@ if handler_customer:
                         },
                         "footer": {
                             "type": "box", "layout": "vertical", "backgroundColor": "#111111",
-                            "contents": [{"type": "button", "style": "primary", "color": "#9ECE6A", "action": {"type": "postback", "label": "預約這位", "data": f"action=confirm_booking&staff_id={s.id}&plan={plan}&promotion_id={promotion_id}&datetime={selected_dt}"}}]
+                            "contents": [{"type": "button", "style": "primary", "color": "#9ECE6A", "action": {"type": "postback", "label": "預約這位", "data": f"action=preview_booking&staff_id={s.id}&plan={plan}&promotion_id={promotion_id}&datetime={selected_dt}"}}]
                         }
                     })
 
@@ -620,7 +866,32 @@ if handler_customer:
                         }
                     })
 
-                bot_customer_api.reply_message(event.reply_token, FlexSendMessage(alt_text="請選擇師傅", contents={"type": "carousel", "contents": bubbles}))
+                reply_with_fallback(bot_customer_api, event.reply_token, FlexSendMessage(alt_text="請選擇師傅", contents={"type": "carousel", "contents": bubbles}), db=db, context="選擇師傅 Flex")
+
+            elif "action=preview_booking" in data:
+                qs = parse_qs(data)
+                staff_id = qs.get("staff_id", ["none"])[0]
+                plan_key = qs.get("plan", [None])[0]
+                promotion_id = int(qs.get("promotion_id", ["0"])[0] or 0)
+                selected_dt = qs.get("datetime", [None])[0]
+                try:
+                    validate_booking_start(selected_dt)
+                except ValueError as exc:
+                    reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text=f"{exc}。請重新選擇預約時間。"), db=db, context="確認頁提前時間不足")
+                    return
+                staff_obj = db.query(Staff).filter(Staff.id == int(staff_id), Staff.employment_status == "active").first() if staff_id != "none" else None
+                if staff_id != "none" and not staff_obj:
+                    reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text="這位師傅目前無法預約，請重新選擇。"), db=db, context="確認頁師傅已不可用")
+                    return
+                Promotion = getattr(app.state, "admin_models", {}).get("Promotion")
+                promotion = db.query(Promotion).filter(Promotion.id == promotion_id, Promotion.active.is_(True)).first() if Promotion and promotion_id else None
+                reply_with_fallback(
+                    bot_customer_api,
+                    event.reply_token,
+                    build_booking_preview_flex(staff=staff_obj, plan_key=plan_key, promotion=promotion, selected_dt=selected_dt),
+                    db=db,
+                    context="預約送出前確認 Flex",
+                )
 
             elif "action=confirm_booking" in data:
                 qs = parse_qs(data)
@@ -629,15 +900,44 @@ if handler_customer:
                 promotion_id = int(qs.get("promotion_id", ["0"])[0] or 0)
                 selected_dt = qs.get("datetime", [None])[0]
 
-                user = db.query(User).filter(User.line_user_id == user_id).first()
+                # Lock the customer row so rapid repeated taps are serialized in MySQL.
+                user = db.query(User).filter(User.line_user_id == user_id).with_for_update().first()
+                if not user:
+                    reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text="找不到客戶資料，請輸入「預約」重新開始。"), db=db, context="確認預約找不到客戶")
+                    return
                 staff_obj = None
                 
                 if staff_id != "none":
                     staff_obj = db.query(Staff).filter(Staff.id == int(staff_id)).first()
+                    if not staff_obj or staff_obj.employment_status != "active":
+                        reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text="這位師傅目前無法預約，請重新選擇。"), db=db, context="送出預約師傅已不可用")
+                        return
 
                 p_info = PLANS_INFO.get(plan_key, {"duration": 60, "price": 0, "name": "未知方案"})
                 booking_start = parse_local_datetime(selected_dt)
                 booking_end = appointment_end(booking_start, p_info["duration"])
+                try:
+                    validate_booking_start(booking_start)
+                except ValueError as exc:
+                    reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text=f"{exc}。請重新選擇預約時間。"), db=db, context="預約提前時間不足")
+                    return
+
+                existing_booking = db.query(Appointment).filter(
+                    Appointment.user_id == user.id,
+                    Appointment.staff_id == (int(staff_id) if staff_id != "none" else None),
+                    Appointment.start_time == booking_start,
+                    Appointment.end_time == booking_end,
+                    Appointment.status.notin_(["cancelled", "已取消"]),
+                ).order_by(Appointment.id.desc()).first()
+                if existing_booking:
+                    reply_with_fallback(
+                        bot_customer_api,
+                        event.reply_token,
+                        FlexSendMessage(alt_text="此預約已建立", contents=build_appointment_bubble(existing_booking, db=db)),
+                        db=db,
+                        context="重複預約攔截",
+                    )
+                    return
 
                 if staff_obj:
                     conflict = db.query(Appointment).filter(
@@ -647,9 +947,12 @@ if handler_customer:
                         Appointment.end_time > booking_start,
                     ).first()
                     if conflict:
-                        bot_customer_api.reply_message(
+                        reply_with_fallback(
+                            bot_customer_api,
                             event.reply_token,
                             TextSendMessage(text="這位師傅在該時段已有預約，請重新選擇時間或師傅。"),
+                            db=db,
+                            context="師傅預約衝突",
                         )
                         return
 
@@ -685,6 +988,7 @@ if handler_customer:
                         appointment_id=appointment.id,
                         service_plan_id=service_plan.id if service_plan else None,
                         promotion_id=promotion.id if promotion else None,
+                        contact_phone=user.phone,
                         base_price=base_price,
                         discount_amount=discount,
                         total_amount=max(0, base_price - discount),
@@ -693,25 +997,10 @@ if handler_customer:
                 db.commit()
                 db.refresh(appointment)
 
-                time_str = datetime.fromisoformat(selected_dt).strftime("%m月%d日 %H:%M")
-
                 receipt_flex = build_appointment_bubble(appointment, db=db)
-                bot_customer_api.reply_message(event.reply_token, FlexSendMessage(alt_text="預約確認明細", contents=receipt_flex))
+                reply_with_fallback(bot_customer_api, event.reply_token, FlexSendMessage(alt_text="預約確認明細", contents=receipt_flex), db=db, context="預約確認 Flex")
 
-                # --- 派單邏輯：推送給師傅 ---
-                if bot_staff_api:
-                    notify_msg = FlexSendMessage(
-                        alt_text="新派單通知",
-                        contents=build_appointment_bubble(appointment, is_staff_notify=True, db=db)
-                    )
-                    if staff_id == "none":
-                        # 尚未指定師傅時通知所有在職師傅，由店長依正式班表安排
-                        active_staff = db.query(Staff).filter(Staff.employment_status == "active").all()
-                        for s in active_staff:
-                            bot_staff_api.push_message(s.line_user_id, notify_msg)
-                    else:
-                        if staff_obj:
-                            bot_staff_api.push_message(staff_obj.line_user_id, notify_msg)
+                notify_appointment_parties(appointment, db, origin="LINE 客戶預約")
 
         except Exception:
             logging.exception("處理客戶 postback 失敗")
@@ -741,7 +1030,7 @@ if handler_staff:
 
                 if not staff.phone:
                     if re.match(r"^09\d{8}$", text):
-                        staff.phone_temp = text
+                        staff.phone_temp = normalize_phone(text)
                         db.commit()
                         bot_staff_api.reply_message(event.reply_token, build_phone_confirm_flex(text, "confirm_staff_phone"))
                     else:
@@ -755,13 +1044,21 @@ if handler_staff:
                     return
 
                 if text in {"後台", "後臺", "排班"}:
-                    bot_staff_api.reply_message(event.reply_token, build_staff_backend_link(staff))
+                    reply_with_fallback(bot_staff_api, event.reply_token, build_staff_backend_link(staff, db), db=db, context="師傅 LINE 直登入連結")
                 elif text == "上線":
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="「師傅在線」已停用，請使用個人班表連結新增正式排班。"))
                 elif text == "下線":
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="「師傅在線」已停用；如需取消班表，請使用個人班表連結，鎖定時段請洽店長。"))
                 elif text == "我的檔案":
-                    profile_txt = f"【基本資料】\n姓名：{staff.name}\n身高：{staff.height or '未設'}\n體重：{staff.weight or '未設'}\n角色：{staff.role or '未設'}\n\n如需修改，請分別輸入：\n身高 170\n體重 65\n角色 泰式"
+                    profile_lines = ["【基本資料】", f"姓名：{staff.name}"]
+                    if staff.height:
+                        profile_lines.append(f"身高：{staff.height}")
+                    if staff.weight:
+                        profile_lines.append(f"體重：{staff.weight}")
+                    role = valid_staff_role(staff.role)
+                    if role:
+                        profile_lines.append(f"角色：{role}")
+                    profile_txt = "\n".join(profile_lines) + "\n\n如需修改，請分別輸入：\n身高 170\n體重 65\n角色 攻擊手\n\n角色僅可填：攻擊手／守備方／無特定／攻守兼備"
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=profile_txt))
                 elif text.startswith("身高 "):
                     staff.height = text.replace("身高 ", "").strip()
@@ -772,9 +1069,13 @@ if handler_staff:
                     db.commit()
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"已更新體重為 {staff.weight}"))
                 elif text.startswith("角色 "):
-                    staff.role = text.replace("角色 ", "").strip()
-                    db.commit()
-                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"已更新角色為 {staff.role}"))
+                    requested_role = text.replace("角色 ", "").strip()
+                    if requested_role not in VALID_STAFF_ROLES:
+                        bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="角色格式不正確。僅可輸入：\n角色 攻擊手\n角色 守備方\n角色 無特定\n角色 攻守兼備"))
+                    else:
+                        staff.role = requested_role
+                        db.commit()
+                        bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"已更新角色為 {staff.role}"))
                 else:
                     guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n👤「我的檔案」：查看與更新資料\n📅「排班」或「後台」：開啟自己的後台\n🔧「root」：管理員需再輸入 PIN 綁定"
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=guide_txt))
@@ -793,7 +1094,7 @@ if handler_staff:
         try:
             root_response = handle_root_action(data, user_id, db, is_staff_side=True)
             if root_response:
-                bot_staff_api.reply_message(event.reply_token, root_response)
+                reply_with_fallback(bot_staff_api, event.reply_token, root_response, db=db, context="派單端管理員選單", admin=True)
                 return
 
             if "action=confirm_staff_phone" in data:
@@ -824,7 +1125,41 @@ def _process_webhook(body: bytes, signature: str, bot_api, handler):
     except Exception:
         pass
 
+
+def notify_appointment_parties(appointment, db: Session, *, origin: str = "後台建立") -> None:
+    """Push a new order to bound customer-service accounts and the assigned staff only."""
+    if not bot_staff_api:
+        logging.warning("略過派單通知：LINE_TOKEN_STAFF 未設定 appointment_id=%s", appointment.id)
+        return
+    models = getattr(app.state, "admin_models", {})
+    AdminUser = models.get("AdminUser")
+    service_message = FlexSendMessage(
+        alt_text=f"{origin}・新訂單",
+        contents=build_appointment_bubble(appointment, is_staff_notify=True, db=db, show_return=True),
+    )
+    recipients: dict[str, str] = {}
+    if AdminUser:
+        for account in db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.line_user_id.isnot(None)).all():
+            recipients[account.line_user_id] = f"客服帳號 {account.username}"
+    if appointment.staff and appointment.staff.line_user_id and not appointment.staff.line_user_id.startswith(("pending:", "seeded:")):
+        recipients[appointment.staff.line_user_id] = f"師傅 {appointment.staff.name}"
+    for line_user_id, label in recipients.items():
+        try:
+            bot_staff_api.push_message(line_user_id, service_message)
+        except Exception:
+            logging.exception("派單推送失敗 recipient=%s appointment_id=%s", label, appointment.id)
+
 app = FastAPI(title="SPA 智能客服與預約系統")
+
+
+def _database_heartbeat_loop(interval_seconds: int) -> None:
+    while not _HEARTBEAT_STOP.wait(interval_seconds):
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+            logging.info("Database heartbeat succeeded")
+        except Exception:
+            logging.exception("Database heartbeat failed")
 
 @app.on_event("startup")
 def on_startup():
@@ -844,12 +1179,15 @@ def on_startup():
             "ALTER TABLE admin_users ADD COLUMN line_user_id VARCHAR(255);",
             "ALTER TABLE promotions ADD COLUMN description VARCHAR(500);",
             "ALTER TABLE appointment_details ADD COLUMN promotion_id INTEGER;",
+            "ALTER TABLE appointment_details ADD COLUMN contact_phone VARCHAR(20);",
             "ALTER TABLE appointments ADD COLUMN plan_name VARCHAR(50);"
         ]
         for q in queries:
             try:
                 conn.execute(text(q))
             except Exception:
+                # These compatibility ALTERs are intentionally idempotent. A
+                # duplicate-column error simply means the migration ran before.
                 pass
         if engine.dialect.name == "mysql":
             conn.execute(text(
@@ -870,12 +1208,37 @@ def on_startup():
                 if db.query(Staff).filter(Staff.name == name).first():
                     continue
                 db.add(Staff(line_user_id=f"seeded:{category}:{name}", name=name, height=height, weight=weight, category=category, employment_status="active", is_online=False))
+        for customer in db.query(User).filter(User.phone.isnot(None)).order_by(User.id).all():
+            try:
+                normalized = normalize_phone(customer.phone)
+            except ValueError:
+                logging.warning("略過無法正規化的舊客戶手機 user_id=%s", customer.id)
+                continue
+            owner = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
+            if not owner:
+                db.add(CustomerPhone(user_id=customer.id, phone=normalized, is_primary=True))
+                customer.phone = normalized
+            elif owner.user_id == customer.id:
+                owner.is_primary = True
         db.commit()
     except Exception:
         db.rollback()
         logging.exception("無法補齊師傅名單")
     finally:
         db.close()
+
+    interval = max(60, int(os.getenv("DATABASE_HEARTBEAT_SECONDS", "720")))
+    heartbeat = getattr(app.state, "database_heartbeat_thread", None)
+    if not heartbeat or not heartbeat.is_alive():
+        _HEARTBEAT_STOP.clear()
+        heartbeat = threading.Thread(target=_database_heartbeat_loop, args=(interval,), daemon=True, name="aiven-heartbeat")
+        heartbeat.start()
+        app.state.database_heartbeat_thread = heartbeat
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    _HEARTBEAT_STOP.set()
 
 @app.get("/")
 def read_root():
@@ -904,6 +1267,8 @@ register_admin_api(
     engine=engine,
     SessionLocal=SessionLocal,
     User=User,
+    CustomerPhone=CustomerPhone,
     Staff=Staff,
     Appointment=Appointment,
+    appointment_notifier=notify_appointment_parties,
 )

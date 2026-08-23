@@ -9,15 +9,20 @@ export type AdminIdentity = {
   role: 'admin' | 'manager' | 'clerk';
 };
 
+export type StaffIdentity = { id: number; name: string; role: 'staff' };
+
 type RawAppointment = {
   id: number;
   order_id: string;
+  customer_serial?: string;
   customer_name: string;
   phone?: string;
   staff_id?: number;
   staff_name: string;
   service_plan_id?: number;
   service_name: string;
+  promotion_id?: number;
+  promotion_name?: string;
   start_time: string;
   end_time: string;
   status_label: AppointmentStatus;
@@ -25,6 +30,11 @@ type RawAppointment = {
   room_name?: string;
   location_type: 'onsite' | 'external' | 'pending';
   total_amount: number;
+  base_price?: number;
+  discount_amount?: number;
+  extra_amount?: number;
+  expected_return_amount?: number;
+  staff_return_status?: string;
   notes?: string;
   payment_status?: string;
 };
@@ -46,6 +56,7 @@ type RawStaff = {
   category?: 'straight' | 'gay' | 'bisexual';
   employment_status: 'active' | 'retired';
   line_connected: boolean;
+  return_rule_set_id?: number;
 };
 
 type RawShift = {
@@ -77,15 +88,26 @@ export type AdminUserView = {
 };
 
 export type BootstrapData = {
-  user: AdminIdentity;
+  mode?: 'public' | 'staff';
+  user: AdminIdentity | null;
+  staff_user?: StaffIdentity;
   appointments: RawAppointment[];
   services: RawService[];
   staff: RawStaff[];
   shifts: RawShift[];
   promotions: Array<{ id: number; name: string; calculation_type: string; value: number; active: boolean; starts_at?: string; ends_at?: string }>;
   rooms: Array<{ id: number; name: string; active: boolean }>;
-  customers?: Array<{ id: number; vip_id: string; display_name?: string; phone?: string; visits: number; spent: number; last_visit?: string }>;
+  customers?: Array<{ id: number; vip_serial: string; display_name?: string; primary_phone?: string; phones: string[]; visits: number; spent: number; last_visit?: string }>;
   admin_users?: AdminIdentity[];
+  return_rule_sets?: ReturnRuleSetView[];
+};
+
+export type ReturnRuleSetView = {
+  id: number;
+  code: string;
+  name: string;
+  active: boolean;
+  rules: Array<{ id: number; service_code: string; name: string; amount: number; duration_minutes: number; active: boolean }>;
 };
 
 const splitDateTime = (value: string) => {
@@ -102,6 +124,7 @@ export const mapAppointment = (item: RawAppointment): Appointment => {
     date: start.date,
     start: start.time,
     end: end.time,
+    customerSerial: item.customer_serial,
     customer: item.customer_name,
     phone: item.phone || '未提供',
     staff: item.staff_name || '我的班表',
@@ -113,6 +136,13 @@ export const mapAppointment = (item: RawAppointment): Appointment => {
     location: item.location_type === 'onsite' ? '店內' : item.location_type === 'external' ? '外出' : '待確認',
     status: item.status_label,
     total: item.total_amount,
+    basePrice: item.base_price ?? item.total_amount,
+    discountAmount: item.discount_amount ?? 0,
+    extraAmount: item.extra_amount ?? 0,
+    promotionId: item.promotion_id ? String(item.promotion_id) : undefined,
+    promotionName: item.promotion_name,
+    expectedReturn: item.expected_return_amount ?? 0,
+    returnStatus: item.staff_return_status,
     payment: item.payment_status === 'paid' || item.status_label === '已完成' ? '已付款' : '未付款',
     note: item.notes,
   };
@@ -142,6 +172,7 @@ export const mapStaff = (item: RawStaff): StaffMember => ({
   status: item.employment_status === 'retired' ? '暫時退役' : '在職',
   lineConnected: item.line_connected,
   privateProfile: true,
+  returnRuleSetId: item.return_rule_set_id,
 });
 
 export const mapShift = (item: RawShift): Shift => {
@@ -179,10 +210,13 @@ export const mapPromotion = (item: BootstrapData['promotions'][number]): Promoti
 });
 
 export const mapCustomer = (item: NonNullable<BootstrapData['customers']>[number]): Customer => ({
-  id: item.vip_id,
-  name: item.display_name || item.vip_id,
+  id: item.vip_serial,
+  apiId: item.id,
+  vipSerial: item.vip_serial,
+  name: item.display_name || '未命名客戶',
   lineName: item.display_name || '未取得',
-  phone: item.phone || '未提供',
+  phone: item.primary_phone || item.phones[0] || '未提供',
+  phones: item.phones || [],
   visits: item.visits,
   spent: item.spent,
   lastVisit: item.last_visit || '—',
@@ -241,12 +275,32 @@ export class SpaApi {
 
   bootstrap() { return this.request<BootstrapData>('/api/admin/bootstrap'); }
 
+  publicBootstrap() { return this.request<BootstrapData>('/api/public/bootstrap'); }
+
+  staffLogin(payload: { staff_id: number; phone: string }) {
+    return this.request<{ access_token: string; staff: StaffIdentity }>('/api/staff/auth/login', { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  staffLineLogin(token: string) {
+    return this.request<{ access_token: string; staff: StaffIdentity }>('/api/staff/auth/line', { method: 'POST', body: JSON.stringify({ token }) });
+  }
+
+  staffBootstrap() { return this.request<BootstrapData>('/api/staff/bootstrap'); }
+
+  logout(path: 'admin' | 'staff' = 'admin') {
+    return this.request<{ ok: boolean }>(`/api/${path}/auth/logout`, { method: 'POST' });
+  }
+
   createAppointment(payload: Record<string, unknown>) {
     return this.request<RawAppointment>('/api/admin/appointments', { method: 'POST', body: JSON.stringify(payload) });
   }
 
   updateAppointment(id: number, payload: Record<string, unknown>) {
     return this.request<RawAppointment>(`/api/admin/appointments/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
+  updateCustomer(id: number, payload: { display_name: string; phones: string[] }) {
+    return this.request<NonNullable<BootstrapData['customers']>[number]>(`/api/admin/customers/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
   }
 
   createShift(payload: Record<string, unknown>) {
@@ -274,8 +328,36 @@ export class SpaApi {
     return this.request<RawStaff>(`/api/admin/staff/${id}/status`, { method: 'PATCH', body: JSON.stringify(payload) });
   }
 
+  updateStaff(id: number, payload: Record<string, unknown>) {
+    return this.request<RawStaff>(`/api/admin/staff/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
   createPromotion(payload: Record<string, unknown>) {
     return this.request<BootstrapData['promotions'][number]>('/api/admin/promotions', { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  updatePromotion(id: number, payload: Record<string, unknown>) {
+    return this.request<BootstrapData['promotions'][number]>(`/api/admin/promotions/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
+  updateReturnRule(id: number, payload: Record<string, unknown>) {
+    return this.request<Record<string, unknown>>(`/api/admin/return-rules/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
+  staffCreateAppointment(payload: Record<string, unknown>) {
+    return this.request<RawAppointment>('/api/staff/appointments', { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  staffCompleteAppointment(id: number) {
+    return this.request<RawAppointment>(`/api/staff/appointments/${id}/complete`, { method: 'PATCH' });
+  }
+
+  staffCreateShift(payload: { start_time: string; end_time: string }) {
+    return this.request<RawShift>('/api/staff/shifts', { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  staffDeleteShift(shiftId: number) {
+    return this.request<{ ok: boolean }>(`/api/staff/shifts/${shiftId}`, { method: 'DELETE' });
   }
 
   createUser(payload: Record<string, unknown>) {
