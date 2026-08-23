@@ -81,7 +81,7 @@ const headings: Record<SectionId, { eyebrow: string; title: string; description:
   staff: { eyebrow: 'TEAM', title: '員工管理', description: '員工建檔、LINE 串接與暫時退役。' },
   services: { eyebrow: 'PRICING', title: '服務與優惠', description: '方案價格、期間與附加費都可隨時調整。' },
   exports: { eyebrow: 'DATA CENTER', title: '資料中心', description: '依日期範圍匯出 Excel 相容 CSV 或純文字。' },
-  users: { eyebrow: 'ACCESS CONTROL', title: '帳號與權限', description: '管理 Admin、店長與櫃台角色。' },
+  users: { eyebrow: 'ACCESS CONTROL', title: '帳號與權限', description: '管理 Admin、店長與客服角色。' },
   staffPortal: { eyebrow: 'STAFF LINK PREVIEW', title: '師傅免登入班表', description: '模擬師傅從 LINE 專屬連結看到的畫面。' },
 };
 
@@ -118,7 +118,7 @@ function Modal({ title, subtitle, children, onClose, wide = false }: { title: st
 }
 
 function StatusPill({ status }: { status: string }) {
-  const tone = status === '服務中' ? 'live' : status === '待結帳' ? 'warning' : status === '已完成' || status === '已付款' ? 'done' : status === '已取消' ? 'muted-status' : 'confirmed';
+  const tone = status === '服務中' ? 'live' : status === '待結帳' ? 'warning' : status === '已完成' || status === '已付款' ? 'done' : status === '已取消' || status === '已停用' ? 'muted-status' : 'confirmed';
   return <span className={`status ${tone}`}>{status}</span>;
 }
 
@@ -765,6 +765,20 @@ export default function Home() {
     notify('使用者原型已建立；真實 PIN 不會寫入 HTML。');
   };
 
+  const deactivateAdminUser = async (user: (typeof adminUsers)[number]) => {
+    if (!user.isActive || appMode !== 'live') return;
+    const allowed = role === 'admin' || (role === 'manager' && user.roleKey === 'clerk');
+    if (!allowed || user.id === identity?.id) return notify('你沒有權限停用這個帳號。');
+    if (!window.confirm(`確定要停用 ${user.displayName}（@${user.username}）的後台權限嗎？`)) return;
+    try {
+      const updated = mapAdminUser(await api.deactivateUser(user.id));
+      setAdminUsers((current) => current.map((item) => item.id === updated.id ? updated : item));
+      notify(`${user.displayName} 已停用，既有登入也已失效。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '停用帳號失敗');
+    }
+  };
+
   const renderDashboard = () => {
     const metrics = [
       { label: '今日預約', value: String(todayAppointments.length), note: '含 2 筆進行中' },
@@ -884,7 +898,7 @@ export default function Home() {
   );
 
   const renderStaff = () => (
-    <section className="panel table-panel"><div className="toolbar"><div className="filter-note"><strong>{staff.filter((item) => item.status === '在職').length}</strong><span>位在職師傅</span></div><div className="toolbar-spacer" />{canManageAll && <button className="primary-button" onClick={() => setModal({ type: 'staff' })}>＋ 新增員工</button>}</div><div className="staff-card-grid">{staff.map((member) => <article className={member.status === '暫時退役' ? 'staff-card retired' : 'staff-card'} key={member.id}><header><span className="large-avatar">{member.name.slice(0, 1)}</span><StatusPill status={member.status} /></header><h3>{member.name}</h3><p>{member.category}・{member.id}</p><div className="staff-meta"><span>{member.lineConnected ? 'LINE 已串接' : 'LINE 待串接'}</span><span>{isViewer || isStaffUser ? '公開基本資料' : '私密資料已分離'}</span></div>{canManageAll && <label className="staff-rule-select">回帳表<select value={member.returnRuleSetId || returnRuleSets[0]?.id || ''} onChange={(event) => assignReturnRuleSet(member, Number(event.target.value))}>{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label>}{canManageAll && <button className="text-button" onClick={() => toggleStaffStatus(member)}>{member.status === '在職' ? '暫時退役' : '恢復在職'}</button>}</article>)}</div>{sensitiveVisible && <div className="privacy-note"><strong>健康資訊不顯示於此畫面</strong><span>私密欄位存放在獨立加密資料表，且不包含在一般匯出中。</span></div>}</section>
+    <section className="panel table-panel"><div className="toolbar"><div className="filter-note"><strong>{staff.filter((item) => item.status === '在職').length}</strong><span>位在職師傅</span></div><div className="toolbar-spacer" />{canManageAll && <button className="primary-button" onClick={() => setModal({ type: 'staff' })}>＋ 新增員工</button>}</div><div className="staff-card-grid">{staff.map((member) => <article className={member.status === '暫時退役' ? 'staff-card retired' : 'staff-card'} key={member.id}><header>{member.photoUrl ? <img className="large-avatar staff-photo" src={member.photoUrl} alt={`${member.name}師傅`} /> : <span className="large-avatar">{member.name.slice(0, 1)}</span>}<StatusPill status={member.status} /></header><h3>{member.name}</h3><p>{member.category}・{[member.height && `${member.height} cm`, member.weight && `${member.weight} kg`].filter(Boolean).join('・') || member.id}</p><div className="staff-meta"><span>{member.lineConnected ? 'LINE 已串接' : 'LINE 待串接'}</span><span>{isViewer || isStaffUser ? '公開基本資料' : '私密資料已分離'}</span></div>{canManageAll && <label className="staff-rule-select">回帳表<select value={member.returnRuleSetId || returnRuleSets[0]?.id || ''} onChange={(event) => assignReturnRuleSet(member, Number(event.target.value))}>{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label>}{canManageAll && <button className="text-button" onClick={() => toggleStaffStatus(member)}>{member.status === '在職' ? '暫時退役' : '恢復在職'}</button>}</article>)}</div>{sensitiveVisible && <div className="privacy-note"><strong>健康資訊不顯示於此畫面</strong><span>私密欄位存放在獨立加密資料表，且不包含在一般匯出中。</span></div>}</section>
   );
 
   const renderServices = () => (
@@ -896,7 +910,26 @@ export default function Home() {
   );
 
   const renderUsers = () => (
-    <div className="users-layout"><section className="panel table-panel"><div className="panel-heading"><div><p className="eyebrow">ADMIN USERS</p><h2>後台帳號</h2></div>{canManageAll && <button className="primary-button" onClick={() => setModal({ type: 'user' })}>＋ 新增使用者</button>}</div><div className="data-table users-table"><div className="table-head"><span>使用者</span><span>角色</span><span>狀態</span><span>最近登入</span></div>{adminUsers.map((user) => <div className="table-row static" key={user.username}><span><strong>{user.displayName}</strong><small>@{user.username}</small></span><span><strong>{user.role}</strong></span><span><StatusPill status={user.status} /></span><span><strong>{user.lastLogin}</strong></span></div>)}</div></section><aside className="panel security-card"><p className="eyebrow">LOGIN SECURITY</p><h2>數字 PIN 安全設定</h2><ul><li>PIN 只保存 Argon2 雜湊</li><li>連續錯誤 5 次鎖定 15 分鐘</li><li>Bearer 工作階段 8 小時到期</li><li>登出後移除本機工作階段</li></ul><div className="security-footnote">PIN 不會被寫進 HTML 或回傳到瀏覽器。</div></aside><section className="panel permission-panel"><div className="panel-heading"><div><p className="eyebrow">ROLE MATRIX</p><h2>權限對照</h2></div></div><div className="permission-grid"><strong>功能</strong><strong>Admin</strong><strong>店長</strong><strong>客服</strong>{['預約與結帳', '新增／撤銷排班', '新增／退役員工', '修改價格優惠', '新增使用者', '系統與稽核'].flatMap((label, index) => [<span key={`${label}-label`}>{label}</span>, <b key={`${label}-admin`}>✓</b>, <b key={`${label}-manager`}>{index === 5 ? '查看' : '✓'}</b>, <b className="limited" key={`${label}-clerk`}>{index < 2 ? '部分' : '—'}</b>])}</div></section></div>
+    <div className="users-layout">
+      <section className="panel table-panel">
+        <div className="panel-heading"><div><p className="eyebrow">ADMIN USERS</p><h2>後台帳號與權限</h2></div>{canManageAll && <button className="primary-button" onClick={() => setModal({ type: 'user' })}>＋ 新增使用者</button>}</div>
+        <div className="data-table users-table">
+          <div className="table-head"><span>使用者</span><span>角色</span><span>狀態</span><span>最近登入</span><span>權限操作</span></div>
+          {adminUsers.map((user) => {
+            const canDeactivate = user.isActive && user.id !== identity?.id && (role === 'admin' || (role === 'manager' && user.roleKey === 'clerk'));
+            return <div className="table-row static" key={user.username}>
+              <span><strong>{user.displayName}</strong><small>@{user.username}{user.id === identity?.id ? '・目前帳號' : ''}</small></span>
+              <span><strong>{user.role}</strong></span>
+              <span><StatusPill status={user.status} /></span>
+              <span><strong>{user.lastLogin}</strong></span>
+              <span>{canDeactivate ? <button className="access-danger" onClick={() => deactivateAdminUser(user)}>停用權限</button> : <small>{user.isActive ? '不可操作' : '已移除'}</small>}</span>
+            </div>;
+          })}
+        </div>
+      </section>
+      <aside className="panel security-card"><p className="eyebrow">LOGIN SECURITY</p><h2>數字 PIN 安全設定</h2><ul><li>PIN 只保存 Argon2 雜湊</li><li>連續錯誤 5 次鎖定 15 分鐘</li><li>Bearer 工作階段 8 小時到期</li><li>停用後立即撤銷既有登入</li></ul><div className="security-footnote">停用採保留紀錄的安全刪除，不會破壞訂單與稽核資料。</div></aside>
+      <section className="panel permission-panel"><div className="panel-heading"><div><p className="eyebrow">ROLE MATRIX</p><h2>權限對照</h2></div></div><div className="permission-grid"><strong>功能</strong><strong>Admin</strong><strong>店長</strong><strong>客服</strong>{['預約與結帳', '新增／撤銷排班', '新增／退役員工', '修改價格優惠', '新增／停用帳號', '系統與稽核'].flatMap((label, index) => [<span key={`${label}-label`}>{label}</span>, <b key={`${label}-admin`}>✓</b>, <b key={`${label}-manager`}>{index === 5 ? '查看' : index === 4 ? '限客服' : '✓'}</b>, <b className="limited" key={`${label}-clerk`}>{index < 2 ? '部分' : '—'}</b>])}</div></section>
+    </div>
   );
 
   const renderStaffPortal = () => {

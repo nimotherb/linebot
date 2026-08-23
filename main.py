@@ -10,7 +10,9 @@ from datetime import datetime, date, timedelta
 import re
 from urllib.parse import parse_qs
 
-from scheduling import appointment_end, parse_local_datetime, validate_booking_start
+from scheduling import appointment_end, now_taipei_naive, parse_local_datetime, validate_booking_start
+from identifiers import customer_serial
+from therapist_catalog import THERAPIST_PROFILES, therapist_photo_url
 
 # LINE SDK
 from linebot import LineBotApi, WebhookHandler
@@ -81,6 +83,7 @@ class Staff(Base):
     name = Column(String(255), nullable=False)
     height = Column(String(20), nullable=True)
     weight = Column(String(20), nullable=True)
+    photo_url = Column(String(1000), nullable=True)
     role = Column(String(50), nullable=True)
     category = Column(String(50), nullable=True)
     employment_status = Column(String(30), default="active", nullable=False)
@@ -176,7 +179,7 @@ def normalize_phone(value: str | None) -> str:
 
 
 def vip_serial(user: User | None) -> str:
-    return f"VIP-{user.id:04d}" if user and user.id is not None else "VIP-Unknown"
+    return customer_serial(user.id if user else None)
 
 
 def valid_staff_role(value: str | None) -> str | None:
@@ -532,7 +535,7 @@ def build_staff_bubble(staff):
     if role:
         profile.append(f"角色: {role}")
     
-    return {
+    bubble = {
         "type": "bubble",
         "body": {
             "type": "box", "layout": "vertical", "spacing": "sm",
@@ -554,6 +557,68 @@ def build_staff_bubble(staff):
             ]
         }
     }
+    if staff.photo_url:
+        bubble["hero"] = {
+            "type": "image",
+            "url": staff.photo_url,
+            "size": "full",
+            "aspectRatio": "4:5",
+            "aspectMode": "cover",
+        }
+    return bubble
+
+
+def build_staff_week_appointments(staff, db: Session):
+    """Build a compact Flex carousel of this staff member's next seven days."""
+    start = now_taipei_naive().replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=7)
+    appointments = db.query(Appointment).filter(
+        Appointment.staff_id == staff.id,
+        Appointment.status.notin_(["cancelled", "已取消"]),
+        Appointment.start_time >= start,
+        Appointment.start_time < end,
+    ).order_by(Appointment.start_time).all()
+    if not appointments:
+        return TextSendMessage(text=f"{staff.name}，未來 7 天目前沒有預約。")
+
+    visible = appointments[:11]
+    bubbles = []
+    status_labels = {
+        "pending": "待確認", "confirmed": "已確認", "checked_in": "已報到",
+        "in_service": "服務中", "awaiting_checkout": "待結帳", "completed": "已完成",
+        "cancelled": "已取消", "no_show": "未到店",
+    }
+    for appointment in visible:
+        bubble = build_appointment_bubble(appointment, db=db, show_return=True)
+        bubble["body"]["contents"][0]["text"] = "📅 我的預約"
+        bubble["body"]["contents"][0]["color"] = "#0F766E"
+        bubble["body"]["contents"].insert(1, {
+            "type": "text",
+            "text": f"狀態：{status_labels.get(appointment.status, appointment.status)}",
+            "size": "xs",
+            "color": "#6B7280",
+            "margin": "sm",
+        })
+        bubbles.append(bubble)
+    if len(appointments) > len(visible):
+        bubbles.append({
+            "type": "bubble",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "paddingAll": "28px",
+                "contents": [
+                    {"type": "text", "text": "還有更多預約", "weight": "bold", "size": "xl", "align": "center"},
+                    {"type": "text", "text": f"未來 7 天共有 {len(appointments)} 筆，請到個人後台查看完整清單。", "size": "sm", "color": "#777777", "wrap": True, "align": "center", "margin": "md"},
+                ],
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [{"type": "button", "style": "primary", "action": {"type": "message", "label": "開啟我的後台", "text": "後台"}}],
+            },
+        })
+    return FlexSendMessage(alt_text=f"{staff.name}未來一週預約", contents={"type": "carousel", "contents": bubbles})
 
 def handle_root_action(data, user_id, db, is_staff_side=False):
     """處理管理員（root）相關的 Postback 動作"""
@@ -844,12 +909,8 @@ if handler_customer:
                     if role:
                         info_parts.append(f"角色:{role}")
                     info_text = " ".join(info_parts) or "基本資料更新中"
-                    bubbles.append({
+                    staff_bubble = {
                         "type": "bubble",
-                        "hero": {
-                            "type": "image", "size": "full", "aspectRatio": "10:8", "aspectMode": "cover",
-                            "url": "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=500&h=400&fit=crop" # ←在此抽換照片網址
-                        },
                         "body": {
                             "type": "box", "layout": "vertical", "backgroundColor": "#000000",
                             "contents": [
@@ -861,7 +922,12 @@ if handler_customer:
                             "type": "box", "layout": "vertical", "backgroundColor": "#111111",
                             "contents": [{"type": "button", "style": "primary", "color": "#9ECE6A", "action": {"type": "postback", "label": "預約這位", "data": f"action=preview_booking&staff_id={s.id}&plan={plan}&promotion_id={promotion_id}&datetime={selected_dt}"}}]
                         }
-                    })
+                    }
+                    if s.photo_url:
+                        staff_bubble["hero"] = {
+                            "type": "image", "size": "full", "aspectRatio": "4:5", "aspectMode": "cover", "url": s.photo_url
+                        }
+                    bubbles.append(staff_bubble)
 
                 # 如果有下一頁，第 10 張卡片放「看更多」
                 if has_more:
@@ -1058,7 +1124,15 @@ if handler_staff:
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"設定完成！{text} 師傅您好。\n請輸入「我的檔案」來完善基本資料，或輸入「上線」開始接單。"))
                     return
 
-                if text in {"後台", "後臺", "排班"}:
+                if text == "預約":
+                    reply_with_fallback(
+                        bot_staff_api,
+                        event.reply_token,
+                        build_staff_week_appointments(staff, db),
+                        db=db,
+                        context="師傅未來一週預約 Flex",
+                    )
+                elif text in {"後台", "後臺", "排班"}:
                     reply_with_fallback(bot_staff_api, event.reply_token, build_staff_backend_link(staff, db), db=db, context="師傅 LINE 直登入連結")
                 elif text == "上線":
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="「師傅在線」已停用，請使用個人班表連結新增正式排班。"))
@@ -1092,7 +1166,7 @@ if handler_staff:
                         db.commit()
                         bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"已更新角色為 {staff.role}"))
                 else:
-                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n👤「我的檔案」：查看與更新資料\n📅「排班」或「後台」：開啟自己的後台\n🔧「root」：管理員需再輸入 PIN 綁定"
+                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n📋「預約」：查看未來一週自己的預約\n👤「我的檔案」：查看與更新資料\n📅「排班」或「後台」：開啟自己的後台\n🔧「root」：管理員需再輸入 PIN 綁定"
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=guide_txt))
 
             except Exception:
@@ -1187,6 +1261,7 @@ def on_startup():
             "ALTER TABLE staffs ADD COLUMN phone_temp VARCHAR(50);",
             "ALTER TABLE staffs ADD COLUMN height VARCHAR(20);",
             "ALTER TABLE staffs ADD COLUMN weight VARCHAR(20);",
+            "ALTER TABLE staffs ADD COLUMN photo_url VARCHAR(1000);",
             "ALTER TABLE staffs ADD COLUMN role VARCHAR(50);",
             "ALTER TABLE staffs ADD COLUMN category VARCHAR(50);",
             "ALTER TABLE staffs ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active';",
@@ -1213,16 +1288,25 @@ def on_startup():
 
     db = SessionLocal()
     try:
-        roster = {
-            "straight": [("Eason", "180", "72"), ("Show", "187", "82"), ("霍爾", "174", "63"), ("小六", "170", "60"), ("吳樂", "173", "75"), ("小馬", "180", "75"), ("Frank", "178", "70"), ("捷程", "175", "82"), ("Jun", "176", "76"), ("小猴", "175", "69"), ("小虎", "182", "79"), ("白羊", "170", "52"), ("佐恩", "178", "60"), ("宇森", "180", "84")],
-            "gay": [("Harry", "170", "56"), ("士羽", "172", "73"), ("瑞奇", "172", "56"), ("朗", "185", "81"), ("Jack", "167", "58"), ("Max", "176", "70"), ("泠", "173", "65"), ("阿焰", "177", "65"), ("Jacob", "185", "80"), ("華", "177", "68"), ("武", "174", "72"), ("Seven", "177", "67"), ("小柏", "175", "78"), ("Wilson", "177", "77"), ("Wayne", "178", "70"), ("路卡", "157", "56"), ("Erik", "163", "53"), ("Mars", "175", "80"), ("ED", "178", "71"), ("萊伊", "185", "75"), ("Alex", "180", "74"), ("Fali", "180", "64"), ("伊恩", "169", "58"), ("Zane", "174", "70"), ("Eden", "173", "70")],
-            "bisexual": [("沐恩", "172", "66"), ("阿玄", "175", "59"), ("尼爾", "178", "75"), ("彥", "175", "79"), ("承承", "170", "55"), ("小安", "173", "58"), ("小羅", "183", "68"), ("可樂", "170", "60")],
-        }
-        for category, members in roster.items():
-            for name, height, weight in members:
-                if db.query(Staff).filter(Staff.name == name).first():
-                    continue
-                db.add(Staff(line_user_id=f"seeded:{category}:{name}", name=name, height=height, weight=weight, category=category, employment_status="active", is_online=False))
+        existing_staff = {item.name.strip().casefold(): item for item in db.query(Staff).all()}
+        for profile in THERAPIST_PROFILES:
+            staff_obj = existing_staff.get(profile.name.casefold())
+            if not staff_obj:
+                staff_obj = Staff(
+                    line_user_id=f"seeded:{profile.category}:{profile.slug}",
+                    name=profile.name,
+                    employment_status="active",
+                    is_online=False,
+                )
+                db.add(staff_obj)
+                existing_staff[profile.name.casefold()] = staff_obj
+            if not staff_obj.height:
+                staff_obj.height = profile.height
+            if not staff_obj.weight:
+                staff_obj.weight = profile.weight
+            if not staff_obj.category:
+                staff_obj.category = profile.category
+            staff_obj.photo_url = therapist_photo_url(profile)
         for customer in db.query(User).filter(User.phone.isnot(None)).order_by(User.id).all():
             try:
                 normalized = normalize_phone(customer.phone)

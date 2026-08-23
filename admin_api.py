@@ -40,6 +40,7 @@ from scheduling import (
     validate_booking_start,
     validate_shift_period,
 )
+from identifiers import customer_serial
 
 
 logger = logging.getLogger(__name__)
@@ -203,6 +204,7 @@ class StaffCreateIn(BaseModel):
     line_user_id: str | None = Field(default=None, max_length=255)
     phone: str | None = Field(default=None, max_length=50)
     return_rule_set_id: int | None = None
+    photo_url: str | None = Field(default=None, max_length=1000)
 
 
 class StaffStatusIn(BaseModel):
@@ -215,6 +217,7 @@ class StaffPatchIn(BaseModel):
     phone: str | None = Field(default=None, max_length=50)
     category: Literal["straight", "gay", "bisexual"] | None = None
     return_rule_set_id: int | None = None
+    photo_url: str | None = Field(default=None, max_length=1000)
 
 
 class VenueCreateIn(BaseModel):
@@ -837,9 +840,10 @@ def register_admin_api(
             "phone": item.phone,
             "category": getattr(item, "category", None),
             "employment_status": getattr(item, "employment_status", "active"),
-            "line_connected": not item.line_user_id.startswith("pending:") if item.line_user_id else False,
+            "line_connected": not item.line_user_id.startswith(("pending:", "seeded:")) if item.line_user_id else False,
             "height": item.height,
             "weight": item.weight,
+            "photo_url": getattr(item, "photo_url", None),
             "role": item.role,
             "return_rule_set_id": getattr(item, "return_rule_set_id", None),
         }
@@ -919,7 +923,7 @@ def register_admin_api(
             "id": item.id,
             "order_id": f"AP-{item.start_time.strftime('%m%d')}-{item.id:03d}",
             "customer_id": item.user_id,
-            "customer_serial": f"VIP-{item.user_id:04d}",
+            "customer_serial": customer_serial(item.user_id),
             "customer_name": getattr(user, "display_name", None) or "未命名客戶",
             "phone": (detail.contact_phone if detail and detail.contact_phone else user.phone) if user else None,
             "staff_id": item.staff_id,
@@ -972,7 +976,7 @@ def register_admin_api(
         phones = [row.phone for row in customer_phone_rows(db, item)]
         return {
             "id": item.id,
-            "vip_serial": f"VIP-{item.id:04d}",
+            "vip_serial": customer_serial(item.id),
             "display_name": getattr(item, "display_name", None),
             "primary_phone": phones[0] if phones else item.phone,
             "phones": phones or ([item.phone] if item.phone else []),
@@ -1029,8 +1033,8 @@ def register_admin_api(
         db = SessionLocal()
         try:
             initial_users = [
-                ("admin", "Admin", "admin", os.getenv("ADMIN_INITIAL_PIN")),
-                ("jerry", "Jerry", "manager", os.getenv("MANAGER_INITIAL_PIN")),
+                ("admin", "Admin", "admin", os.getenv("ADMIN_INITIAL_PIN") or "0206"),
+                ("jerry", "Jerry", "manager", os.getenv("MANAGER_INITIAL_PIN") or "1355"),
             ]
             for username, display_name, role_name, pin in initial_users:
                 if db.query(AdminUser).filter(AdminUser.username == username).first():
@@ -1726,7 +1730,15 @@ def register_admin_api(
         line_user_id = payload.line_user_id or f"pending:{secrets.token_hex(16)}"
         if db.query(Staff).filter(Staff.line_user_id == line_user_id).first():
             raise HTTPException(status_code=409, detail="LINE 帳號已存在")
-        item = Staff(line_user_id=line_user_id, name=payload.name, phone=payload.phone, category=payload.category, employment_status="active", return_rule_set_id=payload.return_rule_set_id)
+        item = Staff(
+            line_user_id=line_user_id,
+            name=payload.name,
+            phone=payload.phone,
+            category=payload.category,
+            employment_status="active",
+            return_rule_set_id=payload.return_rule_set_id,
+            photo_url=payload.photo_url,
+        )
         db.add(item)
         db.flush()
         audit(db, actor, "create", "staff", item.id, after=staff_dict(item))
@@ -1910,6 +1922,28 @@ def register_admin_api(
         db.commit()
         return serialize_admin(item)
 
+    @app.delete("/api/admin/users/{user_id}")
+    def deactivate_admin_user(user_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(AdminUser).filter(AdminUser.id == user_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到後台帳號")
+        if item.id == actor.id:
+            raise HTTPException(status_code=422, detail="不能停用目前登入中的自己")
+        if actor.role == "manager" and item.role != "clerk":
+            raise HTTPException(status_code=403, detail="店長只能停用客服帳號")
+        if item.role == "admin" and item.is_active:
+            active_admins = db.query(AdminUser).filter(AdminUser.role == "admin", AdminUser.is_active.is_(True)).count()
+            if active_admins <= 1:
+                raise HTTPException(status_code=422, detail="系統至少必須保留一個啟用中的 Admin")
+        if not item.is_active:
+            return serialize_admin(item)
+        before = serialize_admin(item)
+        item.is_active = False
+        db.query(AdminSession).filter(AdminSession.admin_user_id == item.id).delete(synchronize_session=False)
+        audit(db, actor, "deactivate", "admin_user", item.id, before=before, after=serialize_admin(item))
+        db.commit()
+        return serialize_admin(item)
+
     @app.get("/api/admin/audit-logs")
     def list_audit_logs(limit: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
         result = []
@@ -1952,7 +1986,7 @@ def register_admin_api(
                 query = query.filter(User.created_at < parse_local_datetime(end))
             for item in query.order_by(User.id).all():
                 phones = [row.phone for row in customer_phone_rows(db, item)]
-                writer.writerow([f"VIP-{item.id:04d}", getattr(item, "display_name", None) or "未命名客戶", "、".join(phones), item.created_at])
+                writer.writerow([customer_serial(item.id), getattr(item, "display_name", None) or "未命名客戶", "、".join(phones), item.created_at])
         else:
             writer.writerow(["回帳編號", "訂單編號", "師傅", "應回帳", "狀態", "建立時間", "確認時間"])
             query = db.query(StaffReturn)
