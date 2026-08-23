@@ -445,4 +445,67 @@ export class SpaApi {
     anchor.click();
     URL.revokeObjectURL(url);
   }
+
+  // ==========================================
+  // 官網內容管理 (SITE STUDIO) API
+  // ==========================================
+
+  // 1. 取得目前草稿與發布狀態 (Admin / 店長專用)
+  async getAdminSiteContent() {
+    return this.request<any>('/api/admin/site-content', { method: 'GET' });
+  }
+
+  // 2. 儲存草稿
+  async saveSiteDraft(content: any, expectedVersion: number) {
+    try {
+      const result = await fetch(`${API_BASE_URL}/api/admin/site-content/draft`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${this.token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          content: content,
+          expected_version: expectedVersion
+        })
+      });
+      
+      if (result.status === 409) {
+        throw new Error('版本衝突：有其他人員剛剛修改了內容，請重新載入以獲取最新版本');
+      }
+      if (result.status === 403) {
+        throw new Error('權限不足：只有店長或系統管理員可以修改官網內容');
+      }
+      if (!result.ok) throw new Error('儲存草稿失敗');
+      
+      return await result.json();
+    } catch (e: any) {
+      throw new Error(e.message || '儲存草稿失敗');
+    }
+  }
+
+  // 3. 正式發布
+  async publishSiteContent(expectedVersion: number) {
+    try {
+      const result = await fetch(`${API_BASE_URL}/api/admin/site-content/publish`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          expected_version: expectedVersion
+        })
+      });
+
+      if (result.status === 409) {
+        throw new Error('版本衝突：草稿狀態已變更，請確認後再發布');
+      }
+      if (!result.ok) throw new Error('發布失敗');
+      
+      return await result.json();
+    } catch (e: any) {
+      throw new Error(e.message || '發布失敗');
+    }
+  }
 }
