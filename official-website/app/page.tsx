@@ -3,11 +3,13 @@
 import { useEffect } from 'react';
 import { PointerLight, SiteHeader, WingMenu } from './components/WingMenu';
 
+const bookingUrl = 'https://equalspa-ops-preview.c83500699.chatgpt.site/booking';
+
 const services = [
-  ['A', '舒壓方案', '60 MIN', 'NT$ 1,500'],
-  ['B', '愉悅方案', '60 MIN', 'NT$ 2,000'],
-  ['C', '享受方案', '90 MIN', 'NT$ 2,500'],
-  ['D', '極緻方案', '120 MIN', 'NT$ 3,000'],
+  ['A', '舒壓方案', '指壓或油壓，簡單整理日常疲勞', '60 MIN', 'NT$ 1,500'],
+  ['B', '愉悅方案', '可指定師傅，加入體推與機能保養', '60 MIN', 'NT$ 2,000'],
+  ['C', '享受方案', '指壓與油壓完整銜接，節奏更從容', '90 MIN', 'NT$ 2,500'],
+  ['D', '極緻方案', '兩小時完整照顧，充分整理全身', '120 MIN', 'NT$ 3,000'],
 ] as const;
 
 function MobileSequence({ duplicate = false }: { duplicate?: boolean }) {
@@ -16,7 +18,7 @@ function MobileSequence({ duplicate = false }: { duplicate?: boolean }) {
       <section className="mobile-panel mobile-intro">
         <p className="mobile-index">00 / EQUAL SPA</p>
         <h2>RETURN<br />TO<br />EQUAL.</h2>
-        <p>回到平衡，也回到更自在的自己。台北西門町，給身體一段完整的休息時間。</p>
+        <p>回到平衡，也回到更自在的自己。</p>
         <span className="mobile-down">SCROLL ↓</span>
       </section>
 
@@ -29,7 +31,7 @@ function MobileSequence({ duplicate = false }: { duplicate?: boolean }) {
         </div>
         <h2>BOOK<br />WITH<br />LINE.</h2>
         <p className="mobile-translation">不用等待，從 LINE 開始確認方案、師傅與時間。</p>
-        <a className="mobile-primary" href="https://line.me/R/ti/p/%40017ktlhm" target="_blank" rel="noreferrer">加入好友並預約 ↗</a>
+        <a className="mobile-primary" href={bookingUrl} target="_blank" rel="noreferrer">開啟線上預約 ↗</a>
       </section>
 
       <section className="mobile-panel mobile-services">
@@ -37,8 +39,8 @@ function MobileSequence({ duplicate = false }: { duplicate?: boolean }) {
         <h2>CHOOSE<br />YOUR TIME.</h2>
         <p className="mobile-translation">依照今天的身體，選擇六十到一百二十分鐘。</p>
         <div className="mobile-service-list">
-          {services.map(([code, name, duration, price]) => (
-            <a href="/services" key={code}><i>{code}</i><span><b>{name}</b><small>{duration}</small></span><strong>{price}</strong></a>
+          {services.map(([code, name, summary, duration, price]) => (
+            <a href="/services" key={code}><i>{code}</i><span><b>{name}</b><small className="mobile-service-summary">{summary}</small><small>{duration}</small></span><strong>{price}</strong></a>
           ))}
         </div>
       </section>
@@ -109,7 +111,7 @@ export default function Home() {
         <div className="hero-copy">
           <p>PRECISION IN<br />EVERY TOUCH.</p>
           <span>精準理解每一種身體需求，讓舒適重新回到應有的位置。</span>
-          <a href="https://line.me/R/ti/p/%40017ktlhm" target="_blank" rel="noreferrer">立即使用 LINE 預約</a>
+          <a href={bookingUrl} target="_blank" rel="noreferrer">立即線上預約</a>
         </div>
         <p className="scroll-cue">EQUAL SPA · MOVE · RESET</p>
       </section>
