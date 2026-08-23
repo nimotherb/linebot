@@ -63,7 +63,7 @@ class LoginIn(BaseModel):
 class AdminUserCreateIn(BaseModel):
     username: str = Field(min_length=3, max_length=80, pattern=r"^[a-zA-Z0-9._-]+$")
     display_name: str = Field(min_length=1, max_length=120)
-    pin: str = Field(min_length=6, max_length=32, pattern=r"^\d+$")
+    pin: str = Field(min_length=4, max_length=32, pattern=r"^\d+$")
     role: Literal["admin", "manager", "clerk"] = "clerk"
 
 
@@ -75,17 +75,26 @@ class AppointmentCreateIn(BaseModel):
     staff_id: int | None = None
     room_id: int | None = None
     venue_id: int | None = None
+    promotion_id: int | None = None
     location_type: Literal["onsite", "external", "pending"] = "onsite"
     notes: str | None = Field(default=None, max_length=2000)
 
 
 class AppointmentPatchIn(BaseModel):
+    customer_name: str | None = Field(default=None, min_length=1, max_length=120)
+    phone: str | None = Field(default=None, min_length=8, max_length=30)
     status: str | None = None
     staff_id: int | None = None
     room_id: int | None = None
     venue_id: int | None = None
     start_time: datetime | None = None
     service_plan_id: int | None = None
+    promotion_id: int | None = None
+    location_type: Literal["onsite", "external", "pending"] | None = None
+    base_price: int | None = Field(default=None, ge=0)
+    discount_amount: int | None = Field(default=None, ge=0)
+    extra_amount: int | None = Field(default=None, ge=0)
+    total_amount: int | None = Field(default=None, ge=0)
     notes: str | None = Field(default=None, max_length=2000)
     force_reason: str | None = Field(default=None, max_length=500)
 
@@ -118,6 +127,18 @@ class PromotionCreateIn(BaseModel):
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     stackable: bool = False
+    description: str | None = Field(default=None, max_length=500)
+
+
+class PromotionPatchIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    calculation_type: Literal["fixed_discount", "percent_discount", "fixed_fee", "per_30_minutes", "per_km"] | None = None
+    value: int | None = Field(default=None, ge=0)
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    stackable: bool | None = None
+    active: bool | None = None
+    description: str | None = Field(default=None, max_length=500)
 
 
 class CheckoutIn(BaseModel):
@@ -127,16 +148,40 @@ class CheckoutIn(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
 
 
+class StaffLoginIn(BaseModel):
+    staff_id: int | None = None
+    phone: str | None = Field(default=None, min_length=8, max_length=50)
+
+
+class StaffAppointmentCreateIn(AppointmentCreateIn):
+    staff_id: int | None = None
+
+
+class ReturnRulePatchIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    amount: int | None = Field(default=None, ge=0)
+    duration_minutes: int | None = Field(default=None, ge=30, le=480)
+    active: bool | None = None
+
+
 class StaffCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     category: Literal["straight", "gay", "bisexual"]
     line_user_id: str | None = Field(default=None, max_length=255)
     phone: str | None = Field(default=None, max_length=50)
+    return_rule_set_id: int | None = None
 
 
 class StaffStatusIn(BaseModel):
     employment_status: Literal["active", "retired"]
     reason: str = Field(min_length=1, max_length=500)
+
+
+class StaffPatchIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    phone: str | None = Field(default=None, max_length=50)
+    category: Literal["straight", "gay", "bisexual"] | None = None
+    return_rule_set_id: int | None = None
 
 
 class VenueCreateIn(BaseModel):
@@ -174,6 +219,12 @@ def _model_dump(value: BaseModel) -> dict[str, Any]:
     return value.dict()
 
 
+def _model_dump_unset(value: BaseModel) -> dict[str, Any]:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(exclude_unset=True)
+    return value.dict(exclude_unset=True)
+
+
 def register_admin_api(
     app,
     *,
@@ -193,6 +244,7 @@ def register_admin_api(
         display_name = Column(String(120), nullable=False)
         pin_hash = Column(String(255), nullable=False)
         role = Column(String(30), nullable=False, default="clerk")
+        line_user_id = Column(String(255), unique=True, nullable=True, index=True)
         is_active = Column(Boolean, nullable=False, default=True)
         failed_attempts = Column(Integer, nullable=False, default=0)
         locked_until = Column(DateTime, nullable=True)
@@ -235,6 +287,7 @@ def register_admin_api(
         ends_at = Column(DateTime, nullable=True)
         active = Column(Boolean, nullable=False, default=True)
         stackable = Column(Boolean, nullable=False, default=False)
+        description = Column(String(500), nullable=True)
         created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
         updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
 
@@ -274,6 +327,7 @@ def register_admin_api(
         id = Column(Integer, primary_key=True)
         appointment_id = Column(Integer, ForeignKey("appointments.id"), unique=True, nullable=False, index=True)
         service_plan_id = Column(Integer, ForeignKey("service_plans.id"), nullable=True)
+        promotion_id = Column(Integer, ForeignKey("promotions.id"), nullable=True)
         room_id = Column(Integer, ForeignKey("rooms.id"), nullable=True)
         venue_id = Column(Integer, ForeignKey("venues.id"), nullable=True)
         base_price = Column(Integer, nullable=False, default=0)
@@ -325,6 +379,46 @@ def register_admin_api(
         encrypted_payload = Column(Text, nullable=False)
         updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
 
+    class StaffSession(Base):
+        __tablename__ = "staff_sessions"
+        id = Column(Integer, primary_key=True)
+        staff_id = Column(Integer, ForeignKey("staffs.id"), nullable=False, index=True)
+        token_hash = Column(String(64), unique=True, nullable=False, index=True)
+        expires_at = Column(DateTime, nullable=False, index=True)
+        created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
+
+    class ReturnRuleSet(Base):
+        __tablename__ = "return_rule_sets"
+        id = Column(Integer, primary_key=True)
+        code = Column(String(40), unique=True, nullable=False)
+        name = Column(String(160), nullable=False)
+        active = Column(Boolean, nullable=False, default=True)
+        created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
+
+    class ReturnRule(Base):
+        __tablename__ = "return_rules"
+        id = Column(Integer, primary_key=True)
+        rule_set_id = Column(Integer, ForeignKey("return_rule_sets.id"), nullable=False, index=True)
+        service_code = Column(String(30), nullable=False)
+        name = Column(String(160), nullable=False)
+        amount = Column(Integer, nullable=False)
+        duration_minutes = Column(Integer, nullable=False)
+        active = Column(Boolean, nullable=False, default=True)
+        updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
+
+    class StaffReturn(Base):
+        __tablename__ = "staff_returns"
+        id = Column(Integer, primary_key=True)
+        appointment_id = Column(Integer, ForeignKey("appointments.id"), unique=True, nullable=False, index=True)
+        staff_id = Column(Integer, ForeignKey("staffs.id"), nullable=False, index=True)
+        rule_id = Column(Integer, ForeignKey("return_rules.id"), nullable=True)
+        amount = Column(Integer, nullable=False, default=0)
+        status = Column(String(30), nullable=False, default="pending")
+        confirmed_by_user_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+        confirmed_at = Column(DateTime, nullable=True)
+        note = Column(Text, nullable=True)
+        created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
+
     app.state.admin_models = {
         "AdminUser": AdminUser,
         "AdminSession": AdminSession,
@@ -338,6 +432,10 @@ def register_admin_api(
         "AuditLog": AuditLog,
         "StaffScheduleToken": StaffScheduleToken,
         "StaffPrivateHealth": StaffPrivateHealth,
+        "StaffSession": StaffSession,
+        "ReturnRuleSet": ReturnRuleSet,
+        "ReturnRule": ReturnRule,
+        "StaffReturn": StaffReturn,
     }
 
     allowed_origins = [value.strip() for value in os.getenv("ADMIN_ALLOWED_ORIGINS", "http://localhost:3000").split(",") if value.strip()]
@@ -399,6 +497,25 @@ def register_admin_api(
         db.commit()
         return user
 
+    def current_staff(
+        authorization: str | None = Header(default=None),
+        db: Session = Depends(get_db),
+    ):
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="尚未選擇員工身分")
+        raw_token = authorization.split(" ", 1)[1].strip()
+        session = db.query(StaffSession).filter(StaffSession.token_hash == _token_hash(raw_token)).first()
+        now = now_taipei_naive()
+        if not session or session.expires_at <= now:
+            if session:
+                db.delete(session)
+                db.commit()
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="員工身分已過期")
+        staff_obj = db.query(Staff).filter(Staff.id == session.staff_id, Staff.employment_status == "active").first()
+        if not staff_obj:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="員工帳號目前不可使用")
+        return staff_obj
+
     def require_roles(*roles: str) -> Callable:
         def dependency(user=Depends(current_admin)):
             if user.role not in roles:
@@ -408,6 +525,41 @@ def register_admin_api(
 
     def serialize_admin(user) -> dict[str, Any]:
         return {"id": user.id, "username": user.username, "display_name": user.display_name, "role": user.role, "is_active": user.is_active}
+
+    def line_admin_identity(line_user_id: str, db: Session):
+        user = db.query(AdminUser).filter(AdminUser.line_user_id == line_user_id, AdminUser.is_active.is_(True), AdminUser.role.in_(["admin", "manager"])).first()
+        return serialize_admin(user) if user else None
+
+    def bind_line_admin(line_user_id: str, pin: str, db: Session):
+        candidates = db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.role.in_(["admin", "manager"])).all()
+        matched = None
+        for candidate in candidates:
+            if password_hash.verify(pin, candidate.pin_hash):
+                matched = candidate
+                break
+        if not matched:
+            return None
+        existing = db.query(AdminUser).filter(AdminUser.line_user_id == line_user_id, AdminUser.id != matched.id).all()
+        for item in existing:
+            item.line_user_id = None
+        matched.line_user_id = line_user_id
+        audit(db, matched, "line_bind", "admin_user", matched.id)
+        db.commit()
+        return serialize_admin(matched)
+
+    def unbind_line_admin(line_user_id: str, db: Session):
+        user = db.query(AdminUser).filter(AdminUser.line_user_id == line_user_id).first()
+        if not user:
+            return None
+        identity = serialize_admin(user)
+        user.line_user_id = None
+        audit(db, user, "line_unbind", "admin_user", user.id)
+        db.commit()
+        return identity
+
+    app.state.line_admin_identity = line_admin_identity
+    app.state.bind_line_admin = bind_line_admin
+    app.state.unbind_line_admin = unbind_line_admin
 
     def service_dict(item) -> dict[str, Any]:
         return {
@@ -424,6 +576,19 @@ def register_admin_api(
             "effective_to": _iso(item.effective_to),
         }
 
+    def promotion_dict(item) -> dict[str, Any]:
+        return {
+            "id": item.id,
+            "name": item.name,
+            "calculation_type": item.calculation_type,
+            "value": item.value,
+            "active": item.active,
+            "starts_at": _iso(item.starts_at),
+            "ends_at": _iso(item.ends_at),
+            "stackable": item.stackable,
+            "description": item.description,
+        }
+
     def staff_dict(item) -> dict[str, Any]:
         return {
             "id": item.id,
@@ -435,7 +600,53 @@ def register_admin_api(
             "height": item.height,
             "weight": item.weight,
             "role": item.role,
+            "return_rule_set_id": getattr(item, "return_rule_set_id", None),
         }
+
+    def return_rule_sets_dict(db: Session) -> list[dict[str, Any]]:
+        result = []
+        for rule_set in db.query(ReturnRuleSet).order_by(ReturnRuleSet.id).all():
+            rules = db.query(ReturnRule).filter(ReturnRule.rule_set_id == rule_set.id).order_by(ReturnRule.id).all()
+            result.append({
+                "id": rule_set.id,
+                "code": rule_set.code,
+                "name": rule_set.name,
+                "active": rule_set.active,
+                "rules": [{"id": rule.id, "service_code": rule.service_code, "name": rule.name, "amount": rule.amount, "duration_minutes": rule.duration_minutes, "active": rule.active} for rule in rules],
+            })
+        return result
+
+    def promotion_discount(item, base_price: int) -> int:
+        if not item or not item.active:
+            return 0
+        now = now_taipei_naive()
+        if item.starts_at and item.starts_at > now:
+            return 0
+        if item.ends_at and item.ends_at < now:
+            return 0
+        if item.calculation_type == "fixed_discount":
+            return min(base_price, item.value)
+        if item.calculation_type == "percent_discount":
+            return min(base_price, round(base_price * item.value / 100))
+        return 0
+
+    def return_rule_for_appointment(db: Session, appointment, detail=None):
+        if not appointment.staff_id:
+            return None
+        staff_obj = db.query(Staff).filter(Staff.id == appointment.staff_id).first()
+        rule_set_id = getattr(staff_obj, "return_rule_set_id", None) if staff_obj else None
+        if not rule_set_id:
+            first_set = db.query(ReturnRuleSet).filter(ReturnRuleSet.active.is_(True)).order_by(ReturnRuleSet.id).first()
+            rule_set_id = first_set.id if first_set else None
+        if not rule_set_id:
+            return None
+        if detail is None:
+            detail = db.query(AppointmentDetail).filter(AppointmentDetail.appointment_id == appointment.id).first()
+        plan = db.query(ServicePlan).filter(ServicePlan.id == detail.service_plan_id).first() if detail and detail.service_plan_id else None
+        code = plan.code if plan else (appointment.plan_name or "").split("-", 1)[0]
+        if code == "OUT":
+            code = "E"
+        return db.query(ReturnRule).filter(ReturnRule.rule_set_id == rule_set_id, ReturnRule.service_code == code, ReturnRule.active.is_(True)).first()
 
     def shift_dict(item) -> dict[str, Any]:
         return {
@@ -455,11 +666,14 @@ def register_admin_api(
     def appointment_dict(db: Session, item) -> dict[str, Any]:
         detail = db.query(AppointmentDetail).filter(AppointmentDetail.appointment_id == item.id).first()
         plan = db.query(ServicePlan).filter(ServicePlan.id == detail.service_plan_id).first() if detail and detail.service_plan_id else None
+        promotion = db.query(Promotion).filter(Promotion.id == detail.promotion_id).first() if detail and detail.promotion_id else None
         room = db.query(Room).filter(Room.id == detail.room_id).first() if detail and detail.room_id else None
         venue = db.query(Venue).filter(Venue.id == detail.venue_id).first() if detail and detail.venue_id else None
         user = db.query(User).filter(User.id == item.user_id).first()
         staff_obj = db.query(Staff).filter(Staff.id == item.staff_id).first() if item.staff_id else None
         payment = db.query(Payment).filter(Payment.appointment_id == item.id, Payment.status == "paid").order_by(Payment.id.desc()).first()
+        staff_return = db.query(StaffReturn).filter(StaffReturn.appointment_id == item.id).first()
+        return_rule = return_rule_for_appointment(db, item, detail)
         return {
             "id": item.id,
             "order_id": f"AP-{item.start_time.strftime('%m%d')}-{item.id:03d}",
@@ -470,6 +684,8 @@ def register_admin_api(
             "staff_name": staff_obj.name if staff_obj else "未指定",
             "service_plan_id": plan.id if plan else None,
             "service_name": plan.name if plan else item.plan_name or "未知方案",
+            "promotion_id": promotion.id if promotion else None,
+            "promotion_name": promotion.name if promotion else None,
             "duration_minutes": item.duration,
             "start_time": _iso(item.start_time),
             "end_time": _iso(item.end_time),
@@ -488,7 +704,19 @@ def register_admin_api(
             "payment_status": payment.status if payment else "unpaid",
             "payment_method": payment.method if payment else None,
             "cash_return_status": payment.cash_return_status if payment else None,
+            "expected_return_amount": staff_return.amount if staff_return else (return_rule.amount if return_rule else 0),
+            "staff_return_status": staff_return.status if staff_return else "not_created",
         }
+
+    def public_appointment_dict(db: Session, item) -> dict[str, Any]:
+        row = appointment_dict(db, item)
+        for key in ("customer_id", "customer_name", "phone", "base_price", "discount_amount", "extra_amount", "total_amount", "notes", "payment_method", "cash_return_status", "expected_return_amount", "staff_return_status"):
+            row.pop(key, None)
+        row["customer_name"] = "已隱藏"
+        row["phone"] = None
+        row["total_amount"] = 0
+        row["notes"] = None
+        return row
 
     def customer_dict(db: Session, item) -> dict[str, Any]:
         visits = db.query(Appointment).filter(
@@ -584,14 +812,33 @@ def register_admin_api(
                     db.add(Room(name=room_name))
 
             seed_promotions = [
-                ("午夜服務費", "fixed_fee", 600),
-                ("預約加時（每 30 分鐘）", "per_30_minutes", 500),
-                ("現場加時（每 30 分鐘）", "per_30_minutes", 700),
-                ("外出里程費（每公里）", "per_km", 80),
+                ("生日月優惠", "fixed_discount", 300, "當月壽星出示證明可使用。"),
+                ("新進師傅體驗優惠", "fixed_discount", 200, "預約新進師傅的期間限定體驗折扣。"),
+                ("平日下午優惠", "fixed_discount", 200, "週一至週五 17:00 前指定時段適用。"),
+                ("首次到店優惠", "fixed_discount", 200, "第一次完成預約的客戶適用。"),
+                ("好友推薦優惠", "fixed_discount", 200, "由既有客戶推薦的新客可使用。"),
+                ("午夜服務費", "fixed_fee", 600, "午夜時段的服務附加費。"),
+                ("預約加時（每 30 分鐘）", "per_30_minutes", 500, "預約時先選擇的加時費。"),
+                ("現場加時（每 30 分鐘）", "per_30_minutes", 700, "服務現場臨時增加的加時費。"),
+                ("外出里程費（每公里）", "per_km", 80, "超出基本距離後按公里計算。"),
             ]
-            for name, calculation_type, value in seed_promotions:
+            for name, calculation_type, value, description in seed_promotions:
                 if not db.query(Promotion).filter(Promotion.name == name).first():
-                    db.add(Promotion(name=name, calculation_type=calculation_type, value=value))
+                    db.add(Promotion(name=name, calculation_type=calculation_type, value=value, description=description))
+
+            return_tables = [
+                ("TABLE_1", "回帳表一（A–E／借房）", [("A", "A方案", 700, 60), ("B", "B方案", 800, 60), ("C", "C方案", 1000, 90), ("D", "D方案", 1200, 120), ("E", "E方案", 1200, 100), ("BORROW", "借房", 300, 60)]),
+                ("TABLE_2", "回帳表二（A–D）", [("A", "A方案", 300, 60), ("B", "B方案", 300, 60), ("C", "C方案", 400, 90), ("D", "D方案", 500, 120)]),
+            ]
+            for code, name, rules in return_tables:
+                rule_set = db.query(ReturnRuleSet).filter(ReturnRuleSet.code == code).first()
+                if not rule_set:
+                    rule_set = ReturnRuleSet(code=code, name=name)
+                    db.add(rule_set)
+                    db.flush()
+                for service_code, rule_name, amount, duration in rules:
+                    if not db.query(ReturnRule).filter(ReturnRule.rule_set_id == rule_set.id, ReturnRule.service_code == service_code).first():
+                        db.add(ReturnRule(rule_set_id=rule_set.id, service_code=service_code, name=rule_name, amount=amount, duration_minutes=duration))
             db.commit()
         except Exception:
             db.rollback()
@@ -602,6 +849,80 @@ def register_admin_api(
     @app.get("/api/admin/health")
     def admin_health():
         return {"status": "ok", "service": "equalspa-admin-api", "time": _iso(now_taipei_naive())}
+
+    @app.get("/api/public/bootstrap")
+    def public_bootstrap(db: Session = Depends(get_db)):
+        appointments = db.query(Appointment).order_by(Appointment.start_time.desc()).limit(300).all()
+        shifts = db.query(Shift).filter(Shift.status == "active").order_by(Shift.start_time).limit(500).all()
+        return {
+            "mode": "public",
+            "user": None,
+            "appointments": [public_appointment_dict(db, item) for item in appointments],
+            "staff": [{"id": item.id, "name": item.name, "category": item.category, "employment_status": item.employment_status, "line_connected": False} for item in db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.name).all()],
+            "shifts": [shift_dict(item) | {"staff_name": (db.query(Staff).filter(Staff.id == item.staff_id).first().name if db.query(Staff).filter(Staff.id == item.staff_id).first() else "未知")} for item in shifts],
+            "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.active.is_(True)).order_by(ServicePlan.id).all()],
+            "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.active.is_(True)).order_by(Promotion.id).all()],
+            "rooms": [{"id": item.id, "name": item.name, "active": item.active} for item in db.query(Room).filter(Room.active.is_(True)).order_by(Room.id).all()],
+            "customers": [],
+            "admin_users": [],
+            "return_rule_sets": [],
+        }
+
+    @app.post("/api/staff/auth/login")
+    def staff_login(payload: StaffLoginIn, db: Session = Depends(get_db)):
+        if payload.staff_id:
+            staff_obj = db.query(Staff).filter(Staff.id == payload.staff_id, Staff.employment_status == "active").first()
+        elif payload.phone:
+            staff_obj = db.query(Staff).filter(Staff.phone == payload.phone.strip(), Staff.employment_status == "active").first()
+        else:
+            raise HTTPException(status_code=422, detail="請選擇姓名或輸入手機 ID")
+        if not staff_obj:
+            raise HTTPException(status_code=404, detail="找不到在職員工")
+        raw_token = secrets.token_urlsafe(40)
+        db.add(StaffSession(staff_id=staff_obj.id, token_hash=_token_hash(raw_token), expires_at=now_taipei_naive() + timedelta(hours=24)))
+        audit(db, None, "staff_login", "staff", staff_obj.id, reason="passwordless staff identity")
+        db.commit()
+        return {"access_token": raw_token, "expires_in": 86400, "staff": {"id": staff_obj.id, "name": staff_obj.name, "role": "staff"}}
+
+    @app.post("/api/staff/auth/logout")
+    def staff_logout(authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+        if authorization and authorization.lower().startswith("bearer "):
+            token = authorization.split(" ", 1)[1].strip()
+            session = db.query(StaffSession).filter(StaffSession.token_hash == _token_hash(token)).first()
+            if session:
+                db.delete(session)
+                db.commit()
+        return {"ok": True}
+
+    @app.get("/api/staff/bootstrap")
+    def staff_bootstrap(db: Session = Depends(get_db), staff_obj=Depends(current_staff)):
+        appointments = db.query(Appointment).filter(Appointment.staff_id == staff_obj.id).order_by(Appointment.start_time.desc()).limit(300).all()
+        shifts = db.query(Shift).filter(Shift.staff_id == staff_obj.id, Shift.status == "active").order_by(Shift.start_time).limit(500).all()
+        return {
+            "mode": "staff",
+            "staff_user": {"id": staff_obj.id, "name": staff_obj.name, "role": "staff"},
+            "appointments": [appointment_dict(db, item) for item in appointments],
+            "staff": [staff_dict(staff_obj)],
+            "shifts": [shift_dict(item) | {"staff_name": staff_obj.name} for item in shifts],
+            "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.active.is_(True)).order_by(ServicePlan.id).all()],
+            "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.active.is_(True)).order_by(Promotion.id).all()],
+            "rooms": [{"id": item.id, "name": item.name, "active": item.active} for item in db.query(Room).filter(Room.active.is_(True)).order_by(Room.id).all()],
+            "customers": [],
+            "admin_users": [],
+            "return_rule_sets": [],
+        }
+
+    @app.patch("/api/staff/appointments/{appointment_id}/complete")
+    def staff_complete_appointment(appointment_id: int, db: Session = Depends(get_db), staff_obj=Depends(current_staff)):
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_id, Appointment.staff_id == staff_obj.id).with_for_update().first()
+        if not appointment:
+            raise HTTPException(status_code=404, detail="找不到自己的訂單")
+        if appointment.status in CANCELLED_APPOINTMENT_STATUSES:
+            raise HTTPException(status_code=422, detail="已取消訂單不能標記完成")
+        appointment.status = "awaiting_checkout"
+        audit(db, None, "staff_complete", "appointment", appointment.id, reason=f"staff_id={staff_obj.id}")
+        db.commit()
+        return appointment_dict(db, appointment)
 
     @app.post("/api/admin/auth/login")
     def login(payload: LoginIn, request: Request, db: Session = Depends(get_db)):
@@ -658,11 +979,12 @@ def register_admin_api(
             "staff": [staff_dict(item) for item in db.query(Staff).order_by(Staff.name).all()],
             "shifts": [shift_dict(item) | {"staff_name": db.query(Staff).filter(Staff.id == item.staff_id).first().name} for item in shift_rows],
             "services": [service_dict(item) for item in db.query(ServicePlan).order_by(ServicePlan.id).all()],
-            "promotions": [{"id": item.id, "name": item.name, "calculation_type": item.calculation_type, "value": item.value, "active": item.active, "starts_at": _iso(item.starts_at), "ends_at": _iso(item.ends_at), "stackable": item.stackable} for item in db.query(Promotion).order_by(Promotion.id).all()],
+            "promotions": [promotion_dict(item) for item in db.query(Promotion).order_by(Promotion.id).all()],
             "rooms": [{"id": item.id, "name": item.name, "active": item.active} for item in db.query(Room).order_by(Room.id).all()],
             "venues": [{"id": item.id, "name": item.name, "address": item.address, "room_name": item.room_name, "rental_cost": item.rental_cost, "notes": item.notes, "active": item.active} for item in db.query(Venue).filter(Venue.active.is_(True)).all()],
             "customers": [customer_dict(db, item) for item in db.query(User).order_by(User.created_at.desc()).limit(1000).all()],
             "admin_users": [serialize_admin(item) for item in db.query(AdminUser).order_by(AdminUser.id).all()] if user.role in {"admin", "manager"} else [],
+            "return_rule_sets": return_rule_sets_dict(db),
         }
 
     @app.get("/api/admin/appointments")
@@ -684,6 +1006,11 @@ def register_admin_api(
         plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id, ServicePlan.active.is_(True)).first()
         if not plan:
             raise HTTPException(status_code=404, detail="找不到啟用中的服務方案")
+        promotion = None
+        if payload.promotion_id:
+            promotion = db.query(Promotion).filter(Promotion.id == payload.promotion_id, Promotion.active.is_(True)).first()
+            if not promotion:
+                raise HTTPException(status_code=404, detail="找不到啟用中的優惠")
         start_dt = parse_local_datetime(payload.start_time)
         end_dt = appointment_end(start_dt, plan.duration_minutes)
 
@@ -727,18 +1054,28 @@ def register_admin_api(
         detail = AppointmentDetail(
             appointment_id=appointment.id,
             service_plan_id=plan.id,
+            promotion_id=promotion.id if promotion else None,
             room_id=payload.room_id,
             venue_id=payload.venue_id,
             base_price=plan.price,
-            total_amount=plan.price,
+            discount_amount=promotion_discount(promotion, plan.price),
+            total_amount=plan.price - promotion_discount(promotion, plan.price),
             location_type=payload.location_type,
             notes=payload.notes,
         )
         db.add(detail)
-        audit(db, actor, "create", "appointment", appointment.id, after={"start": start_dt, "end": end_dt, "staff_id": payload.staff_id, "room_id": payload.room_id})
+        audit(db, actor, "create", "appointment", appointment.id, after={"start": start_dt, "end": end_dt, "staff_id": payload.staff_id, "room_id": payload.room_id, "promotion_id": payload.promotion_id})
         db.commit()
         db.refresh(appointment)
         return appointment_dict(db, appointment)
+
+    @app.post("/api/staff/appointments", status_code=201)
+    def create_staff_appointment(payload: StaffAppointmentCreateIn, db: Session = Depends(get_db), staff_obj=Depends(current_staff)):
+        values = _model_dump(payload)
+        values["staff_id"] = staff_obj.id
+        normalized = AppointmentCreateIn(**values)
+        actor = type("StaffActor", (), {"id": None, "role": "staff"})()
+        return create_appointment(normalized, db, actor)
 
     @app.patch("/api/admin/appointments/{appointment_id}")
     def update_appointment(appointment_id: int, payload: AppointmentPatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
@@ -747,16 +1084,31 @@ def register_admin_api(
             raise HTTPException(status_code=404, detail="找不到預約")
         detail = db.query(AppointmentDetail).filter(AppointmentDetail.appointment_id == appointment.id).first()
         before = appointment_dict(db, appointment)
+        changes = _model_dump_unset(payload)
+        monetary_fields = {"base_price", "discount_amount", "extra_amount", "total_amount"}
+        if actor.role == "clerk" and monetary_fields.intersection(changes):
+            raise HTTPException(status_code=403, detail="客服不能直接覆寫金額，請由店長或 Admin 處理")
+        customer = db.query(User).filter(User.id == appointment.user_id).first()
+        if customer and payload.customer_name is not None:
+            customer.display_name = payload.customer_name
+        if customer and payload.phone is not None:
+            customer.phone = payload.phone
         plan = None
-        if payload.service_plan_id:
+        if payload.service_plan_id is not None:
             plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id).first()
             if not plan:
                 raise HTTPException(status_code=404, detail="找不到服務方案")
+        promotion = None
+        promotion_changed = "promotion_id" in changes
+        if promotion_changed and payload.promotion_id:
+            promotion = db.query(Promotion).filter(Promotion.id == payload.promotion_id, Promotion.active.is_(True)).first()
+            if not promotion:
+                raise HTTPException(status_code=404, detail="找不到啟用中的優惠")
         start_dt = parse_local_datetime(payload.start_time) if payload.start_time else appointment.start_time
         duration = plan.duration_minutes if plan else appointment.duration
         end_dt = appointment_end(start_dt, duration)
-        staff_id = payload.staff_id if payload.staff_id is not None else appointment.staff_id
-        room_id = payload.room_id if payload.room_id is not None else (detail.room_id if detail else None)
+        staff_id = payload.staff_id if "staff_id" in changes else appointment.staff_id
+        room_id = payload.room_id if "room_id" in changes else (detail.room_id if detail else None)
         if staff_id and staff_appointment_conflict(db, staff_id, start_dt, end_dt, appointment.id):
             raise HTTPException(status_code=409, detail="師傅時間重疊")
         if room_id and room_appointment_conflict(db, room_id, start_dt, end_dt, appointment.id):
@@ -773,14 +1125,28 @@ def register_admin_api(
         if plan:
             detail.service_plan_id = plan.id
             detail.base_price = plan.price
-            detail.total_amount = plan.price - detail.discount_amount + detail.extra_amount
             appointment.plan_name = f"{plan.code}-{plan.name}"
-        if payload.room_id is not None:
+        if promotion_changed:
+            detail.promotion_id = promotion.id if promotion else None
+            detail.discount_amount = promotion_discount(promotion, detail.base_price)
+        if plan or promotion_changed:
+            current_promotion = promotion if promotion_changed else (db.query(Promotion).filter(Promotion.id == detail.promotion_id).first() if detail.promotion_id else None)
+            detail.discount_amount = promotion_discount(current_promotion, detail.base_price)
+            detail.total_amount = max(0, detail.base_price - detail.discount_amount + detail.extra_amount)
+        if "room_id" in changes:
             detail.room_id = payload.room_id
-        if payload.venue_id is not None:
+        if "venue_id" in changes:
             detail.venue_id = payload.venue_id
+        if payload.location_type is not None:
+            detail.location_type = payload.location_type
         if payload.notes is not None:
             detail.notes = payload.notes
+        if actor.role in {"admin", "manager"}:
+            for field in monetary_fields:
+                if field in changes:
+                    setattr(detail, field, changes[field])
+            if monetary_fields.intersection(changes) and "total_amount" not in changes:
+                detail.total_amount = max(0, detail.base_price - detail.discount_amount + detail.extra_amount)
         after = appointment_dict(db, appointment)
         audit(db, actor, "update", "appointment", appointment.id, reason=payload.force_reason, before=before, after=after)
         db.commit()
@@ -852,7 +1218,7 @@ def register_admin_api(
 
     @app.get("/api/admin/promotions")
     def list_promotions(db: Session = Depends(get_db), user=Depends(current_admin)):
-        return [{"id": item.id, "name": item.name, "calculation_type": item.calculation_type, "value": item.value, "active": item.active, "starts_at": _iso(item.starts_at), "ends_at": _iso(item.ends_at), "stackable": item.stackable} for item in db.query(Promotion).order_by(Promotion.id).all()]
+        return [promotion_dict(item) for item in db.query(Promotion).order_by(Promotion.id).all()]
 
     @app.post("/api/admin/promotions", status_code=201)
     def create_promotion(payload: PromotionCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
@@ -861,21 +1227,68 @@ def register_admin_api(
         db.flush()
         audit(db, actor, "create", "promotion", item.id, after=_model_dump(payload))
         db.commit()
-        return {"id": item.id, **_model_dump(payload), "active": True}
+        return promotion_dict(item)
+
+    @app.patch("/api/admin/promotions/{promotion_id}")
+    def update_promotion(promotion_id: int, payload: PromotionPatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(Promotion).filter(Promotion.id == promotion_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到優惠")
+        before = promotion_dict(item)
+        for field, value in _model_dump_unset(payload).items():
+            if field in {"starts_at", "ends_at"} and value is not None:
+                value = parse_local_datetime(value)
+            setattr(item, field, value)
+        audit(db, actor, "update", "promotion", item.id, before=before, after=promotion_dict(item))
+        db.commit()
+        return promotion_dict(item)
 
     @app.get("/api/admin/staff")
     def list_staff(db: Session = Depends(get_db), user=Depends(current_admin)):
         return [staff_dict(item) for item in db.query(Staff).order_by(Staff.name).all()]
+
+    @app.get("/api/admin/return-rules")
+    def list_return_rules(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
+        return return_rule_sets_dict(db)
+
+    @app.patch("/api/admin/return-rules/{rule_id}")
+    def update_return_rule(rule_id: int, payload: ReturnRulePatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(ReturnRule).filter(ReturnRule.id == rule_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到回帳規則")
+        before = {"name": item.name, "amount": item.amount, "duration_minutes": item.duration_minutes, "active": item.active}
+        for field, value in _model_dump_unset(payload).items():
+            setattr(item, field, value)
+        after = {"name": item.name, "amount": item.amount, "duration_minutes": item.duration_minutes, "active": item.active}
+        audit(db, actor, "update", "return_rule", item.id, before=before, after=after)
+        db.commit()
+        return {"id": item.id, "service_code": item.service_code, **after}
 
     @app.post("/api/admin/staff", status_code=201)
     def create_staff(payload: StaffCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
         line_user_id = payload.line_user_id or f"pending:{secrets.token_hex(16)}"
         if db.query(Staff).filter(Staff.line_user_id == line_user_id).first():
             raise HTTPException(status_code=409, detail="LINE 帳號已存在")
-        item = Staff(line_user_id=line_user_id, name=payload.name, phone=payload.phone, category=payload.category, employment_status="active")
+        item = Staff(line_user_id=line_user_id, name=payload.name, phone=payload.phone, category=payload.category, employment_status="active", return_rule_set_id=payload.return_rule_set_id)
         db.add(item)
         db.flush()
         audit(db, actor, "create", "staff", item.id, after=staff_dict(item))
+        db.commit()
+        return staff_dict(item)
+
+    @app.patch("/api/admin/staff/{staff_id}")
+    def update_staff(staff_id: int, payload: StaffPatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(Staff).filter(Staff.id == staff_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到員工")
+        changes = _model_dump_unset(payload)
+        if "return_rule_set_id" in changes and changes["return_rule_set_id"] is not None:
+            if not db.query(ReturnRuleSet).filter(ReturnRuleSet.id == changes["return_rule_set_id"], ReturnRuleSet.active.is_(True)).first():
+                raise HTTPException(status_code=404, detail="找不到回帳表")
+        before = staff_dict(item)
+        for field, value in changes.items():
+            setattr(item, field, value)
+        audit(db, actor, "update", "staff", item.id, before=before, after=staff_dict(item))
         db.commit()
         return staff_dict(item)
 
@@ -964,9 +1377,25 @@ def register_admin_api(
         db.add(payment)
         appointment.status = "completed"
         db.flush()
+        return_amount = 0
+        staff_return = None
+        if payload.method == "cash" and payload.received_by_staff_id:
+            if appointment.staff_id and appointment.staff_id != payload.received_by_staff_id:
+                raise HTTPException(status_code=422, detail="代收師傅必須與訂單師傅相同")
+            rule = return_rule_for_appointment(db, appointment)
+            return_amount = rule.amount if rule else 0
+            staff_return = StaffReturn(
+                appointment_id=appointment.id,
+                staff_id=payload.received_by_staff_id,
+                rule_id=rule.id if rule else None,
+                amount=return_amount,
+                status="pending",
+                note=payload.note,
+            )
+            db.add(staff_return)
         audit(db, actor, "checkout", "appointment", appointment_id, after={"amount": payload.amount, "method": payload.method})
         db.commit()
-        return {"ok": True, "payment_id": payment.id, "cash_return_status": payment.cash_return_status, "appointment": appointment_dict(db, appointment)}
+        return {"ok": True, "payment_id": payment.id, "cash_return_status": payment.cash_return_status, "return_amount": return_amount, "staff_return_id": staff_return.id if staff_return else None, "appointment": appointment_dict(db, appointment)}
 
     @app.post("/api/admin/payments/{payment_id}/confirm-cash-return")
     def confirm_cash_return(payment_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
@@ -979,9 +1408,33 @@ def register_admin_api(
             return {"ok": True, "cash_return_status": "confirmed"}
         payment.cash_return_status = "confirmed"
         payment.confirmed_by_user_id = actor.id
+        staff_return = db.query(StaffReturn).filter(StaffReturn.appointment_id == payment.appointment_id).first()
+        if staff_return:
+            staff_return.status = "confirmed"
+            staff_return.confirmed_by_user_id = actor.id
+            staff_return.confirmed_at = now_taipei_naive()
         audit(db, actor, "confirm_cash_return", "payment", payment.id, after={"status": "confirmed"})
         db.commit()
         return {"ok": True, "cash_return_status": "confirmed"}
+
+    @app.get("/api/admin/staff-returns")
+    def list_staff_returns(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
+        result = []
+        for item in db.query(StaffReturn).order_by(StaffReturn.created_at.desc()).limit(1000).all():
+            appointment = db.query(Appointment).filter(Appointment.id == item.appointment_id).first()
+            staff_obj = db.query(Staff).filter(Staff.id == item.staff_id).first()
+            result.append({
+                "id": item.id,
+                "appointment_id": item.appointment_id,
+                "order_id": f"AP-{appointment.start_time.strftime('%m%d')}-{appointment.id:03d}" if appointment else str(item.appointment_id),
+                "staff_id": item.staff_id,
+                "staff_name": staff_obj.name if staff_obj else "未知",
+                "amount": item.amount,
+                "status": item.status,
+                "confirmed_at": _iso(item.confirmed_at),
+                "created_at": _iso(item.created_at),
+            })
+        return result
 
     @app.get("/api/admin/users")
     def list_admin_users(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
@@ -1009,7 +1462,7 @@ def register_admin_api(
         return result
 
     @app.get("/api/admin/export/{dataset}")
-    def export_dataset(dataset: Literal["appointments", "shifts", "customers"], start: datetime | None = None, end: datetime | None = None, db: Session = Depends(get_db), actor=Depends(current_admin)):
+    def export_dataset(dataset: Literal["appointments", "shifts", "customers", "staff_returns"], start: datetime | None = None, end: datetime | None = None, db: Session = Depends(get_db), actor=Depends(current_admin)):
         output = io.StringIO()
         output.write("\ufeff")
         writer = csv.writer(output)
@@ -1033,7 +1486,7 @@ def register_admin_api(
             for item in query.order_by(Shift.start_time).all():
                 staff_obj = db.query(Staff).filter(Staff.id == item.staff_id).first()
                 writer.writerow([item.id, staff_obj.name if staff_obj else item.staff_id, item.start_time.date(), item.start_time.strftime("%H:%M"), item.end_time.strftime("%H:%M"), item.source, item.status])
-        else:
+        elif dataset == "customers":
             writer.writerow(["客戶編號", "LINE 顯示名稱", "電話", "建立日期"])
             query = db.query(User)
             if start:
@@ -1042,6 +1495,17 @@ def register_admin_api(
                 query = query.filter(User.created_at < parse_local_datetime(end))
             for item in query.order_by(User.id).all():
                 writer.writerow([f"VIP-{item.id:04d}", getattr(item, "display_name", None), item.phone, item.created_at])
+        else:
+            writer.writerow(["回帳編號", "訂單編號", "師傅", "應回帳", "狀態", "建立時間", "確認時間"])
+            query = db.query(StaffReturn)
+            if start:
+                query = query.filter(StaffReturn.created_at >= parse_local_datetime(start))
+            if end:
+                query = query.filter(StaffReturn.created_at < parse_local_datetime(end))
+            for item in query.order_by(StaffReturn.created_at).all():
+                appointment = db.query(Appointment).filter(Appointment.id == item.appointment_id).first()
+                staff_obj = db.query(Staff).filter(Staff.id == item.staff_id).first()
+                writer.writerow([item.id, f"AP-{appointment.start_time.strftime('%m%d')}-{appointment.id:03d}" if appointment else item.appointment_id, staff_obj.name if staff_obj else item.staff_id, item.amount, item.status, item.created_at, item.confirmed_at])
         audit(db, actor, "export", dataset, reason=f"start={start};end={end}")
         db.commit()
         output.seek(0)
@@ -1093,5 +1557,32 @@ def register_admin_api(
         item.status = "cancelled"
         item.change_reason = "staff self-cancelled"
         audit(db, None, "cancel", "shift", item.id, reason="staff schedule link")
+        db.commit()
+        return {"ok": True}
+
+    @app.post("/api/staff/shifts", status_code=201)
+    def staff_session_create_shift(payload: PublicShiftCreateIn, db: Session = Depends(get_db), staff_obj=Depends(current_staff)):
+        start_dt, end_dt = validate_shift_period(payload.start_time, payload.end_time)
+        if not staff_may_change_shift(start_dt):
+            raise HTTPException(status_code=422, detail="開始時間已進入 90 分鐘鎖定範圍，請聯絡店長")
+        if shift_conflict(db, staff_obj.id, start_dt, end_dt):
+            raise HTTPException(status_code=409, detail="排班時間重疊")
+        item = Shift(staff_id=staff_obj.id, start_time=start_dt, end_time=end_dt, source="staff_link")
+        db.add(item)
+        db.flush()
+        audit(db, None, "create", "shift", item.id, reason=f"staff session {staff_obj.id}", after=shift_dict(item))
+        db.commit()
+        return shift_dict(item) | {"staff_name": staff_obj.name}
+
+    @app.delete("/api/staff/shifts/{shift_id}")
+    def staff_session_delete_shift(shift_id: int, db: Session = Depends(get_db), staff_obj=Depends(current_staff)):
+        item = db.query(Shift).filter(Shift.id == shift_id, Shift.staff_id == staff_obj.id, Shift.status == "active").first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到自己的排班")
+        if not staff_may_change_shift(item.start_time):
+            raise HTTPException(status_code=422, detail="此班已鎖定，請聯絡店長")
+        item.status = "cancelled"
+        item.change_reason = "staff self-cancelled"
+        audit(db, None, "cancel", "shift", item.id, reason=f"staff session {staff_obj.id}")
         db.commit()
         return {"ok": True}

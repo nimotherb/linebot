@@ -12,7 +12,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{Path(_database_file.name).as_posix()}"
 os.environ["ADMIN_INITIAL_PIN"] = "123456"
 os.environ["MANAGER_INITIAL_PIN"] = "654321"
 
-from main import Base, app, engine  # noqa: E402
+from main import Base, SessionLocal, app, engine  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -97,3 +97,54 @@ def test_manager_can_only_create_clerk_account(client):
         json={"username": "frontdesk", "display_name": "櫃台", "pin": "112233", "role": "clerk"},
     )
     assert allowed.status_code == 201
+
+
+def test_public_bootstrap_is_read_only_and_redacts_sensitive_fields(client):
+    response = client.get("/api/public/bootstrap")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "public"
+    assert payload["customers"] == []
+    assert payload["admin_users"] == []
+    if payload["appointments"]:
+        appointment = payload["appointments"][0]
+        assert appointment["customer_name"] == "已隱藏"
+        assert appointment["phone"] is None
+        assert appointment["total_amount"] == 0
+        assert appointment["notes"] is None
+
+
+def test_staff_passwordless_session_only_returns_own_data(client):
+    public = client.get("/api/public/bootstrap").json()
+    staff = public["staff"][0]
+    login_response = client.post("/api/staff/auth/login", json={"staff_id": staff["id"]})
+    assert login_response.status_code == 200, login_response.text
+    headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
+    bootstrap = client.get("/api/staff/bootstrap", headers=headers)
+    assert bootstrap.status_code == 200, bootstrap.text
+    data = bootstrap.json()
+    assert data["mode"] == "staff"
+    assert data["staff_user"]["id"] == staff["id"]
+    assert all(item["staff_id"] == staff["id"] for item in data["appointments"])
+    assert all(item["staff_id"] == staff["id"] for item in data["shifts"])
+
+
+def test_return_tables_promotions_and_line_pin_binding(client):
+    headers = login(client)
+    bootstrap = client.get("/api/admin/bootstrap", headers=headers).json()
+    table_one = next(item for item in bootstrap["return_rule_sets"] if item["code"] == "TABLE_1")
+    table_two = next(item for item in bootstrap["return_rule_sets"] if item["code"] == "TABLE_2")
+    assert [(item["service_code"], item["amount"]) for item in table_one["rules"]] == [("A", 700), ("B", 800), ("C", 1000), ("D", 1200), ("E", 1200), ("BORROW", 300)]
+    assert [(item["service_code"], item["amount"]) for item in table_two["rules"]] == [("A", 300), ("B", 300), ("C", 400), ("D", 500)]
+    assert {"生日月優惠", "新進師傅體驗優惠", "首次到店優惠"}.issubset({item["name"] for item in bootstrap["promotions"]})
+
+    db = SessionLocal()
+    try:
+        assert app.state.bind_line_admin("U-test-admin", "0000", db) is None
+        identity = app.state.bind_line_admin("U-test-admin", "123456", db)
+        assert identity["role"] == "admin"
+        assert app.state.line_admin_identity("U-test-admin", db)["username"] == "admin"
+        app.state.unbind_line_admin("U-test-admin", db)
+        assert app.state.line_admin_identity("U-test-admin", db) is None
+    finally:
+        db.close()

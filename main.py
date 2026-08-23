@@ -4,7 +4,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship
 from dotenv import load_dotenv
 import os
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import re
 from urllib.parse import parse_qs
 
@@ -39,6 +39,9 @@ engine = create_engine(DATABASE_URL, **engine_options)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+BASE_VIP_ID = 4560
+LINE_ADMIN_PENDING: dict[str, datetime] = {}
+
 # --- SQLAlchemy models ---
 class User(Base):
     __tablename__ = "users"
@@ -63,6 +66,7 @@ class Staff(Base):
     role = Column(String(50), nullable=True)
     category = Column(String(50), nullable=True)
     employment_status = Column(String(30), default="active", nullable=False)
+    return_rule_set_id = Column(Integer, nullable=True)
     is_online = Column(Boolean, default=False, nullable=False)
     online_start_time = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -95,21 +99,44 @@ LINE_TOKEN_CUSTOMER = os.getenv("LINE_TOKEN_CUSTOMER")
 LINE_SECRET_STAFF = os.getenv("LINE_SECRET_STAFF")
 LINE_TOKEN_STAFF = os.getenv("LINE_TOKEN_STAFF")
 
-ROOT_LINE_USER_IDS = {
-    value.strip()
-    for value in os.getenv("ROOT_LINE_USER_IDS", "").split(",")
-    if value.strip()
-}
-MANAGER_LINE_USER_IDS = {
-    value.strip()
-    for value in os.getenv("MANAGER_LINE_USER_IDS", "").split(",")
-    if value.strip()
-}
+def line_admin_identity(user_id: str | None, db: Session):
+    if not user_id:
+        return None
+    resolver = getattr(getattr(app, "state", None), "line_admin_identity", None)
+    return resolver(user_id, db) if resolver else None
 
 
-def is_line_manager(user_id: str | None) -> bool:
-    """LINE 端的 root 選單只開放明確列入環境變數的帳號。"""
-    return bool(user_id and user_id in ROOT_LINE_USER_IDS | MANAGER_LINE_USER_IDS)
+def is_line_manager(user_id: str | None, db: Session) -> bool:
+    """LINE 管理權限必須先輸入 root，再以後台 PIN 綁定。"""
+    return bool(line_admin_identity(user_id, db))
+
+
+def handle_line_admin_message(text_value: str, user_id: str, db: Session):
+    identity = line_admin_identity(user_id, db)
+    if text_value in {"管理員登出", "登出管理員"}:
+        unbind = getattr(getattr(app, "state", None), "unbind_line_admin", None)
+        if identity and unbind:
+            unbind(user_id, db)
+            LINE_ADMIN_PENDING.pop(user_id, None)
+            return TextSendMessage(text="管理員帳戶已從這個 LINE 登出。")
+        return TextSendMessage(text="這個 LINE 目前沒有綁定管理員帳戶。")
+    if text_value in {"root", "管理員", "管理選單"}:
+        if identity:
+            return build_root_admin_menu(identity)
+        LINE_ADMIN_PENDING[user_id] = datetime.utcnow() + timedelta(minutes=5)
+        return TextSendMessage(text="請在 5 分鐘內輸入您的管理 PIN。必須先輸入 root 再輸入 PIN，才會綁定這個 LINE。")
+    pending_until = LINE_ADMIN_PENDING.get(user_id)
+    if pending_until and pending_until < datetime.utcnow():
+        LINE_ADMIN_PENDING.pop(user_id, None)
+        pending_until = None
+    if pending_until and re.fullmatch(r"\d{4,32}", text_value):
+        binder = getattr(getattr(app, "state", None), "bind_line_admin", None)
+        identity = binder(user_id, text_value, db) if binder else None
+        LINE_ADMIN_PENDING.pop(user_id, None)
+        if not identity:
+            return TextSendMessage(text="PIN 不正確，未綁定管理員帳戶。請重新輸入 root 再試一次。")
+        return build_root_admin_menu(identity)
+    return None
 
 bot_customer_api = LineBotApi(LINE_TOKEN_CUSTOMER) if LINE_TOKEN_CUSTOMER else None
 handler_customer = WebhookHandler(LINE_SECRET_CUSTOMER) if LINE_SECRET_CUSTOMER else None
@@ -127,6 +154,37 @@ PLANS_INFO = {
     "D": {"name": "D-極緻方案", "duration": 120, "price": 3000, "desc": "指定師傅 / 體推保養"},
     "Out": {"name": "外出-隨享", "duration": 100, "price": 3200, "desc": "指定師傅 / 獅子林起算"}
 }
+
+
+def build_promotion_flex(promotions, plan_key: str, selected_dt: str):
+    choices = [(None, "不使用優惠", "原價方案", "不套用折扣")]
+    for promotion in promotions[:8]:
+        if promotion.calculation_type not in {"fixed_discount", "percent_discount"}:
+            continue
+        amount_text = f"現折 NT$ {promotion.value}" if promotion.calculation_type == "fixed_discount" else f"{promotion.value}% OFF"
+        choices.append((promotion.id, promotion.name, amount_text, promotion.description or "期間限定優惠"))
+    bubbles = []
+    for promotion_id, name, amount_text, description in choices:
+        promotion_value = promotion_id or 0
+        next_action = "confirm_booking" if plan_key == "A" else "select_staff"
+        next_data = f"action={next_action}&staff_id=none&plan={plan_key}&promotion_id={promotion_value}&datetime={selected_dt}&offset=0"
+        bubbles.append({
+            "type": "bubble",
+            "styles": {"body": {"backgroundColor": "#1A1B26"}, "footer": {"backgroundColor": "#1A1B26"}},
+            "body": {
+                "type": "box", "layout": "vertical", "paddingAll": "24px",
+                "contents": [
+                    {"type": "text", "text": name, "weight": "bold", "size": "xl", "color": "#9ECE6A", "wrap": True},
+                    {"type": "text", "text": amount_text, "weight": "bold", "size": "lg", "color": "#C0CAF5", "margin": "lg"},
+                    {"type": "text", "text": description, "size": "sm", "color": "#7A84A8", "wrap": True, "margin": "md"},
+                ],
+            },
+            "footer": {
+                "type": "box", "layout": "vertical", "paddingAll": "16px",
+                "contents": [{"type": "button", "style": "primary", "color": "#24283B", "action": {"type": "postback", "label": "▶ 選擇此優惠", "data": next_data}}],
+            },
+        })
+    return FlexSendMessage(alt_text="請選擇優惠", contents={"type": "carousel", "contents": bubbles})
 
 # --- 共用：手機號碼確認 Flex ---
 def build_phone_confirm_flex(phone_num, action_prefix):
@@ -159,7 +217,10 @@ def build_phone_confirm_flex(phone_num, action_prefix):
     )
 
 # --- 共用：Root Admin 管理員選單 Flex ---
-def build_root_admin_menu():
+def build_root_admin_menu(identity=None):
+    display_name = identity.get("display_name", "管理員") if isinstance(identity, dict) else "管理員"
+    role_label = "系統管理員" if isinstance(identity, dict) and identity.get("role") == "admin" else "店長"
+    dashboard_url = os.getenv("ADMIN_DASHBOARD_URL", "https://equalspa-ops-preview.c83500699.chatgpt.site/")
     return FlexSendMessage(
         alt_text="系統管理員選單",
         contents={
@@ -170,41 +231,90 @@ def build_root_admin_menu():
                 "layout": "vertical",
                 "contents": [
                     {"type": "text", "text": "ROOT ADMIN", "weight": "bold", "color": "#FCD34D", "size": "xl"},
+                    {"type": "text", "text": f"{display_name}・{role_label}", "color": "#E9D5FF", "size": "sm", "margin": "sm"},
                     {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "查看本日預約", "data": "action=admin_view"}},
-                    {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "sm", "action": {"type": "postback", "label": "管理師傅", "data": "action=admin_staff"}}
+                    {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "sm", "action": {"type": "postback", "label": "管理師傅", "data": "action=admin_staff"}},
+                    {"type": "button", "style": "primary", "color": "#312E81", "margin": "sm", "action": {"type": "uri", "label": "開啟營運後台", "uri": dashboard_url}},
+                    {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "登出管理員", "data": "action=admin_logout"}}
                 ]
             }
         }
     )
 
+
+def build_staff_backend_link(staff):
+    dashboard_url = os.getenv("ADMIN_DASHBOARD_URL", "https://equalspa-ops-preview.c83500699.chatgpt.site/").rstrip("/")
+    return FlexSendMessage(
+        alt_text="開啟伊果 SPA 師傅後台",
+        contents={
+            "type": "bubble",
+            "styles": {"body": {"backgroundColor": "#123F37"}, "footer": {"backgroundColor": "#123F37"}},
+            "body": {"type": "box", "layout": "vertical", "contents": [
+                {"type": "text", "text": "伊果 SPA 師傅後台", "weight": "bold", "size": "xl", "color": "#F7D7A3"},
+                {"type": "text", "text": f"{staff.name}，可查看自己的訂單並設定排班。", "size": "sm", "color": "#D1FAE5", "wrap": True, "margin": "md"},
+            ]},
+            "footer": {"type": "box", "layout": "vertical", "contents": [
+                {"type": "button", "style": "primary", "color": "#D8A862", "action": {"type": "uri", "label": "開啟後台／排班", "uri": f"{dashboard_url}/?staff_id={staff.id}"}},
+            ]},
+        },
+    )
+
 # --- 共用：生成預約單 Carousel Bubble ---
-def build_appointment_bubble(appointment):
+def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_return=False):
     staff_name = appointment.staff.name if appointment.staff else "未指定(由店長安排)"
     staff_info = ""
     if appointment.staff:
         h = appointment.staff.height or "?"
         w = appointment.staff.weight or "?"
-        staff_info = f"身高: {h} / 體重: {w}"
+        role = appointment.staff.role or "?"
+        staff_info = f"身高: {h} / 體重: {w} / 角色: {role}"
     
     customer_name = "客戶"
     if appointment.user:
-        try:
-            profile = bot_staff_api.get_profile(appointment.user.line_user_id)
-            customer_name = profile.display_name
-        except:
-            customer_name = f"用戶 {appointment.user.id}"
+        customer_name = appointment.user.display_name or f"用戶 {appointment.user.id}"
+    customer_vip_id = f"VIP-{appointment.user.id + BASE_VIP_ID:04d}" if appointment.user else "VIP-Unknown"
     
     start_time_str = appointment.start_time.strftime("%m月%d日 %H:%M") if appointment.start_time else "未定"
     plan_name = appointment.plan_name or "未知方案"
     
     price = 0
-    discount = 200 # 固定優惠測試
+    discount = 0
+    promotion_name = "無"
+    return_amount = 0
+    return_status = "尚未建立"
     for plan_key, plan_info in PLANS_INFO.items():
         if plan_info["name"] == plan_name:
             price = plan_info["price"]
             break
+    if db is not None and hasattr(app.state, "admin_models"):
+        models = app.state.admin_models
+        detail = db.query(models["AppointmentDetail"]).filter(models["AppointmentDetail"].appointment_id == appointment.id).first()
+        if detail:
+            service_plan = db.query(models["ServicePlan"]).filter(models["ServicePlan"].id == detail.service_plan_id).first() if detail.service_plan_id else None
+            price = detail.base_price
+            discount = detail.discount_amount
+            if detail.promotion_id:
+                promotion = db.query(models["Promotion"]).filter(models["Promotion"].id == detail.promotion_id).first()
+                promotion_name = promotion.name if promotion else "優惠"
+            StaffReturn = models.get("StaffReturn")
+            ReturnRuleSet = models.get("ReturnRuleSet")
+            ReturnRule = models.get("ReturnRule")
+            staff_return = db.query(StaffReturn).filter(StaffReturn.appointment_id == appointment.id).first() if StaffReturn else None
+            if staff_return:
+                return_amount = staff_return.amount
+                return_status = "已確認" if staff_return.status == "confirmed" else "待確認"
+            elif appointment.staff and ReturnRuleSet and ReturnRule:
+                rule_set_id = appointment.staff.return_rule_set_id
+                if not rule_set_id:
+                    first_set = db.query(ReturnRuleSet).filter(ReturnRuleSet.active.is_(True)).order_by(ReturnRuleSet.id).first()
+                    rule_set_id = first_set.id if first_set else None
+                service_code = service_plan.code if 'service_plan' in locals() and service_plan else (appointment.plan_name or "").split("-", 1)[0]
+                if service_code == "OUT":
+                    service_code = "E"
+                rule = db.query(ReturnRule).filter(ReturnRule.rule_set_id == rule_set_id, ReturnRule.service_code == service_code, ReturnRule.active.is_(True)).first() if rule_set_id else None
+                return_amount = rule.amount if rule else 0
     
-    total = price - discount if price > 0 else 0
+    total = max(0, price - discount) if price > 0 else 0
     payment_id = f"#{appointment.created_at.strftime('%y%m%d')}{appointment.id:03d}"
     
     bubble = {
@@ -212,20 +322,22 @@ def build_appointment_bubble(appointment):
         "body": {
             "type": "box", "layout": "vertical",
             "contents": [
-                {"type": "text", "text": "今日預約", "weight": "bold", "color": "#1DB446", "size": "sm"},
+                {"type": "text", "text": "🔔 新派單通知" if is_staff_notify else "今日預約", "weight": "bold", "color": "#EAB308" if is_staff_notify else "#1DB446", "size": "sm"},
                 {"type": "text", "text": staff_name, "weight": "bold", "size": "xxl", "margin": "md"},
                 {"type": "text", "text": staff_info, "size": "xs", "color": "#aaaaaa", "wrap": True},
                 {"type": "separator", "margin": "xxl"},
                 {
                     "type": "box", "layout": "vertical", "margin": "xxl", "spacing": "sm",
                     "contents": [
+                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶 ID", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_vip_id, "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_name, "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "時段", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": start_time_str, "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "方案", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": plan_name, "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "separator", "margin": "xxl"},
                         {"type": "box", "layout": "horizontal", "margin": "xxl", "contents": [{"type": "text", "text": "方案定價", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {price}", "size": "sm", "color": "#111111", "align": "end"}]},
-                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "優惠", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"-NT$ {discount}", "size": "sm", "color": "#111111", "align": "end"}]},
-                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "總計", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {total}", "size": "sm", "color": "#111111", "align": "end"}]}
+                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": f"優惠・{promotion_name}", "size": "sm", "color": "#555555", "flex": 2, "wrap": True}, {"type": "text", "text": f"-NT$ {discount}", "size": "sm", "color": "#111111", "align": "end"}]},
+                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "總計", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {total}", "size": "sm", "color": "#111111", "align": "end"}]},
+                        *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "師傅應回帳", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {return_amount}・{return_status}", "size": "sm", "color": "#B45309", "align": "end"}]}] if (show_return or is_staff_notify) else [])
                     ]
                 },
                 {"type": "separator", "margin": "xxl"},
@@ -268,8 +380,14 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
     """處理管理員（root）相關的 Postback 動作"""
     if not any(action in data for action in ("action=admin_", "action=delete_staff", "action=toggle_staff")):
         return None
-    if not is_line_manager(user_id):
+    if not is_line_manager(user_id, db):
         return TextSendMessage(text="此功能只開放管理帳號使用。")
+
+    if "action=admin_logout" in data:
+        unbind = getattr(getattr(app, "state", None), "unbind_line_admin", None)
+        if unbind:
+            unbind(user_id, db)
+        return TextSendMessage(text="管理員帳戶已從這個 LINE 登出。")
     
     if "action=admin_view" in data:
         today = date.today()
@@ -281,7 +399,7 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         if not appointments:
             return TextSendMessage(text="今日目前無預約")
         
-        bubbles = [build_appointment_bubble(appt) for appt in appointments]
+        bubbles = [build_appointment_bubble(appt, db=db, show_return=True) for appt in appointments[:10]]
         return FlexSendMessage(alt_text="本日預約", contents={"type": "carousel", "contents": bubbles})
     
     elif "action=admin_staff" in data:
@@ -325,16 +443,15 @@ if handler_customer:
         if user_id:
             db = SessionLocal()
             try:
+                admin_response = handle_line_admin_message(text, user_id, db)
+                if admin_response:
+                    bot_customer_api.reply_message(event.reply_token, admin_response)
+                    return
                 user = db.query(User).filter(User.line_user_id == user_id).first()
                 if not user:
                     user = User(line_user_id=user_id)
                     db.add(user)
                     db.commit()
-
-                if text == "root":
-                    response = build_root_admin_menu() if is_line_manager(user_id) else TextSendMessage(text="此功能只開放管理帳號使用。")
-                    bot_customer_api.reply_message(event.reply_token, response)
-                    return
 
                 if text == "預約":
                     if not user.phone:
@@ -407,8 +524,7 @@ if handler_customer:
                 selected_dt = params.get("datetime")
                 bubbles = []
                 for plan_key, p_info in PLANS_INFO.items():
-                    # 方案A直接跳確認，其他方案帶入 offset=0 準備進入師傅輪播
-                    postback_data = f"action=confirm_booking&staff_id=none&plan={plan_key}&datetime={selected_dt}" if plan_key == "A" else f"action=select_staff&plan={plan_key}&datetime={selected_dt}&offset=0"
+                    postback_data = f"action=select_promotion&plan={plan_key}&datetime={selected_dt}"
                     
                     bubbles.append({
                         "type": "bubble",
@@ -428,10 +544,24 @@ if handler_customer:
                     })
                 bot_customer_api.reply_message(event.reply_token, FlexSendMessage(alt_text="請選擇服務方案", contents={"type": "carousel", "contents": bubbles}))
 
+            elif "action=select_promotion" in data:
+                qs = parse_qs(data)
+                plan = qs.get("plan", [None])[0]
+                promotion_id = qs.get("promotion_id", ["0"])[0]
+                selected_dt = qs.get("datetime", [None])[0]
+                Promotion = getattr(app.state, "admin_models", {}).get("Promotion")
+                promotions = []
+                if Promotion:
+                    now = datetime.utcnow()
+                    promotions = db.query(Promotion).filter(Promotion.active.is_(True)).all()
+                    promotions = [item for item in promotions if (not item.starts_at or item.starts_at <= now) and (not item.ends_at or item.ends_at >= now)]
+                bot_customer_api.reply_message(event.reply_token, build_promotion_flex(promotions, plan, selected_dt))
+
             # 選擇方案後 -> 師傅分頁輪播 (分頁處理，避開 LINE 10 張限制)
             elif "action=select_staff" in data:
                 qs = parse_qs(data)
                 plan = qs.get("plan", [None])[0]
+                promotion_id = qs.get("promotion_id", ["0"])[0]
                 selected_dt = qs.get("datetime", [None])[0]
                 offset = int(qs.get("offset", ["0"])[0])
 
@@ -468,7 +598,7 @@ if handler_customer:
                         },
                         "footer": {
                             "type": "box", "layout": "vertical", "backgroundColor": "#111111",
-                            "contents": [{"type": "button", "style": "primary", "color": "#9ECE6A", "action": {"type": "postback", "label": "預約這位", "data": f"action=confirm_booking&staff_id={s.id}&plan={plan}&datetime={selected_dt}"}}]
+                            "contents": [{"type": "button", "style": "primary", "color": "#9ECE6A", "action": {"type": "postback", "label": "預約這位", "data": f"action=confirm_booking&staff_id={s.id}&plan={plan}&promotion_id={promotion_id}&datetime={selected_dt}"}}]
                         }
                     })
 
@@ -486,7 +616,7 @@ if handler_customer:
                         },
                         "footer": {
                             "type": "box", "layout": "vertical", "backgroundColor": "#111111",
-                            "contents": [{"type": "button", "style": "primary", "color": "#9ECE6A", "action": {"type": "postback", "label": "下一頁", "data": f"action=select_staff&plan={plan}&datetime={selected_dt}&offset={next_offset}"}}]
+                            "contents": [{"type": "button", "style": "primary", "color": "#9ECE6A", "action": {"type": "postback", "label": "下一頁", "data": f"action=select_staff&plan={plan}&promotion_id={promotion_id}&datetime={selected_dt}&offset={next_offset}"}}]
                         }
                     })
 
@@ -496,6 +626,7 @@ if handler_customer:
                 qs = parse_qs(data)
                 staff_id = qs.get("staff_id", [None])[0]
                 plan_key = qs.get("plan", [None])[0]
+                promotion_id = int(qs.get("promotion_id", ["0"])[0] or 0)
                 selected_dt = qs.get("datetime", [None])[0]
 
                 user = db.query(User).filter(User.line_user_id == user_id).first()
@@ -537,37 +668,41 @@ if handler_customer:
                     status="confirmed"
                 )
                 db.add(appointment)
+                db.flush()
+                models = getattr(app.state, "admin_models", {})
+                AppointmentDetail = models.get("AppointmentDetail")
+                ServicePlan = models.get("ServicePlan")
+                Promotion = models.get("Promotion")
+                if AppointmentDetail and ServicePlan:
+                    service_code = "OUT" if plan_key == "Out" else plan_key
+                    service_plan = db.query(ServicePlan).filter(ServicePlan.code == service_code).first()
+                    promotion = db.query(Promotion).filter(Promotion.id == promotion_id, Promotion.active.is_(True)).first() if Promotion and promotion_id else None
+                    base_price = service_plan.price if service_plan else p_info["price"]
+                    discount = 0
+                    if promotion:
+                        discount = min(base_price, promotion.value) if promotion.calculation_type == "fixed_discount" else min(base_price, round(base_price * promotion.value / 100)) if promotion.calculation_type == "percent_discount" else 0
+                    db.add(AppointmentDetail(
+                        appointment_id=appointment.id,
+                        service_plan_id=service_plan.id if service_plan else None,
+                        promotion_id=promotion.id if promotion else None,
+                        base_price=base_price,
+                        discount_amount=discount,
+                        total_amount=max(0, base_price - discount),
+                        location_type="external" if plan_key == "Out" else "pending",
+                    ))
                 db.commit()
                 db.refresh(appointment)
 
                 time_str = datetime.fromisoformat(selected_dt).strftime("%m月%d日 %H:%M")
 
-                receipt_flex = build_appointment_bubble(appointment)
+                receipt_flex = build_appointment_bubble(appointment, db=db)
                 bot_customer_api.reply_message(event.reply_token, FlexSendMessage(alt_text="預約確認明細", contents=receipt_flex))
 
                 # --- 派單邏輯：推送給師傅 ---
                 if bot_staff_api:
-                    customer_name = "貴賓"
-                    try:
-                        profile = bot_customer_api.get_profile(user_id)
-                        customer_name = profile.display_name
-                    except:
-                        pass
-
                     notify_msg = FlexSendMessage(
                         alt_text="新派單通知",
-                        contents={
-                            "type": "bubble", "styles": {"body": {"backgroundColor": "#1A1B26"}},
-                            "body": {
-                                "type": "box", "layout": "vertical",
-                                "contents": [
-                                    {"type": "text", "text": "🔔 新派單通知", "weight": "bold", "color": "#9ECE6A"},
-                                    {"type": "text", "text": f"時間：{time_str}", "color": "#C0CAF5", "margin": "md"},
-                                    {"type": "text", "text": f"方案：{p_info['name']}", "color": "#C0CAF5"},
-                                    {"type": "text", "text": f"客戶：{customer_name}", "color": "#C0CAF5"}
-                                ]
-                            }
-                        }
+                        contents=build_appointment_bubble(appointment, is_staff_notify=True, db=db)
                     )
                     if staff_id == "none":
                         # 尚未指定師傅時通知所有在職師傅，由店長依正式班表安排
@@ -594,6 +729,10 @@ if handler_staff:
         if user_id:
             db = SessionLocal()
             try:
+                admin_response = handle_line_admin_message(text, user_id, db)
+                if admin_response:
+                    bot_staff_api.reply_message(event.reply_token, admin_response)
+                    return
                 staff = db.query(Staff).filter(Staff.line_user_id == user_id).first()
                 if not staff:
                     staff = Staff(line_user_id=user_id, name="新進員工")
@@ -615,10 +754,8 @@ if handler_staff:
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"設定完成！{text} 師傅您好。\n請輸入「我的檔案」來完善基本資料，或輸入「上線」開始接單。"))
                     return
 
-                if text == "root":
-                    response = build_root_admin_menu() if is_line_manager(user_id) else TextSendMessage(text="此功能只開放管理帳號使用。")
-                    bot_staff_api.reply_message(event.reply_token, response)
-                    return
+                if text in {"後台", "後臺", "排班"}:
+                    bot_staff_api.reply_message(event.reply_token, build_staff_backend_link(staff))
                 elif text == "上線":
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="「師傅在線」已停用，請使用個人班表連結新增正式排班。"))
                 elif text == "下線":
@@ -639,7 +776,7 @@ if handler_staff:
                     db.commit()
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"已更新角色為 {staff.role}"))
                 else:
-                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n👤「我的檔案」：查看與更新資料\n📅 排班：請使用您的個人班表連結\n🔧「root」：僅限管理帳號"
+                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n👤「我的檔案」：查看與更新資料\n📅「排班」或「後台」：開啟自己的後台\n🔧「root」：管理員需再輸入 PIN 綁定"
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=guide_txt))
 
             except Exception:
@@ -703,6 +840,10 @@ def on_startup():
             "ALTER TABLE staffs ADD COLUMN role VARCHAR(50);",
             "ALTER TABLE staffs ADD COLUMN category VARCHAR(50);",
             "ALTER TABLE staffs ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active';",
+            "ALTER TABLE staffs ADD COLUMN return_rule_set_id INTEGER;",
+            "ALTER TABLE admin_users ADD COLUMN line_user_id VARCHAR(255);",
+            "ALTER TABLE promotions ADD COLUMN description VARCHAR(500);",
+            "ALTER TABLE appointment_details ADD COLUMN promotion_id INTEGER;",
             "ALTER TABLE appointments ADD COLUMN plan_name VARCHAR(50);"
         ]
         for q in queries:
@@ -716,6 +857,25 @@ def on_startup():
                 "SET end_time = DATE_ADD(start_time, INTERVAL duration MINUTE) "
                 "WHERE end_time <= start_time"
             ))
+
+    db = SessionLocal()
+    try:
+        roster = {
+            "straight": [("Eason", "180", "72"), ("Show", "187", "82"), ("霍爾", "174", "63"), ("小六", "170", "60"), ("吳樂", "173", "75"), ("小馬", "180", "75"), ("Frank", "178", "70"), ("捷程", "175", "82"), ("Jun", "176", "76"), ("小猴", "175", "69"), ("小虎", "182", "79"), ("白羊", "170", "52"), ("佐恩", "178", "60"), ("宇森", "180", "84")],
+            "gay": [("Harry", "170", "56"), ("士羽", "172", "73"), ("瑞奇", "172", "56"), ("朗", "185", "81"), ("Jack", "167", "58"), ("Max", "176", "70"), ("泠", "173", "65"), ("阿焰", "177", "65"), ("Jacob", "185", "80"), ("華", "177", "68"), ("武", "174", "72"), ("Seven", "177", "67"), ("小柏", "175", "78"), ("Wilson", "177", "77"), ("Wayne", "178", "70"), ("路卡", "157", "56"), ("Erik", "163", "53"), ("Mars", "175", "80"), ("ED", "178", "71"), ("萊伊", "185", "75"), ("Alex", "180", "74"), ("Fali", "180", "64"), ("伊恩", "169", "58"), ("Zane", "174", "70"), ("Eden", "173", "70")],
+            "bisexual": [("沐恩", "172", "66"), ("阿玄", "175", "59"), ("尼爾", "178", "75"), ("彥", "175", "79"), ("承承", "170", "55"), ("小安", "173", "58"), ("小羅", "183", "68"), ("可樂", "170", "60")],
+        }
+        for category, members in roster.items():
+            for name, height, weight in members:
+                if db.query(Staff).filter(Staff.name == name).first():
+                    continue
+                db.add(Staff(line_user_id=f"seeded:{category}:{name}", name=name, height=height, weight=weight, category=category, employment_status="active", is_online=False))
+        db.commit()
+    except Exception:
+        db.rollback()
+        logging.exception("無法補齊師傅名單")
+    finally:
+        db.close()
 
 @app.get("/")
 def read_root():
