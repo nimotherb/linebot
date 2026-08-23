@@ -279,3 +279,91 @@ def test_return_tables_promotions_and_line_pin_binding(client):
         assert app.state.line_admin_identity("U-test-admin", db) is None
     finally:
         db.close()
+
+
+def test_site_content_draft_publish_permissions_and_versions(client):
+    public_before = client.get("/api/public/site-content")
+    assert public_before.status_code == 200
+    assert public_before.json() == {"content": {}, "version": 0, "published_at": None}
+    assert client.get("/api/admin/site-content").status_code == 401
+
+    admin_headers = login(client)
+    clerk_create = client.post(
+        "/api/admin/users",
+        headers=admin_headers,
+        json={"username": "site-clerk", "display_name": "官網測試櫃台", "pin": "778899", "role": "clerk"},
+    )
+    assert clerk_create.status_code == 201, clerk_create.text
+    clerk_headers = login(client, "site-clerk", "778899")
+    assert client.get("/api/admin/site-content", headers=clerk_headers).status_code == 403
+
+    manager_headers = login(client, "jerry", "654321")
+    current = client.get("/api/admin/site-content", headers=manager_headers)
+    assert current.status_code == 200, current.text
+    assert current.json()["draft_version"] == 0
+    assert current.json()["published_version"] == 0
+
+    first_content = {
+        "home": {"eyebrow": "EQUAL SPA", "subtitle": "回到平衡，也回到更自在的自己。"},
+        "booking": {"url": "https://example.com/booking"},
+        "services": [{"code": "A", "summary": "適合第一次到店的舒壓安排"}],
+    }
+    saved = client.put(
+        "/api/admin/site-content/draft",
+        headers=manager_headers,
+        json={"content": first_content, "expected_version": 0},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["draft"] == first_content
+    assert saved.json()["draft_version"] == 1
+    assert saved.json()["published"] == {}
+
+    public_during_draft = client.get("/api/public/site-content").json()
+    assert public_during_draft["content"] == {}
+    assert public_during_draft["version"] == 0
+
+    stale_save = client.put(
+        "/api/admin/site-content/draft",
+        headers=manager_headers,
+        json={"content": {"home": {}}, "expected_version": 0},
+    )
+    assert stale_save.status_code == 409
+    assert client.put(
+        "/api/admin/site-content/draft",
+        headers=clerk_headers,
+        json={"content": first_content, "expected_version": 1},
+    ).status_code == 403
+    assert client.post(
+        "/api/admin/site-content/publish",
+        headers=clerk_headers,
+        json={"expected_version": 1},
+    ).status_code == 403
+
+    published = client.post(
+        "/api/admin/site-content/publish",
+        headers=manager_headers,
+        json={"expected_version": 1},
+    )
+    assert published.status_code == 200, published.text
+    assert published.json()["published"] == first_content
+    assert published.json()["published_version"] == 1
+    assert published.json()["published_at"] is not None
+
+    public_after = client.get("/api/public/site-content")
+    assert public_after.status_code == 200
+    assert public_after.json()["content"] == first_content
+    assert public_after.json()["version"] == 1
+
+    second_content = {**first_content, "home": {**first_content["home"], "subtitle": "新的草稿，尚未發布。"}}
+    second_saved = client.put(
+        "/api/admin/site-content/draft",
+        headers=admin_headers,
+        json={"content": second_content, "expected_version": 1},
+    )
+    assert second_saved.status_code == 200, second_saved.text
+    assert second_saved.json()["draft_version"] == 2
+    assert client.get("/api/public/site-content").json()["content"] == first_content
+
+    logs = client.get("/api/admin/audit-logs", headers=admin_headers).json()
+    site_actions = {item["action"] for item in logs if item["entity_type"] == "site_content"}
+    assert {"save_draft", "publish"}.issubset(site_actions)

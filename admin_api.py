@@ -28,6 +28,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from pwdlib import PasswordHash
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -234,6 +235,15 @@ class PrivateHealthIn(BaseModel):
     hpv: str | None = None
     mpox: str | None = None
     notes: str | None = Field(default=None, max_length=2000)
+
+
+class SiteContentDraftIn(BaseModel):
+    content: dict[str, Any]
+    expected_version: int | None = Field(default=None, ge=0)
+
+
+class SiteContentPublishIn(BaseModel):
+    expected_version: int | None = Field(default=None, ge=0)
 
 
 def _token_hash(token: str) -> str:
@@ -520,6 +530,19 @@ def register_admin_api(
         source = Column(String(30), nullable=False, default="web")
         created_at = Column(DateTime, nullable=False, default=now_taipei_naive, index=True)
 
+    class SiteContent(Base):
+        __tablename__ = "site_contents"
+        id = Column(Integer, primary_key=True)
+        content_key = Column(String(80), unique=True, nullable=False, index=True)
+        draft_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)
+        published_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)
+        draft_version = Column(Integer, nullable=False, default=0)
+        published_version = Column(Integer, nullable=False, default=0)
+        updated_by_user_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+        published_by_user_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+        updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
+        published_at = Column(DateTime, nullable=True)
+
     app.state.admin_models = {
         "AdminUser": AdminUser,
         "AdminSession": AdminSession,
@@ -539,6 +562,7 @@ def register_admin_api(
         "ReturnRule": ReturnRule,
         "StaffReturn": StaffReturn,
         "PublicBookingRequest": PublicBookingRequest,
+        "SiteContent": SiteContent,
     }
 
     def normalize_phone(value: str | None) -> str:
@@ -712,6 +736,33 @@ def register_admin_api(
             before_json=_json(before) if before is not None else None,
             after_json=_json(after) if after is not None else None,
         ))
+
+    def decode_site_content(value: str | None) -> dict[str, Any]:
+        if not value:
+            return {}
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError):
+            logger.exception("Unable to decode stored site content")
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+
+    def encode_site_content(content: dict[str, Any]) -> str:
+        encoded = _json(content)
+        if len(encoded.encode("utf-8")) > 512 * 1024:
+            raise HTTPException(status_code=413, detail="官網內容超過 512 KB，圖片請改存網址，不要直接貼入資料")
+        return encoded
+
+    def site_content_payload(item) -> dict[str, Any]:
+        return {
+            "content_key": item.content_key,
+            "draft": decode_site_content(item.draft_json),
+            "published": decode_site_content(item.published_json),
+            "draft_version": item.draft_version,
+            "published_version": item.published_version,
+            "updated_at": _iso(item.updated_at),
+            "published_at": _iso(item.published_at),
+        }
 
     def get_db():
         db = SessionLocal()
@@ -1087,6 +1138,8 @@ def register_admin_api(
                 for service_code, rule_name, amount, duration in rules:
                     if not db.query(ReturnRule).filter(ReturnRule.rule_set_id == rule_set.id, ReturnRule.service_code == service_code).first():
                         db.add(ReturnRule(rule_set_id=rule_set.id, service_code=service_code, name=rule_name, amount=amount, duration_minutes=duration))
+            if not db.query(SiteContent).filter(SiteContent.content_key == "official_site").first():
+                db.add(SiteContent(content_key="official_site"))
             db.commit()
         except Exception:
             db.rollback()
@@ -1114,6 +1167,17 @@ def register_admin_api(
             "customers": [],
             "admin_users": [],
             "return_rule_sets": [],
+        }
+
+    @app.get("/api/public/site-content")
+    def public_site_content(db: Session = Depends(get_db)):
+        item = db.query(SiteContent).filter(SiteContent.content_key == "official_site").first()
+        if not item:
+            return {"content": {}, "version": 0, "published_at": None}
+        return {
+            "content": decode_site_content(item.published_json),
+            "version": item.published_version,
+            "published_at": _iso(item.published_at),
         }
 
     @app.get("/api/public/booking/options")
@@ -1658,6 +1722,68 @@ def register_admin_api(
     @app.get("/api/admin/services")
     def list_services(db: Session = Depends(get_db), user=Depends(current_admin)):
         return [service_dict(item) for item in db.query(ServicePlan).order_by(ServicePlan.id).all()]
+
+    @app.get("/api/admin/site-content")
+    def get_site_content(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(SiteContent).filter(SiteContent.content_key == "official_site").first()
+        if not item:
+            item = SiteContent(content_key="official_site")
+            db.add(item)
+            db.commit()
+            db.refresh(item)
+        return site_content_payload(item)
+
+    @app.put("/api/admin/site-content/draft")
+    def save_site_content_draft(payload: SiteContentDraftIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(SiteContent).filter(SiteContent.content_key == "official_site").with_for_update().first()
+        if not item:
+            item = SiteContent(content_key="official_site")
+            db.add(item)
+            db.flush()
+        if payload.expected_version is not None and payload.expected_version != item.draft_version:
+            raise HTTPException(status_code=409, detail="官網內容已被其他人更新，請重新讀取後再儲存")
+        previous_version = item.draft_version
+        item.draft_json = encode_site_content(payload.content)
+        item.draft_version += 1
+        item.updated_by_user_id = actor.id
+        item.updated_at = now_taipei_naive()
+        audit(
+            db,
+            actor,
+            "save_draft",
+            "site_content",
+            item.content_key,
+            before={"draft_version": previous_version},
+            after={"draft_version": item.draft_version},
+        )
+        db.commit()
+        db.refresh(item)
+        return site_content_payload(item)
+
+    @app.post("/api/admin/site-content/publish")
+    def publish_site_content(payload: SiteContentPublishIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(SiteContent).filter(SiteContent.content_key == "official_site").with_for_update().first()
+        if not item or item.draft_json is None:
+            raise HTTPException(status_code=422, detail="目前沒有可發布的官網草稿")
+        if payload.expected_version is not None and payload.expected_version != item.draft_version:
+            raise HTTPException(status_code=409, detail="草稿版本已更新，請重新讀取後再發布")
+        previous_version = item.published_version
+        item.published_json = item.draft_json
+        item.published_version = item.draft_version
+        item.published_by_user_id = actor.id
+        item.published_at = now_taipei_naive()
+        audit(
+            db,
+            actor,
+            "publish",
+            "site_content",
+            item.content_key,
+            before={"published_version": previous_version},
+            after={"published_version": item.published_version},
+        )
+        db.commit()
+        db.refresh(item)
+        return site_content_payload(item)
 
     @app.patch("/api/admin/services/{service_id}")
     def update_service(service_id: int, payload: ServicePatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
