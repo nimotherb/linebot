@@ -13,14 +13,21 @@
 - `/recruit`：人才招募（聯絡信箱暫時留空）
 - `/groups`、`/loyalty`：內容更新中
 - `/privacy`：隱私權說明
+- `/site-admin`：店長／Admin 使用的官網內容管理前端（本機草稿、即時預覽與 JSON 匯出）
+
+## 官網內容管理
+
+`/site-admin` 目前會把草稿保存在使用者自己的瀏覽器，不會直接更動所有訪客看到的正式官網。若設定 `NEXT_PUBLIC_API_URL`，發布按鈕會以營運後台登入取得的 `equalspa_admin_token` 呼叫 `PUT /api/site-content`；後端必須再次驗證店長或 Admin 權限，才可寫入正式內容。
+
+圖片上傳尚未開放；接上後端檔案 API 前，師傅照片仍由 `public/images/therapists/` 管理。
 
 ## 待補素材
 
-師傅頁目前使用刻意設計的抽象佔位圖。請在取得公開使用同意後，將照片放入 `public/images/therapists/`，建議使用直式 4:5 圖片，再搜尋程式碼中的 `TODO_IMAGE` 進行替換。
+師傅頁的公開照片已依照來源 PDF 匯入 `public/images/therapists/`，並以 CSS 統一成相同的輪播與商品卡比例。日後替換照片時請沿用原檔名，建議直式 4:5，且應先確認公開使用同意。
 
 健康資訊僅限內部後台，不可放入公開網站、公開圖片檔名或圖片替代文字。
 
-地圖目前使用圖像化示意；搜尋 `TODO_MAP` 可找到日後替換位置。
+交通頁使用店家提供的 Google My Maps 嵌入地圖。
 
 ## 本機執行
 
