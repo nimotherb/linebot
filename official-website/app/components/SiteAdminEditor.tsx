@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { SpaApi } from '../api-client';
 
 type Section = 'home' | 'services' | 'therapists' | 'offers' | 'store';
 type ServiceDraft = { code: string; name: string; summary: string; duration: string; price: string; visible: boolean };
@@ -13,9 +14,6 @@ type SiteDraft = {
   offers: OfferDraft[];
   store: { address: string; hours: string; payment: string; mapUrl: string };
 };
-
-const storageKey = 'equalspa-site-studio-draft-v1';
-const apiBase = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, '');
 
 const initialDraft: SiteDraft = {
   home: {
@@ -61,34 +59,61 @@ function Field({ label, value, onChange, multiline = false, hint }: { label: str
   return <label className="studio-field"><span>{label}</span>{multiline ? <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={3} /> : <input value={value} onChange={(event) => onChange(event.target.value)} />}{hint && <small>{hint}</small>}</label>;
 }
 
-export default function SiteAdminEditor() {
+export default function SiteAdminEditor({ api, notify }: { api: SpaApi; notify: (msg: string) => void }) {
   const [active, setActive] = useState<Section>('home');
   const [draft, setDraft] = useState<SiteDraft>(initialDraft);
-  const [notice, setNotice] = useState('尚未變更');
+  const [notice, setNotice] = useState('讀取中...');
   const [savedAt, setSavedAt] = useState('');
+  const [version, setVersion] = useState(0);
+  const [publishedAt, setPublishedAt] = useState<string | null>(null);
 
+  // 1. 載入雲端草稿
   useEffect(() => {
-    const saved = window.localStorage.getItem(storageKey);
-    if (!saved) return;
-    try {
-      setDraft(JSON.parse(saved) as SiteDraft);
-      setNotice('已載入這台裝置的草稿');
-    } catch {
-      window.localStorage.removeItem(storageKey);
-    }
-  }, []);
+    const loadContent = async () => {
+      try {
+        const data = await api.getAdminSiteContent();
+        setVersion(data.draft_version || 0);
+        if (data.published_at) {
+          setPublishedAt(new Date(data.published_at).toLocaleString('zh-TW'));
+        }
+        if (data.draft_json && Object.keys(data.draft_json).length > 0) {
+          // 將雲端的 draft_json 與 initialDraft 合併，避免新欄位遺失
+          setDraft({ ...initialDraft, ...data.draft_json });
+        }
+        setNotice('已載入雲端最新草稿');
+      } catch (error) {
+        setNotice('無法載入草稿，使用預設範本');
+        notify(error instanceof Error ? error.message : '載入草稿失敗');
+      }
+    };
+    loadContent();
+  }, [api, notify]);
 
   const activeMeta = useMemo(() => sections.find((section) => section.id === active) ?? sections[0], [active]);
+  
   const markChanged = (next: SiteDraft) => {
     setDraft(next);
     setNotice('有尚未儲存的變更');
   };
-  const saveDraft = () => {
-    window.localStorage.setItem(storageKey, JSON.stringify(draft));
-    const timestamp = new Intl.DateTimeFormat('zh-TW', { hour: '2-digit', minute: '2-digit' }).format(new Date());
-    setSavedAt(timestamp);
-    setNotice('草稿已儲存在這台裝置');
+
+  // 2. 儲存草稿到 MySQL
+  const saveDraft = async () => {
+    try {
+      setNotice('儲存中...');
+      const res = await api.saveSiteDraft(draft, version);
+      setVersion(res.new_version);
+      const timestamp = new Intl.DateTimeFormat('zh-TW', { hour: '2-digit', minute: '2-digit' }).format(new Date());
+      setSavedAt(timestamp);
+      setNotice('草稿已安全儲存至 MySQL');
+      notify(`💾 草稿已儲存，版本更新至 v${res.new_version}`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : '儲存失敗';
+      setNotice(`儲存失敗: ${msg}`);
+      notify(msg);
+    }
   };
+
+  // 3. 匯出設定檔 (備份用)
   const exportDraft = () => {
     const blob = new Blob([JSON.stringify(draft, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -97,29 +122,27 @@ export default function SiteAdminEditor() {
     anchor.download = `equalspa-site-${new Date().toISOString().slice(0, 10)}.json`;
     anchor.click();
     URL.revokeObjectURL(url);
-    setNotice('設定檔已匯出');
+    notify('設定檔已成功匯出');
   };
+
+  // 4. 正式發布到官網
   const publish = async () => {
-    saveDraft();
-    if (!apiBase) {
-      setNotice('已存草稿；接上官網發布 API 後即可同步所有裝置');
-      return;
-    }
-    const token = window.sessionStorage.getItem('equalspa_admin_token');
-    if (!token) {
-      setNotice('請先從營運後台登入店長或 Admin 帳號');
-      return;
-    }
+    if (!window.confirm('確定要將目前的草稿發布到正式官網嗎？\n發布後，一般客人就會立刻看到最新內容喔！')) return;
     try {
-      const response = await fetch(`${apiBase}/api/site-content`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(draft),
-      });
-      if (!response.ok) throw new Error('publish_failed');
-      setNotice('官網內容已發布');
-    } catch {
-      setNotice('發布失敗，草稿仍保留在這台裝置');
+      setNotice('發布中...');
+      // 為了安全，發布前先自動存一次最新草稿
+      const draftRes = await api.saveSiteDraft(draft, version);
+      const newVersion = draftRes.new_version;
+      
+      const pubRes = await api.publishSiteContent(newVersion);
+      setVersion(pubRes.new_version);
+      setPublishedAt(new Date().toLocaleString('zh-TW'));
+      setNotice('官網內容已正式發布');
+      notify('🚀 正式發布成功！官網內容已同步至前端。');
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : '發布失敗';
+      setNotice(`發布失敗: ${msg}`);
+      notify(msg);
     }
   };
 
@@ -131,15 +154,24 @@ export default function SiteAdminEditor() {
   return <main className="site-studio-shell">
     <header className="studio-topbar">
       <a className="studio-brand" href="/"><i>E</i><span><b>SITE STUDIO</b><small>EQUAL SPA · CONTENT WORKSPACE</small></span></a>
-      <div className="studio-status"><span className="status-dot" /> <b>{notice}</b>{savedAt && <small>最後儲存 {savedAt}</small>}</div>
-      <div className="studio-actions"><a href="/" target="_blank">預覽官網 ↗</a><button type="button" onClick={saveDraft}>儲存草稿</button><button className="publish" type="button" onClick={publish}>發布更新</button></div>
+      <div className="studio-status">
+        <span className="status-dot" /> <b>{notice}</b>
+        {savedAt && <small>最後儲存 {savedAt}</small>}
+      </div>
+      <div className="studio-actions">
+        <div style={{ marginRight: '16px', textAlign: 'right' }}>
+          <span style={{ fontSize: '10px', color: '#a3afac' }}>草稿版本 v{version}</span><br/>
+          <span style={{ fontSize: '10px', color: '#a3afac' }}>{publishedAt ? `上次發布: ${publishedAt}` : '尚未發布'}</span>
+        </div>
+        <button type="button" onClick={saveDraft}>儲存草稿</button>
+        <button className="publish" type="button" onClick={publish}>發布更新</button>
+      </div>
     </header>
 
     <div className="studio-layout">
       <aside className="studio-sidebar">
-        <div><small>CONTENT MAP</small><h1>官網內容</h1><p>選擇區塊後直接修改。所有變更會先保留為草稿。</p></div>
+        <div><small>CONTENT MAP</small><h1>官網內容</h1><p>選擇區塊後直接修改。所有變更會先保留為草稿，點擊發布才會對外生效。</p></div>
         <nav>{sections.map((section) => <button type="button" key={section.id} className={active === section.id ? 'active' : ''} onClick={() => setActive(section.id)}><span>{section.index}</span><b>{section.label}</b><em>{section.english}</em></button>)}</nav>
-        <div className="studio-access"><small>ACCESS</small><b>店長／Admin</b><p>正式發布需由營運後台驗證權限。</p><a href="https://equalspa-ops-preview.c83500699.chatgpt.site/" target="_blank" rel="noreferrer">開啟營運後台 ↗</a></div>
       </aside>
 
       <section className="studio-workspace">
@@ -147,7 +179,7 @@ export default function SiteAdminEditor() {
 
         {active === 'home' && <div className="studio-form-grid">
           <div className="studio-form-card"><small>HERO COPY</small><h3>首頁文字</h3><Field label="單行中文副標" value={draft.home.subtitle} onChange={(subtitle) => markChanged({ ...draft, home: { ...draft.home, subtitle } })} hint="建議 22 個中文字以內，只保留一行。" /><Field label="主視覺輔助說明" value={draft.home.support} onChange={(support) => markChanged({ ...draft, home: { ...draft.home, support } })} multiline /></div>
-          <div className="studio-form-card"><small>BOOKING ENTRY</small><h3>預約入口</h3><Field label="LINE ID" value={draft.booking.lineId} onChange={(lineId) => markChanged({ ...draft, booking: { ...draft.booking, lineId } })} /><Field label="LIFF 預約網址" value={draft.booking.url} onChange={(url) => markChanged({ ...draft, booking: { ...draft.booking, url } })} hint="首頁、方案與師傅按鈕共用此網址。" /></div>
+          <div className="studio-form-card"><small>BOOKING ENTRY</small><h3>預約入口</h3><Field label="LINE ID" value={draft.booking.lineId} onChange={(lineId) => markChanged({ ...draft, booking: { ...draft.booking, lineId } })} /><Field label="線上預約網址" value={draft.booking.url} onChange={(url) => markChanged({ ...draft, booking: { ...draft.booking, url } })} hint="點擊官網「立即線上預約」將會導向此網址。" /></div>
         </div>}
 
         {active === 'services' && <div className="studio-service-editor">{draft.services.map((service, index) => <article key={service.code}>
@@ -157,7 +189,7 @@ export default function SiteAdminEditor() {
 
         {active === 'therapists' && <div className="studio-form-grid">
           <div className="studio-form-card"><small>CATALOG</small><h3>師傅目錄設定</h3><Field label="目錄介紹" value={draft.therapists.intro} onChange={(intro) => markChanged({ ...draft, therapists: { ...draft.therapists, intro } })} multiline /><label className="studio-range"><span>自動輪播速度</span><input type="range" min="24" max="80" value={draft.therapists.carouselSpeed} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, carouselSpeed: Number(event.target.value) } })} /><b>{draft.therapists.carouselSpeed} 秒</b></label><label className="studio-check"><input type="checkbox" checked={draft.therapists.showMeasurements} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, showMeasurements: event.target.checked } })} />公開顯示身高與體重</label></div>
-          <div className="studio-form-card studio-upload-card"><small>PUBLIC PHOTOS</small><h3>公開照片</h3><div className="upload-placeholder"><span>47</span><b>張公開形象照</b><p>目前沿用官網既有圖片。照片上傳功能會在接上後端檔案 API 後啟用。</p></div><p className="privacy-note">健康資訊只留在營運後台，不會出現在官網管理介面。</p></div>
+          <div className="studio-form-card studio-upload-card"><small>PUBLIC PHOTOS</small><h3>公開照片</h3><div className="upload-placeholder"><span>47</span><b>張公開形象照</b><p>目前沿用官網既有圖片。真實師傅名單由後台「員工管理」自動帶入。</p></div><p className="privacy-note">健康資訊只留在營運後台，絕對不會出現在官網。</p></div>
         </div>}
 
         {active === 'offers' && <div className="studio-offer-editor">{draft.offers.map((offer, index) => <article key={`${offer.name}-${index}`}><span>0{index + 1}</span><div><Field label="優惠名稱" value={offer.name} onChange={(name) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, name } : item) })} /><Field label="簡短說明" value={offer.summary} onChange={(summary) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, summary } : item) })} multiline /></div><button type="button" onClick={() => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, status: item.status === '顯示中' ? '草稿' : '顯示中' } : item) })}>{offer.status}</button></article>)}</div>}
@@ -169,7 +201,7 @@ export default function SiteAdminEditor() {
       </section>
 
       <aside className="studio-preview">
-        <header><small>LIVE CONTENT PREVIEW</small><span>草稿</span></header>
+        <header><small>LIVE CONTENT PREVIEW</small><span>即時預覽</span></header>
         <div className="studio-preview-screen">
           <span className="preview-logo">E</span>
           {active === 'home' && <><small>EQUAL SPA</small><h2>RETURN TO<br />EQUAL.</h2><p>{draft.home.subtitle}</p><a>{draft.booking.lineId}</a></>}
@@ -178,7 +210,7 @@ export default function SiteAdminEditor() {
           {active === 'offers' && <><small>CURRENT OFFERS</small>{draft.offers.filter((offer) => offer.status === '顯示中').map((offer) => <div className="preview-offer" key={offer.name}><b>{offer.name}</b><p>{offer.summary}</p></div>)}</>}
           {active === 'store' && <><small>STUDIO</small><h2>TAIPEI<br />XIMEN</h2><p>{draft.store.address}<br />{draft.store.hours}<br />{draft.store.payment}</p></>}
         </div>
-        <p>即時預覽用來確認文字層級。正式版排版會沿用官網的響應式設計。</p>
+        <p>此畫面為快速預覽文字層級用。發布後將套用至響應式對外官網。</p>
       </aside>
     </div>
   </main>;
