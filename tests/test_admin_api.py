@@ -185,6 +185,62 @@ def test_customer_name_serial_and_multiple_phone_ids(client):
     assert updated.json()["vip_serial"] == row["customer_serial"]
 
 
+def test_public_booking_checks_availability_and_is_idempotent(client):
+    headers = login(client)
+    bootstrap = client.get("/api/admin/bootstrap", headers=headers).json()
+    plan = next(item for item in bootstrap["services"] if item["code"] == "B")
+    staff_response = client.post(
+        "/api/admin/staff",
+        headers=headers,
+        json={"name": "LIFF 測試師傅", "category": "gay", "phone": "0977000001"},
+    )
+    assert staff_response.status_code == 201, staff_response.text
+    staff = staff_response.json()
+    shift = client.post(
+        "/api/admin/shifts",
+        headers=headers,
+        json={
+            "staff_id": staff["id"],
+            "start_time": "2026-08-27T18:00:00",
+            "end_time": "2026-08-27T23:00:00",
+            "source": "admin",
+        },
+    )
+    assert shift.status_code == 201, shift.text
+
+    options = client.get("/api/public/booking/options")
+    assert options.status_code == 200
+    assert options.json()["minimum_lead_minutes"] == 90
+    assert any(item["id"] == plan["id"] for item in options.json()["services"])
+
+    availability = client.get(
+        "/api/public/booking/availability",
+        params={"service_plan_id": plan["id"], "start_time": "2026-08-27T19:00:00"},
+    )
+    assert availability.status_code == 200, availability.text
+    assert [item["id"] for item in availability.json()["staff"]] == [staff["id"]]
+
+    payload = {
+        "customer_name": "網頁預約客戶",
+        "phone": "0977000002",
+        "service_plan_id": plan["id"],
+        "start_time": "2026-08-27T19:00:00",
+        "staff_id": staff["id"],
+        "idempotency_key": "booking-test-key-000001",
+        "notes": "請以 LINE 聯絡",
+    }
+    first = client.post("/api/public/booking/appointments", json=payload)
+    assert first.status_code == 201, first.text
+    assert first.json()["duplicate"] is False
+    assert first.json()["appointment"]["customer_name"] == "網頁預約客戶"
+    assert first.json()["appointment"]["phone"] == "0977000002"
+
+    repeated = client.post("/api/public/booking/appointments", json=payload)
+    assert repeated.status_code == 201, repeated.text
+    assert repeated.json()["duplicate"] is True
+    assert repeated.json()["appointment"]["id"] == first.json()["appointment"]["id"]
+
+
 def test_return_tables_promotions_and_line_pin_binding(client):
     headers = login(client)
     bootstrap = client.get("/api/admin/bootstrap", headers=headers).json()

@@ -31,6 +31,8 @@ Copy-Item .env.example .env
 - `DATABASE_HEARTBEAT_SECONDS`：Aiven 心跳間隔；建議保留預設 720 秒（12 分鐘）。
 - `CUSTOMER_SERVICE_URL`：Flex 選單失敗時顯示給客戶的真人客服連結。
 - `RENDER_LOGS_URL`：管理員錯誤備援訊息中的系統紀錄連結。
+- `BOOKING_WEB_URL`：LINE Flex 故障或客戶輸入「網頁預約」時提供的備用預約頁。
+- `LINE_LIFF_ID`、`LINE_LOGIN_CHANNEL_ID`：建立 LINE Login／LIFF 後填入；後端會向 LINE 驗證 ID Token，未設定前仍可用姓名＋手機完成一般網頁預約。
 
 Fernet 金鑰可在本機產生：
 
@@ -52,6 +54,7 @@ Fernet 金鑰可在本機產生：
 - 刪除師傅採「暫時退役」，不會破壞歷史訂單。
 - LINE 管理員必須先輸入 `root`，再輸入對應後台 PIN 才會綁定；管理選單可登出並解除綁定。
 - LINE 客戶先看簡易確認 Flex，按下確認才寫入訂單；正式建立後再回傳完整訂單 Flex。
+- 備用網頁預約同樣檢查正式班表、師傅撞期、兩間房容量、90 分鐘與重複送出；啟用 LIFF 後由後端驗證 LINE ID Token。
 - 客戶名稱與 `VIP-xxxx` 流水分開；手機號碼是可編輯的客戶 ID，同一客戶可保存多支手機。
 - 公開 API 會遮罩客戶、電話、備註、付款、回帳與營收；師傅工作階段只回傳自己的班表與訂單。
 

@@ -110,6 +110,27 @@ export type ReturnRuleSetView = {
   rules: Array<{ id: number; service_code: string; name: string; amount: number; duration_minutes: number; active: boolean }>;
 };
 
+export type PublicBookingOptions = {
+  services: RawService[];
+  promotions: BootstrapData['promotions'];
+  minimum_lead_minutes: number;
+  support_url: string;
+  liff_id?: string;
+  line_login_enabled: boolean;
+};
+
+export type PublicBookingAvailability = {
+  start_time: string;
+  end_time: string;
+  can_choose_staff: boolean;
+  staff: Array<{ id: number; name: string; category?: RawStaff['category'] }>;
+};
+
+export type PublicBookingResult = {
+  duplicate: boolean;
+  appointment: RawAppointment;
+};
+
 const splitDateTime = (value: string) => {
   const [date, time = ''] = value.split('T');
   return { date, time: time.slice(0, 5) };
@@ -276,6 +297,21 @@ export class SpaApi {
   bootstrap() { return this.request<BootstrapData>('/api/admin/bootstrap'); }
 
   publicBootstrap() { return this.request<BootstrapData>('/api/public/bootstrap'); }
+
+  publicBookingOptions() {
+    return this.request<PublicBookingOptions>('/api/public/booking/options');
+  }
+
+  publicBookingAvailability(servicePlanId: number, startTime: string) {
+    const query = new URLSearchParams({ service_plan_id: String(servicePlanId), start_time: startTime });
+    return this.request<PublicBookingAvailability>(`/api/public/booking/availability?${query}`);
+  }
+
+  createPublicBooking(payload: Record<string, unknown>) {
+    return this.request<PublicBookingResult>('/api/public/booking/appointments', {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+  }
 
   staffLogin(payload: { staff_id: number; phone: string }) {
     return this.request<{ access_token: string; staff: StaffIdentity }>('/api/staff/auth/login', { method: 'POST', body: JSON.stringify(payload) });
