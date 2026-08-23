@@ -73,11 +73,8 @@ export function WingMenu() {
         </div>
       </nav>
 
-      <button className="logo-trigger" type="button" aria-expanded={menuOpen} aria-controls="site-menu" onClick={() => setMenuOpen((open) => !open)}>
-        <span className="trigger-line trigger-line-left" aria-hidden="true" />
+      <button className="logo-trigger" type="button" aria-label={menuOpen ? '關閉網站選單' : '開啟網站選單'} aria-expanded={menuOpen} aria-controls="site-menu" onClick={() => setMenuOpen((open) => !open)}>
         <span className="logo-tile">E</span>
-        <span className="trigger-label">{menuOpen ? 'CLOSE' : 'MENU'}</span>
-        <span className="trigger-line trigger-line-right" aria-hidden="true" />
       </button>
     </div>
   );
