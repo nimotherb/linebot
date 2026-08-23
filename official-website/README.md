@@ -13,6 +13,13 @@
 - `/recruit`：人才招募（聯絡信箱暫時留空）
 - `/groups`、`/loyalty`：內容更新中
 - `/privacy`：隱私權說明
+- `/site-admin`：店長／Admin 使用的官網內容管理前端（本機草稿、即時預覽與 JSON 匯出）
+
+## 官網內容管理
+
+`/site-admin` 目前會把草稿保存在使用者自己的瀏覽器，不會直接更動所有訪客看到的正式官網。若設定 `NEXT_PUBLIC_API_URL`，發布按鈕會以營運後台登入取得的 `equalspa_admin_token` 呼叫 `PUT /api/site-content`；後端必須再次驗證店長或 Admin 權限，才可寫入正式內容。
+
+圖片上傳尚未開放；接上後端檔案 API 前，師傅照片仍由 `public/images/therapists/` 管理。
 
 ## 待補素材
 

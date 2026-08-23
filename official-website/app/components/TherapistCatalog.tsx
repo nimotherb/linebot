@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { type CSSProperties, useMemo, useState } from 'react';
 
 type Category = 'straight' | 'community' | 'bisexual';
 type Therapist = { name: string; slug: string; category: Category; height: number; weight: number };
@@ -10,6 +10,8 @@ const categoryMeta: Record<Category, { label: string; english: string; note: str
   community: { label: '圈內師傅', english: 'COMMUNITY', note: '熟悉多元需求，讓溝通更直接、更自在。' },
   bisexual: { label: '雙性師傅', english: 'BISEXUAL', note: '開放而細膩，提供另一種柔韌平衡的節奏。' },
 };
+
+const bookingUrl = 'https://equalspa-ops-preview.c83500699.chatgpt.site/booking';
 
 const therapists: Therapist[] = [
   { name: 'Eason', slug: 'eason', category: 'straight', height: 180, weight: 72 },
@@ -67,9 +69,12 @@ function imagePath(therapist: Therapist) {
 
 export default function TherapistCatalog() {
   const [category, setCategory] = useState<'all' | Category>('all');
-  const railRef = useRef<HTMLDivElement>(null);
   const visible = useMemo(() => category === 'all' ? therapists : therapists.filter((item) => item.category === category), [category]);
-  const moveRail = (direction: number) => railRef.current?.scrollBy({ left: direction * Math.min(window.innerWidth * .72, 760), behavior: 'smooth' });
+
+  const portraitSet = (duplicate = false) => <div className="portrait-set" aria-hidden={duplicate || undefined}>{visible.map((therapist, index) => <article className="portrait-product" key={`${therapist.category}-${therapist.slug}-${duplicate ? 'copy' : 'original'}`}>
+    <div className="portrait-frame"><img src={imagePath(therapist)} alt={duplicate ? '' : `${therapist.name}師傅公開形象照`} loading={duplicate || index >= 5 ? 'lazy' : 'eager'} /></div>
+    <span>{String(index + 1).padStart(2, '0')}</span><div><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3></div>
+  </article>)}</div>;
 
   return <>
     <section className="therapist-selector" aria-label="選擇師傅分類">
@@ -81,18 +86,15 @@ export default function TherapistCatalog() {
     </section>
 
     <section className="therapist-carousel" aria-label="師傅照片輪播">
-      <header><div><small>PORTRAIT RAIL</small><p>{category === 'all' ? 'ALL THERAPISTS' : categoryMeta[category].english}</p></div><div className="carousel-controls"><button onClick={() => moveRail(-1)} aria-label="向前瀏覽師傅">←</button><button onClick={() => moveRail(1)} aria-label="向後瀏覽師傅">→</button></div></header>
-      <div className="portrait-rail" ref={railRef}>{visible.map((therapist, index) => <article className="portrait-product" key={`${therapist.category}-${therapist.slug}`}>
-        <div className="portrait-frame"><img src={imagePath(therapist)} alt={`${therapist.name}師傅公開形象照`} loading={index < 5 ? 'eager' : 'lazy'} /></div>
-        <span>{String(index + 1).padStart(2, '0')}</span><div><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3></div>
-      </article>)}</div>
+      <header><div><small>PORTRAIT RAIL</small><p>{category === 'all' ? 'ALL THERAPISTS' : categoryMeta[category].english}</p></div><span>AUTOMATIC LOOP · PAUSE ON HOVER</span></header>
+      <div className="portrait-rail"><div key={category} className="portrait-track" style={{ '--rail-duration': `${Math.max(34, visible.length * 2.8)}s` } as CSSProperties}>{portraitSet()}{portraitSet(true)}</div></div>
     </section>
 
     <section className="therapist-catalog" aria-live="polite">
       <header><small>CATALOG / {visible.length} PROFILES</small><h2>THERAPIST<br />SELECTION.</h2></header>
       <div className="therapist-product-grid">{visible.map((therapist, index) => <article key={`${therapist.category}-${therapist.slug}`}>
         <div className="therapist-product-image"><img src={imagePath(therapist)} alt={`${therapist.name}師傅`} loading="lazy"/><span>{String(index + 1).padStart(2, '0')}</span></div>
-        <div className="therapist-product-copy"><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3><dl><div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div><div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div></dl><p>{categoryMeta[therapist.category].note}</p><a href="https://line.me/R/ti/p/%40017ktlhm" target="_blank" rel="noreferrer">詢問班表／指定預約 ↗</a></div>
+        <div className="therapist-product-copy"><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3><dl><div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div><div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div></dl><p>{categoryMeta[therapist.category].note}</p><a href={bookingUrl} target="_blank" rel="noreferrer">詢問班表／指定預約 ↗</a></div>
       </article>)}</div>
     </section>
   </>;

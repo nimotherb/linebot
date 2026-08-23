@@ -15,42 +15,49 @@ const pageMeta = {
   privacy: ['PRIVACY', '你的資料，我們謹慎對待', '只在提供服務所需的範圍內使用資料。'],
 } as const;
 
+const bookingUrl = 'https://equalspa-ops-preview.c83500699.chatgpt.site/booking';
+
 const plans = [
   {
     code: 'A', name: '舒壓方案', english: 'ESSENTIAL RESET', duration: '60 MIN', price: 'NT$ 1,500',
+    summary: '指壓或油壓擇一，簡單整理日常疲勞',
     tags: ['不指定師傅', '指壓／油壓擇一', '10:00—24:00'],
-    lead: '把選擇交給當日最適合的專業，換回一小時純粹而直接的身體釋放。',
-    paragraphs: ['A 方案從「不指定師傅」開始，讓客服依照班表安排當下最合適的人選。你只需要在指壓與油壓之間選擇：前者以穩定而清晰的力道處理緊繃，後者以連續滑順的節奏把疲憊向外推開。', '六十分鐘不放入體推與機能保養，所有時間都集中在最基本、也最容易被忽略的放鬆。適合第一次到訪、臨時想休息，或已經清楚知道今天只需要一件事——讓身體鬆下來。'],
+    lead: '適合第一次到訪、臨時需要休息，或想先從熟悉的指壓、油壓開始。',
+    paragraphs: ['A 方案由客服依照當日班表安排師傅。預約時可選擇指壓或油壓：指壓以穩定力道處理肩頸、腰背等緊繃部位；油壓則透過連續手法，慢慢放鬆全身。', '六十分鐘會集中在你選擇的主要手法，不安排體推與機能保養。若有希望加強或避開的部位，抵達時告訴師傅即可。'],
   },
   {
     code: 'B', name: '愉悅方案', english: 'SENSORY FLOW', duration: '60 MIN', price: 'NT$ 2,000',
+    summary: '可指定師傅，加入體推與機能保養',
     tags: ['可指定師傅', '指壓／油壓擇一', '體推', '機能保養'],
-    lead: '從選定熟悉的氣質開始，讓短短一小時擁有更完整、更貼近個人偏好的層次。',
-    paragraphs: ['B 方案讓你指定師傅，也讓溝通在服務開始前就更精準。指壓或油壓擇一作為主軸，再加入體推與機能保養；每一段接觸都不是堆疊項目，而是為下一個感受預留位置。', '這是一段緊湊但不倉促的安排。技師會依照身體回饋調整力道與停留，不浪費時間試探，也不急著收尾。適合想在有限時間內，同時獲得深度放鬆與完整互動的人。'],
+    lead: '可指定熟悉的師傅，在一小時內安排主要手法與較完整的服務內容。',
+    paragraphs: ['B 方案可指定師傅，預約時選擇指壓或油壓作為主要手法，並安排體推與機能保養。師傅會先確認你的偏好，再分配每一段服務時間。', '整體節奏完整又俐落，適合時間有限，但希望多一些手法變化與互動的人。力道、速度與加強部位都可以在開始前提出。'],
   },
   {
     code: 'C', name: '享受方案', english: 'DEEP RELEASE', duration: '90 MIN', price: 'NT$ 2,500',
+    summary: '指壓與油壓完整銜接，節奏更從容',
     tags: ['可指定師傅', '指壓', '油壓', '體推', '機能保養'],
-    lead: '多出的三十分鐘，不只是延長；它讓力道、溫度與節奏終於不必彼此讓步。',
-    paragraphs: ['九十分鐘讓師傅有足夠空間從指壓建立深度，再以油壓拉長放鬆的餘韻。體推與機能保養自然穿插其中，身體不需要在剛適應時就被迫進入下一階段。', '這個方案適合累積疲憊、需要更細緻照顧，或希望服務具有明確起伏的人。前段處理重量，中段打開活動感，後段把速度放慢；完整，但仍保留讓人意猶未盡的分寸。'],
+    lead: '九十分鐘能從指壓接到油壓，力道與節奏都有更充裕的調整空間。',
+    paragraphs: ['服務會先以指壓確認緊繃的位置，再銜接油壓、體推與機能保養。時間較充裕，師傅可依你的反應調整停留，不必快速帶過需要加強的部位。', '適合疲勞累積較多、希望兼顧深層按壓與全身放鬆的人。開始前可以與指定師傅討論今天想加強的範圍。'],
   },
   {
     code: 'D', name: '極緻方案', english: 'FULL PROTOCOL', duration: '120 MIN', price: 'NT$ 3,000',
+    summary: '兩小時完整照顧，充分整理全身',
     tags: ['可指定師傅', '指壓', '油壓', '體推', '機能保養'],
-    lead: '兩個小時，讓所有手法有足夠時間展開，也讓身體真正離開原本緊繃的速度。',
-    paragraphs: ['D 方案把指壓、油壓、體推與機能保養編排成完整序列。師傅不需要壓縮轉場，可以先讀懂緊繃的位置，再逐步改變力道、接觸面積與速度；每個階段都有目的，也有足夠的停留。', '適合想要完整體驗、長時間工作後需要全面整理，或希望與指定師傅建立更精準默契的人。這不是把一小時複製兩次，而是一次從深到淺、從集中到延展的完整服務。'],
+    lead: '兩個小時可完整安排各種手法，適合累積較久的疲勞，或想慢慢放鬆。',
+    paragraphs: ['D 方案包含指壓、油壓、體推與機能保養。師傅會先了解你的狀況，再逐步調整力道、接觸範圍與速度，各部位都能保留足夠的處理時間。', '適合長時間工作後需要全面整理，或已經有熟悉的指定師傅，希望服務安排更細緻的人。若有特別偏好的順序，也可以預先提出。'],
   },
   {
     code: 'OUT', name: '隨享外出方案', english: 'PRIVATE VISIT', duration: '100 MIN', price: 'NT$ 3,200',
+    summary: '指定地點到府服務，三公里內免外出費',
     tags: ['可指定師傅', '完整手法', '3 KM 內免外出費', '預約制'],
-    lead: '把熟悉的空間留給自己，讓師傅帶著完整手法抵達你選擇的地點。',
-    paragraphs: ['外出方案提供一百分鐘完整服務，由你指定師傅與地點，再由客服確認交通與時段。指壓、油壓、體推與機能保養可依現場空間及需求安排，減少移動後重新整理狀態的過程。', '以獅子林大樓為中心，Google 地圖距離三公里內免收外出費；超過三公里後，每公里加收 NT$ 80。適合重視隱私、偏好熟悉空間，或希望服務結束後直接休息的人。'],
+    lead: '由師傅前往你指定的地點，適合偏好熟悉空間或服務後想直接休息的人。',
+    paragraphs: ['外出方案提供一百分鐘服務，可指定師傅與地點，再由客服確認交通及時段。指壓、油壓、體推與機能保養會依現場空間與你的需求安排。', '以獅子林大樓為中心，Google 地圖距離三公里內免收外出費；超過三公里後，每公里加收 NT$ 80。預約時請提供大約位置，客服會先確認費用。'],
   },
 ] as const;
 
 function AboutContent() {
   return <>
-    <div className="manifesto"><p>EQUAL 不是口號，而是我們安排每一次服務的起點。</p><p>每個人都能自在選擇適合自己的服務，也在被理解與尊重的空間裡，重新找回身體的節奏。清楚的方案、公開的價格與可被確認的界線，讓舒服不必建立在猜測上。</p></div>
+    <div className="manifesto"><p>EQUAL 是我們安排每一次服務的起點。</p><p>每個人都能自在選擇適合自己的服務，也在被理解與尊重的空間裡，重新找回身體的節奏。清楚的方案、公開的價格與可被確認的界線，讓舒服不必建立在猜測上。</p></div>
     <div className="value-grid"><article><span>01</span><h2>EQUALITY</h2><p>不預設、不評價，讓每位來訪者都能被好好接住。</p></article><article><span>02</span><h2>PRECISION</h2><p>清楚說明方案與時間，讓需求被準確理解。</p></article><article><span>03</span><h2>EASE</h2><p>像回到熟悉的地方，安靜放下今天累積的重量。</p></article></div>
   </>;
 }
@@ -59,8 +66,8 @@ function ServicesContent() {
   return <>
     <div className="service-overview"><small>FIVE WAYS TO RESET</small><p>所有方案皆可於每日 10:00—24:00 洽詢預約。A、B 兩個六十分鐘方案為指壓或油壓擇一；其餘方案依內容安排完整手法。實際流程會由師傅依身體回饋微調。</p></div>
     <div className="service-journeys">{plans.map((plan, index) => <article key={plan.code} className="service-journey">
-      <header><span>{String(index + 1).padStart(2, '0')}</span><i>{plan.code}</i><div><small>{plan.english}</small><h2>{plan.name}</h2></div><p>{plan.duration}</p><strong>{plan.price}</strong></header>
-      <div className="service-journey-body"><h3>{plan.lead}</h3><div className="service-prose">{plan.paragraphs.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div><ul>{plan.tags.map((tag) => <li key={tag}>{tag}</li>)}</ul><a href="https://line.me/R/ti/p/%40017ktlhm" target="_blank" rel="noreferrer">SELECT THIS PLAN ↗</a></div>
+      <header><span className="service-index">{String(index + 1).padStart(2, '0')}</span><i>{plan.code}</i><div><small>{plan.english}</small><h2>{plan.name}</h2></div><div className="service-quick-info"><small>{plan.summary}</small><p>{plan.duration}</p></div><strong>{plan.price}</strong></header>
+      <div className="service-journey-body"><h3>{plan.lead}</h3><div className="service-prose">{plan.paragraphs.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div><ul>{plan.tags.map((tag) => <li key={tag}>{tag}</li>)}</ul><a href={bookingUrl} target="_blank" rel="noreferrer">SELECT THIS PLAN ↗</a></div>
     </article>)}</div>
     <div className="service-notes"><h2>BOOKING NOTES</h2><dl><div><dt>午夜加成</dt><dd>00:00—06:00 · NT$ 600</dd></div><div><dt>預約時加時</dt><dd>每 30 分鐘 NT$ 500</dd></div><div><dt>現場加時</dt><dd>每 30 分鐘 NT$ 700</dd></div><div><dt>外出交通</dt><dd>超過 3 公里，每公里 NT$ 80</dd></div></dl><p>客服值班時間為每日 10:00—24:00；其他時段的服務請在客服值班時間內提前完成預約。方案、師傅與優惠可能調整，最終內容以 LINE 客服確認為準。</p></div>
   </>;
@@ -70,7 +77,7 @@ function TherapistsContent() { return <TherapistCatalog />; }
 
 function OffersContent() {
   const offers = [['BIRTHDAY', '生日月優惠', '在生日月替自己留一段完整的休息時間。'], ['NEW FACE', '新進師傅體驗', '認識不同手法與節奏，找到更適合自己的選擇。'], ['WEEKDAY', '平日時段精選', '避開繁忙時段，享受更安靜從容的體驗。']] as const;
-  return <div className="offer-grid">{offers.map(([tag, title, copy], index) => <article key={tag}><span>0{index + 1}</span><small>{tag}</small><h2>{title}</h2><p>{copy}</p><em>填充預覽內容</em><a href="https://line.me/R/ti/p/%40017ktlhm" target="_blank" rel="noreferrer">向 LINE 客服確認 ↗</a></article>)}</div>;
+  return <div className="offer-grid">{offers.map(([tag, title, copy], index) => <article key={tag}><span>0{index + 1}</span><small>{tag}</small><h2>{title}</h2><p>{copy}</p><em>填充預覽內容</em><a href={bookingUrl} target="_blank" rel="noreferrer">查看可預約時段 ↗</a></article>)}</div>;
 }
 
 function LocationContent() {
@@ -82,7 +89,7 @@ function RecruitContent() {
 }
 
 function UpdatingContent({ type }: { type: 'groups' | 'loyalty' }) {
-  return <div className="updating-card"><span>{type === 'groups' ? 'GROUP' : 'LOYALTY'}</span><div className="update-orbit"><i>UPDATE</i></div><h2>COMING SOON</h2><p>{type === 'groups' ? '群組入口與使用說明將在確認後公開。' : '酬賓資格、回饋方式與使用規則正在整理中。'}</p><a href="https://line.me/R/ti/p/%40017ktlhm" target="_blank" rel="noreferrer">先詢問 LINE 客服 ↗</a></div>;
+  return <div className="updating-card"><span>{type === 'groups' ? 'GROUP' : 'LOYALTY'}</span><div className="update-orbit"><i>UPDATE</i></div><h2>COMING SOON</h2><p>{type === 'groups' ? '群組入口與使用說明將在確認後公開。' : '酬賓資格、回饋方式與使用規則正在整理中。'}</p><a href={bookingUrl} target="_blank" rel="noreferrer">前往線上預約 ↗</a></div>;
 }
 
 function PrivacyContent() {
@@ -121,5 +128,5 @@ export default async function ContentPage({ params }: { params: Promise<{ slug: 
   if (!(slug in pageMeta)) notFound();
   const typedSlug = slug as keyof typeof pageMeta;
   const [english, title, intro] = pageMeta[typedSlug];
-  return <main className={`interior-shell page-${typedSlug}`}><PointerLight /><SiteHeader /><article className="interior-page"><header className="page-title"><p>EQUAL SPA / {String(Object.keys(pageMeta).indexOf(typedSlug) + 1).padStart(2, '0')}</p><h1>{english}</h1><div><h2>{title}</h2><span>{intro}</span></div></header><section className="page-content"><PageContent slug={typedSlug} /></section><footer className="site-footer"><div><b>伊果 SPA</b><span>EQUAL SPA · TAIPEI XIMEN</span></div><a href="https://line.me/R/ti/p/%40017ktlhm" target="_blank" rel="noreferrer">LINE @017ktlhm</a><small>© {new Date().getFullYear()} EQUAL SPA</small></footer></article><WingMenu /></main>;
+  return <main className={`interior-shell page-${typedSlug}`}><PointerLight /><SiteHeader /><article className="interior-page"><header className="page-title"><p>EQUAL SPA / {String(Object.keys(pageMeta).indexOf(typedSlug) + 1).padStart(2, '0')}</p><h1>{english}</h1><div><h2>{title}</h2><span>{intro}</span></div></header><section className="page-content"><PageContent slug={typedSlug} /></section><footer className="site-footer"><div><b>伊果 SPA</b><span>EQUAL SPA · TAIPEI XIMEN</span></div><a href={bookingUrl} target="_blank" rel="noreferrer">ONLINE BOOKING</a><small>© {new Date().getFullYear()} EQUAL SPA</small></footer></article><WingMenu /></main>;
 }
