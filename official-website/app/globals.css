@@ -864,7 +864,7 @@ button { font: inherit; }
 .therapist-carousel:focus-within .portrait-track { animation-play-state: paused; }
 @keyframes portrait-loop { to { transform: translateX(-50%); } }
 
-/* No-code content workspace. Drafts are local until the authenticated API is connected. */
+/* No-code content workspace backed by the authenticated FastAPI/MySQL content API. */
 .site-studio-shell { min-height: 100svh; background: #e8ece7; color: #082f29; }
 .studio-topbar {
   position: sticky;
@@ -969,6 +969,97 @@ button { font: inherit; }
 .preview-offer p { margin: 8px 0 0; font-size: 8px; line-height: 1.6; }
 .studio-preview > p { margin: 18px 4px 0; font-size: 8px; line-height: 1.7; opacity: .55; }
 
+/* Site Studio authentication and account controls. */
+.studio-login-shell {
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  padding: 30px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 17% 12%, rgba(255,255,255,.9), transparent 28rem),
+    radial-gradient(circle at 86% 78%, rgba(231,186,99,.2), transparent 32rem),
+    linear-gradient(135deg, #f5f2e9, #dfe8df 72%, #ead9aa 145%);
+}
+.studio-login-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  opacity: .28;
+  pointer-events: none;
+  background-image: linear-gradient(rgba(7,50,43,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(7,50,43,.08) 1px, transparent 1px);
+  background-size: clamp(58px, 7vw, 112px) clamp(58px, 7vw, 112px);
+  mask-image: radial-gradient(circle at center, black, transparent 74%);
+}
+.studio-login-card {
+  position: relative;
+  width: min(100%, 500px);
+  padding: clamp(30px, 5vw, 54px);
+  border: 1px solid rgba(255,255,255,.7);
+  border-radius: 34px;
+  background: rgba(247,247,241,.56);
+  box-shadow: 0 34px 100px rgba(7,50,43,.13), inset 0 1px rgba(255,255,255,.8);
+  backdrop-filter: blur(28px) saturate(120%);
+}
+.studio-login-brand { display: inline-flex; align-items: center; gap: 13px; }
+.studio-login-brand i { display: grid; place-items: center; width: 48px; height: 48px; border: 1px solid rgba(178,119,20,.55); border-radius: 16px; background: rgba(231,186,99,.2); font-family: Georgia, serif; font-size: 25px; }
+.studio-login-brand span { display: flex; flex-direction: column; gap: 4px; }
+.studio-login-brand b { font-size: 12px; letter-spacing: .16em; }
+.studio-login-brand small, .studio-login-copy > small { font-size: 8px; letter-spacing: .2em; opacity: .55; }
+.studio-login-copy { margin: 68px 0 32px; }
+.studio-login-copy h1 { margin: 12px 0 16px; font-size: clamp(30px, 4.2vw, 46px); font-weight: 300; letter-spacing: -.04em; }
+.studio-login-copy p { max-width: 31em; margin: 0; font-size: 12px; line-height: 1.85; opacity: .65; }
+.studio-login-card form { display: grid; gap: 15px; }
+.studio-login-card label, .studio-account-modal label { display: grid; gap: 8px; font-size: 9px; letter-spacing: .08em; }
+.studio-login-card input, .studio-account-modal input, .studio-account-modal select { width: 100%; min-height: 48px; padding: 0 15px; border: 1px solid rgba(7,50,43,.13); border-radius: 13px; outline: 0; background: rgba(255,255,255,.62); color: inherit; font: inherit; transition: border .2s, box-shadow .2s; }
+.studio-login-card input:focus, .studio-account-modal input:focus, .studio-account-modal select:focus { border-color: rgba(178,119,20,.52); box-shadow: 0 0 0 4px rgba(231,186,99,.14); }
+.studio-login-card form > button, .studio-account-modal form > button { min-height: 50px; margin-top: 5px; border: 0; border-radius: 13px; background: var(--ink-deep); color: white; cursor: pointer; font-size: 11px; letter-spacing: .08em; }
+.studio-login-card button:disabled, .studio-account-modal button:disabled { cursor: wait; opacity: .56; }
+.studio-login-error { margin: 0; padding: 11px 13px; border-radius: 11px; background: rgba(161,54,43,.09); color: #8d3028; font-size: 10px; line-height: 1.6; }
+.studio-login-card > footer { display: flex; justify-content: space-between; margin-top: 30px; padding-top: 18px; border-top: 1px solid rgba(7,50,43,.11); font-size: 8px; letter-spacing: .12em; opacity: .62; }
+.studio-login-card > footer a { padding-bottom: 3px; border-bottom: 1px solid; }
+.studio-login-loader { width: 38px; height: 38px; border: 2px solid rgba(7,50,43,.12); border-top-color: var(--gold); border-radius: 50%; animation: studio-auth-spin .75s linear infinite; }
+@keyframes studio-auth-spin { to { transform: rotate(360deg); } }
+.studio-session-shell { min-height: 100svh; }
+.studio-session-card {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid rgba(255,255,255,.62);
+  border-radius: 18px;
+  background: rgba(247,247,241,.76);
+  box-shadow: 0 18px 50px rgba(7,50,43,.14);
+  backdrop-filter: blur(22px);
+}
+.studio-session-card > span { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; background: var(--ink-deep); color: var(--gold); font-family: Georgia, serif; }
+.studio-session-card > div { min-width: 105px; display: flex; flex-direction: column; gap: 3px; }
+.studio-session-card b { font-size: 10px; }
+.studio-session-card small { font-size: 7px; opacity: .56; }
+.studio-session-card button { padding: 8px 10px; border: 1px solid rgba(7,50,43,.12); border-radius: 10px; background: rgba(255,255,255,.48); color: inherit; cursor: pointer; font-size: 8px; }
+.studio-toast { position: fixed; left: 50%; bottom: 26px; z-index: 90; padding: 12px 18px; border-radius: 999px; background: var(--ink-deep); color: white; box-shadow: 0 14px 40px rgba(7,50,43,.24); transform: translateX(-50%); font-size: 10px; }
+.studio-account-overlay { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 24px; background: rgba(5,32,27,.38); backdrop-filter: blur(14px); }
+.studio-account-modal { width: min(940px, 100%); max-height: calc(100svh - 48px); overflow-y: auto; padding: clamp(24px, 4vw, 42px); border: 1px solid rgba(255,255,255,.65); border-radius: 30px; background: rgba(245,246,241,.93); box-shadow: 0 38px 110px rgba(5,32,27,.3); }
+.studio-account-modal > header { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 30px; }
+.studio-account-modal > header small { font-size: 8px; letter-spacing: .2em; color: #9c6f1e; }
+.studio-account-modal > header h2 { margin: 8px 0 9px; font-size: 28px; font-weight: 300; }
+.studio-account-modal > header p { margin: 0; font-size: 10px; opacity: .62; }
+.studio-account-modal > header > button { width: 38px; height: 38px; border: 1px solid rgba(7,50,43,.12); border-radius: 50%; background: transparent; cursor: pointer; font-size: 22px; font-weight: 200; }
+.studio-account-layout { display: grid; grid-template-columns: .8fr 1.2fr; gap: 20px; }
+.studio-account-layout > form, .studio-account-list { padding: 24px; border-radius: 21px; background: rgba(255,255,255,.54); }
+.studio-account-layout h3 { margin: 0 0 22px; font-size: 16px; font-weight: 400; }
+.studio-account-layout form { display: grid; gap: 13px; }
+.studio-account-list article { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid rgba(7,50,43,.1); }
+.studio-account-list article > span { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; background: rgba(7,50,43,.09); font-family: Georgia, serif; }
+.studio-account-list article > div { display: flex; flex-direction: column; gap: 4px; }
+.studio-account-list b { font-size: 10px; }
+.studio-account-list small { font-size: 8px; opacity: .58; }
+.studio-account-list em { padding: 5px 8px; border-radius: 999px; background: rgba(138,185,94,.14); font-size: 7px; font-style: normal; }
+
 @media (max-width: 1180px) {
   .studio-layout { grid-template-columns: 210px 1fr; }
   .studio-preview { display: none; }
@@ -1010,6 +1101,15 @@ button { font: inherit; }
   .studio-offer-editor > article { grid-template-columns: 32px 1fr; }
   .studio-offer-editor > article > div { grid-template-columns: 1fr; }
   .studio-offer-editor > article > button { grid-column: 2; justify-self: start; margin: 0; }
+  .studio-login-shell { padding: 16px; }
+  .studio-login-card { padding: 27px 22px; border-radius: 26px; }
+  .studio-login-copy { margin: 48px 0 26px; }
+  .studio-session-card { right: 10px; bottom: 10px; max-width: calc(100vw - 20px); }
+  .studio-session-card > div { min-width: 0; }
+  .studio-session-card small { display: none; }
+  .studio-account-overlay { padding: 12px; }
+  .studio-account-modal { max-height: calc(100svh - 24px); padding: 24px 17px; border-radius: 24px; }
+  .studio-account-layout { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

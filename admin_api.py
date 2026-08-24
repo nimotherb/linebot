@@ -2036,9 +2036,7 @@ def register_admin_api(
         return [serialize_admin(item) for item in db.query(AdminUser).order_by(AdminUser.id).all()]
 
     @app.post("/api/admin/users", status_code=201)
-    def create_admin_user(payload: AdminUserCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
-        if actor.role == "manager" and payload.role != "clerk":
-            raise HTTPException(status_code=403, detail="店長只能新增櫃台帳號")
+    def create_admin_user(payload: AdminUserCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin"))):
         if db.query(AdminUser).filter(AdminUser.username == payload.username.lower()).first():
             raise HTTPException(status_code=409, detail="登入帳號已存在")
         item = AdminUser(username=payload.username.lower(), display_name=payload.display_name, role=payload.role, pin_hash=password_hash.hash(payload.pin))

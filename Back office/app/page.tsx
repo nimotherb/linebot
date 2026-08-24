@@ -343,6 +343,7 @@ export default function Home() {
   const isViewer = appMode === 'public' || appMode === 'demo';
   const isStaffUser = appMode === 'staff';
   const canManageAll = appMode === 'live' && (role === 'admin' || role === 'manager');
+  const canCreateUsers = appMode === 'live' && role === 'admin';
   const canEditAppointments = appMode === 'live';
   const canCreateAppointments = appMode === 'live' || isStaffUser;
   const sensitiveVisible = appMode === 'live';
@@ -768,6 +769,10 @@ export default function Home() {
 
   const addAdminUser = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!canCreateUsers) {
+      notify('只有 Admin 可以新增後台使用者。');
+      return;
+    }
     const data = new FormData(event.currentTarget);
     if (appMode === 'live') {
       try {
@@ -937,7 +942,7 @@ export default function Home() {
   const renderUsers = () => (
     <div className="users-layout">
       <section className="panel table-panel">
-        <div className="panel-heading"><div><p className="eyebrow">ADMIN USERS</p><h2>後台帳號與權限</h2></div>{canManageAll && <button className="primary-button" onClick={() => setModal({ type: 'user' })}>＋ 新增使用者</button>}</div>
+        <div className="panel-heading"><div><p className="eyebrow">ADMIN USERS</p><h2>後台帳號與權限</h2></div>{canCreateUsers && <button className="primary-button" onClick={() => setModal({ type: 'user' })}>＋ 新增使用者</button>}</div>
         <div className="data-table users-table">
           <div className="table-head"><span>使用者</span><span>角色</span><span>狀態</span><span>最近登入</span><span>權限操作</span></div>
           {adminUsers.map((user) => {
@@ -953,7 +958,7 @@ export default function Home() {
         </div>
       </section>
       <aside className="panel security-card"><p className="eyebrow">LOGIN SECURITY</p><h2>數字 PIN 安全設定</h2><ul><li>PIN 只保存 Argon2 雜湊</li><li>連續錯誤 5 次鎖定 15 分鐘</li><li>Bearer 工作階段 8 小時到期</li><li>停用後立即撤銷既有登入</li></ul><div className="security-footnote">停用採保留紀錄的安全刪除，不會破壞訂單與稽核資料。</div></aside>
-      <section className="panel permission-panel"><div className="panel-heading"><div><p className="eyebrow">ROLE MATRIX</p><h2>權限對照</h2></div></div><div className="permission-grid"><strong>功能</strong><strong>Admin</strong><strong>店長</strong><strong>客服</strong>{['預約與結帳', '新增／撤銷排班', '新增／退役員工', '修改價格優惠', '新增／停用帳號', '系統與稽核'].flatMap((label, index) => [<span key={`${label}-label`}>{label}</span>, <b key={`${label}-admin`}>✓</b>, <b key={`${label}-manager`}>{index === 5 ? '查看' : index === 4 ? '限客服' : '✓'}</b>, <b className="limited" key={`${label}-clerk`}>{index < 2 ? '部分' : '—'}</b>])}</div></section>
+      <section className="panel permission-panel"><div className="panel-heading"><div><p className="eyebrow">ROLE MATRIX</p><h2>權限對照</h2></div></div><div className="permission-grid"><strong>功能</strong><strong>Admin</strong><strong>店長</strong><strong>客服</strong>{['預約與結帳', '新增／撤銷排班', '新增／退役員工', '修改價格優惠', '新增帳號', '停用客服帳號', '系統與稽核'].flatMap((label, index) => [<span key={`${label}-label`}>{label}</span>, <b key={`${label}-admin`}>✓</b>, <b key={`${label}-manager`}>{index === 6 ? '查看' : index === 4 ? '—' : '✓'}</b>, <b className="limited" key={`${label}-clerk`}>{index < 2 ? '部分' : '—'}</b>])}</div></section>
     </div>
   );
 
@@ -1027,7 +1032,7 @@ export default function Home() {
 
       {modal?.type === 'staff' && <Modal title="新增員工" subtitle="健康資訊不會出現在公開資料或一般匯出。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={addStaff}><label>姓名／稱呼<input name="name" required /></label><label>手機 ID<input name="phone" inputMode="tel" placeholder="師傅免密碼登入使用" /></label><label>師傅分類<select name="category"><option>直男師傅</option><option>圈內師傅</option><option>雙性師傅</option></select></label><label>回帳表<select name="returnRuleSetId">{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label><label>LINE User ID<input name="lineUserId" placeholder="可稍後由 LINE Bot 自動綁定" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立員工</button></footer></form></Modal>}
 
-      {modal?.type === 'user' && <Modal title="新增後台使用者" subtitle="店長只能新增客服；只有 Admin 可新增店長或 Admin。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={addAdminUser}><label>顯示名稱<input name="displayName" required /></label><label>登入帳號<input name="username" required autoCapitalize="none" /></label><label>角色<select name="role">{role === 'admin' && <><option>Admin</option><option>店長</option></>}<option>客服</option></select></label><label>初始數字 PIN<input name="pin" required inputMode="numeric" pattern="[0-9]+" minLength={4} maxLength={12} type="password" placeholder="至少 4 位" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立帳號</button></footer></form></Modal>}
+      {modal?.type === 'user' && canCreateUsers && <Modal title="新增後台使用者" subtitle="只有 Admin 可以新增任何後台帳號。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={addAdminUser}><label>顯示名稱<input name="displayName" required /></label><label>登入帳號<input name="username" required autoCapitalize="none" /></label><label>角色<select name="role"><option>Admin</option><option>店長</option><option>客服</option></select></label><label>初始數字 PIN<input name="pin" required inputMode="numeric" pattern="[0-9]+" minLength={4} maxLength={12} type="password" placeholder="至少 4 位" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立帳號</button></footer></form></Modal>}
       {modal?.type === 'customer' && selectedCustomer && <Modal title={`編輯 ${selectedCustomer.name}`} subtitle="VIP 是流水；真正的客戶 ID 是手機號碼，同一客戶可保存多支。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={saveCustomer}><label>客戶流水<input value={selectedCustomer.vipSerial} disabled /></label><label>客戶名稱<input name="displayName" defaultValue={selectedCustomer.name} required placeholder="可由後台建立或採用 LINE 顯示名稱" /></label><label>客戶 ID（手機號碼）<textarea name="phones" rows={4} defaultValue={selectedCustomer.phones.join('\n')} required placeholder={"0912345678\n0987654321"} /></label><div className="form-note">每行一支手機；第一支是主要聯絡號碼。每支手機只能屬於一位客戶。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存客戶資料</button></footer></form></Modal>}
     </main>
   );
