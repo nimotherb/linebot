@@ -263,22 +263,28 @@ export default function Home() {
     setLoginError('');
     startNavigation('正在登入後台…');
     const data = new FormData(event.currentTarget);
+    let redirecting = false;
     try {
       const result = await new SpaApi().login(String(data.get('username')), String(data.get('pin')));
-      const authenticatedApi = new SpaApi(result.access_token);
-      const bootstrap = await authenticatedApi.bootstrap();
       window.sessionStorage.setItem('equalspa-admin-token', result.access_token);
       window.sessionStorage.removeItem('equalspa-staff-token');
       setToken(result.access_token);
-      applyBootstrap(bootstrap);
+      setIdentity(result.user);
+      setStaffIdentity(null);
+      setRole(result.user.role);
+      setAppMode('live');
       setActive('dashboard');
       setModal(null);
       window.scrollTo({ top: 0, behavior: 'auto' });
+      redirecting = true;
+      window.location.replace(new URL('/', window.location.origin).toString());
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : '登入失敗');
     } finally {
-      setLoginBusy(false);
-      stopNavigation();
+      if (!redirecting) {
+        setLoginBusy(false);
+        stopNavigation();
+      }
     }
   };
 
@@ -290,22 +296,28 @@ export default function Home() {
     const data = new FormData(event.currentTarget);
     const selectedId = Number(data.get('staffId') || 0);
     const phone = String(data.get('staffPhone') || '').trim();
+    let redirecting = false;
     try {
       const result = await new SpaApi().staffLogin({ staff_id: selectedId, phone });
-      const bootstrap = await new SpaApi(result.access_token).staffBootstrap();
       window.sessionStorage.setItem('equalspa-staff-token', result.access_token);
       window.sessionStorage.removeItem('equalspa-admin-token');
       setToken(result.access_token);
-      applyBootstrap(bootstrap, 'staff');
+      setIdentity(null);
+      setStaffIdentity(result.staff);
+      setRole('staff');
+      setAppMode('staff');
       setActive('dashboard');
       setModal(null);
       window.scrollTo({ top: 0, behavior: 'auto' });
-      notify(`已切換為員工：${result.staff.name}`);
+      redirecting = true;
+      window.location.replace(new URL('/', window.location.origin).toString());
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : '員工身分切換失敗');
     } finally {
-      setLoginBusy(false);
-      stopNavigation();
+      if (!redirecting) {
+        setLoginBusy(false);
+        stopNavigation();
+      }
     }
   };
 
@@ -883,12 +895,12 @@ export default function Home() {
 
   const renderSchedule = () => {
     const days = week === 'current' ? weekDays : nextWeekDays;
-    const rosterStaff = staff.filter((item) => item.status === '在職').slice(0, 7);
+    const rosterStaff = appMode === 'live' ? staff : staff.filter((item) => item.status === '在職');
     return (
       <>
         <section className="rule-banner"><div><strong>90 分鐘鎖定規則</strong><span>師傅端距開始 90 分鐘內不可新增、修改或撤銷；店長與 Admin 可填寫原因強制處理。</span></div>{appMode === 'live' && <button onClick={() => navigateTo('staffPortal')}>預覽師傅畫面</button>}</section>
         <section className="panel roster-panel">
-          <div className="toolbar"><div className="segmented"><button className={week === 'current' ? 'active' : ''} onClick={() => setWeek('current')}>本週</button><button className={week === 'next' ? 'active' : ''} onClick={() => setWeek('next')}>下週</button></div><div className="toolbar-spacer" />{appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('shifts')}>⇩ 匯出班表</button>}{(canManageAll || isStaffUser) && <button className="primary-button" onClick={() => setModal({ type: 'shift', origin: isStaffUser ? 'staff' : 'admin' })}>＋ 新增排班</button>}</div>
+          <div className="toolbar"><div className="segmented"><button className={week === 'current' ? 'active' : ''} onClick={() => setWeek('current')}>本週</button><button className={week === 'next' ? 'active' : ''} onClick={() => setWeek('next')}>下週</button></div><div className="filter-note"><strong>{rosterStaff.length}</strong><span>{appMode === 'live' ? '位師傅（全部）' : '位在職師傅'}</span></div><div className="toolbar-spacer" />{appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('shifts')}>⇩ 匯出班表</button>}{(canManageAll || isStaffUser) && <button className="primary-button" onClick={() => setModal({ type: 'shift', origin: isStaffUser ? 'staff' : 'admin' })}>＋ 新增排班</button>}</div>
           <div className="roster-grid" style={{ gridTemplateColumns: `120px repeat(${days.length}, minmax(112px, 1fr))` }}>
             <div className="roster-corner">師傅</div>
             {days.map((day) => <div className={day.date === '2026-08-22' ? 'roster-day today' : 'roster-day'} key={day.date}><strong>{day.day}</strong><span>{day.label}</span></div>)}
@@ -896,7 +908,7 @@ export default function Home() {
               <div className="roster-row" key={member.id} style={{ gridColumn: `1 / span ${days.length + 1}`, gridTemplateColumns: `120px repeat(${days.length}, minmax(112px, 1fr))` }}>
                 <div className="roster-name"><span className="staff-avatar">{member.name.slice(0, 1)}</span><div><strong>{member.name}</strong><small>{member.category.replace('師傅', '')}</small></div></div>
                 {days.map((day) => {
-                  const dayShifts = shifts.filter((item) => item.staff === member.name && item.date === day.date);
+                  const dayShifts = shifts.filter((item) => (item.staffId ? item.staffId === member.id : item.staff === member.name) && item.date === day.date);
                   return <div className="roster-cell" key={day.date}>{dayShifts.map((shift) => <button className={isShiftLocked(shift) ? 'shift-card locked' : 'shift-card'} key={shift.id} onClick={() => (canManageAll || isStaffUser) && setModal({ type: 'shiftDetail', id: shift.id, origin: isStaffUser ? 'staff' : 'admin' })}><strong>{shift.start}–{shift.end}</strong><small>{isShiftLocked(shift) ? '已鎖定' : shift.source}</small></button>)}</div>;
                 })}
               </div>
