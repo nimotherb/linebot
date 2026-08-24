@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { PointerLight, SiteHeader, WingMenu } from './components/WingMenu';
 
-const bookingUrl = 'https://equalspa-ops-preview.c83500699.chatgpt.site/booking';
+const bookingUrl = 'https://equalspa-admin.pages.dev/booking';
 
 const services = [
   ['A', '舒壓方案', '指壓或油壓，簡單整理日常疲勞', '60 MIN', 'NT$ 1,500'],

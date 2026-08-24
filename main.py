@@ -46,7 +46,7 @@ Base = declarative_base()
 LINE_ADMIN_PENDING: dict[str, datetime] = {}
 VALID_STAFF_ROLES = {"攻擊手", "守備方", "無特定", "攻守兼備"}
 SUPPORT_URL = os.getenv("CUSTOMER_SERVICE_URL", "https://lin.ee/vOq3Xvt")
-BOOKING_WEB_URL = os.getenv("BOOKING_WEB_URL", "https://equalspa-ops-preview.c83500699.chatgpt.site/booking")
+BOOKING_WEB_URL = os.getenv("BOOKING_WEB_URL", "https://equalspa-admin.pages.dev/booking")
 RENDER_LOGS_URL = os.getenv("RENDER_LOGS_URL", "https://dashboard.render.com/web/srv-da059bgjo6nc73doq380/logs")
 _DISPATCH_ALERTED_AT: dict[str, datetime] = {}
 _HEARTBEAT_STOP = threading.Event()
@@ -383,7 +383,7 @@ def build_phone_confirm_flex(phone_num, action_prefix):
 def build_root_admin_menu(identity=None):
     display_name = identity.get("display_name", "管理員") if isinstance(identity, dict) else "管理員"
     role_label = "系統管理員" if isinstance(identity, dict) and identity.get("role") == "admin" else "店長"
-    dashboard_url = os.getenv("ADMIN_DASHBOARD_URL", "https://equalspa-ops-preview.c83500699.chatgpt.site/")
+    dashboard_url = os.getenv("ADMIN_DASHBOARD_URL", "https://equalspa-admin.pages.dev/")
     return FlexSendMessage(
         alt_text="系統管理員選單",
         contents={
@@ -406,7 +406,7 @@ def build_root_admin_menu(identity=None):
 
 
 def build_staff_backend_link(staff, db: Session):
-    dashboard_url = os.getenv("ADMIN_DASHBOARD_URL", "https://equalspa-ops-preview.c83500699.chatgpt.site/").rstrip("/")
+    dashboard_url = os.getenv("ADMIN_DASHBOARD_URL", "https://equalspa-admin.pages.dev/").rstrip("/")
     issuer = getattr(getattr(app, "state", None), "issue_staff_magic_link", None)
     login_token = issuer(staff, db) if issuer else None
     target_url = f"{dashboard_url}/?staff_login={login_token}" if login_token else dashboard_url

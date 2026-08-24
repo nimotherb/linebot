@@ -24,7 +24,7 @@ const initialDraft: SiteDraft = {
   },
   booking: {
     lineId: '@017ktlhm',
-    url: 'https://equalspa-ops-preview.c83500699.chatgpt.site/booking',
+    url: 'https://equalspa-admin.pages.dev/booking',
   },
   services: [
     { code: 'A', name: '舒壓方案', summary: '指壓或油壓擇一，簡單整理日常疲勞', duration: '60 MIN', price: 'NT$ 1,500', visible: true },
@@ -139,7 +139,7 @@ export default function SiteAdminEditor() {
       <aside className="studio-sidebar">
         <div><small>CONTENT MAP</small><h1>官網內容</h1><p>選擇區塊後直接修改。所有變更會先保留為草稿。</p></div>
         <nav>{sections.map((section) => <button type="button" key={section.id} className={active === section.id ? 'active' : ''} onClick={() => setActive(section.id)}><span>{section.index}</span><b>{section.label}</b><em>{section.english}</em></button>)}</nav>
-        <div className="studio-access"><small>ACCESS</small><b>店長／Admin</b><p>正式發布需由營運後台驗證權限。</p><a href="https://equalspa-ops-preview.c83500699.chatgpt.site/" target="_blank" rel="noreferrer">開啟營運後台 ↗</a></div>
+        <div className="studio-access"><small>ACCESS</small><b>店長／Admin</b><p>正式發布需由營運後台驗證權限。</p><a href="https://equalspa-admin.pages.dev/" target="_blank" rel="noreferrer">開啟營運後台 ↗</a></div>
       </aside>
 
       <section className="studio-workspace">

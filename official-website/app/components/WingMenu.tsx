@@ -2,7 +2,7 @@
 
 import { type CSSProperties, useEffect, useRef, useState } from 'react';
 
-const bookingUrl = 'https://equalspa-ops-preview.c83500699.chatgpt.site/booking';
+const bookingUrl = 'https://equalspa-admin.pages.dev/booking';
 
 const menuItems = [
   ['首頁', '/', 'HOME'],
@@ -81,7 +81,7 @@ export function WingMenu() {
         <div className="menu-utility">
           <a href="/site-admin" tabIndex={menuOpen ? 0 : -1}>SITE STUDIO</a>
           <a href="/privacy" tabIndex={menuOpen ? 0 : -1}>隱私權</a>
-          <a href="https://equalspa-ops-preview.c83500699.chatgpt.site/" target="_blank" rel="noreferrer" tabIndex={menuOpen ? 0 : -1}>EQUAL OPERATIONS</a>
+          <a href="https://equalspa-admin.pages.dev/" target="_blank" rel="noreferrer" tabIndex={menuOpen ? 0 : -1}>EQUAL OPERATIONS</a>
         </div>
       </nav>
     </div>

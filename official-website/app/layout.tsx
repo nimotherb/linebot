@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://equalspa-official-preview.c83500699.chatgpt.site'),
+  metadataBase: new URL('https://equalspa.pages.dev'),
   title: '伊果 SPA｜台北西門按摩・LINE 預約',
   description: '伊果 SPA 位於台北西門町。服務時間 10:00–24:00，加入 LINE @017ktlhm 即可預約。',
   alternates: { canonical: '/' },
