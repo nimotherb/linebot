@@ -16,6 +16,47 @@ html, body { margin: 0; min-height: 100%; background: var(--canvas); color: var(
 body { font-family: "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif; }
 button { font: inherit; }
 
+.navigation-loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(13 37 32 / 38%);
+  backdrop-filter: blur(4px);
+}
+
+.navigation-loading-card {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-width: 190px;
+  padding: 17px 21px;
+  border: 1px solid rgb(255 255 255 / 45%);
+  border-radius: 15px;
+  background: rgb(255 253 248 / 97%);
+  box-shadow: 0 20px 55px rgb(7 28 23 / 24%);
+  color: var(--ink);
+}
+
+.navigation-loading-card strong { font-size: 13px; letter-spacing: .03em; }
+.navigation-loading-spinner {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  border: 3px solid #d8dfda;
+  border-top-color: var(--green);
+  border-radius: 50%;
+  animation: navigation-spin .72s linear infinite;
+}
+
+@keyframes navigation-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .navigation-loading-spinner, .auth-loading { animation-duration: 1.6s; }
+}
+
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 244px minmax(0, 1fr); }
 .sidebar { position: sticky; top: 0; height: 100vh; padding: 30px 22px 22px; background: #173d36; color: white; display: flex; flex-direction: column; }
 .brand-mark { display: flex; align-items: center; gap: 12px; padding: 0 8px 32px; border-bottom: 1px solid rgb(255 255 255 / 12%); }
