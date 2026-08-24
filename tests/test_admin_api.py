@@ -94,18 +94,26 @@ def test_appointment_end_and_staff_room_conflicts(client):
     assert "房間" in room_conflict.json()["detail"]
 
 
-def test_manager_can_only_create_clerk_account(client):
+def test_only_admin_can_create_accounts(client):
     manager_headers = login(client, "jerry", "654321")
-    denied = client.post(
+    denied_manager = client.post(
         "/api/admin/users",
         headers=manager_headers,
         json={"username": "another-manager", "display_name": "副店長", "pin": "112233", "role": "manager"},
     )
-    assert denied.status_code == 403
+    assert denied_manager.status_code == 403
 
-    allowed = client.post(
+    denied_clerk = client.post(
         "/api/admin/users",
         headers=manager_headers,
+        json={"username": "frontdesk", "display_name": "櫃台", "pin": "112233", "role": "clerk"},
+    )
+    assert denied_clerk.status_code == 403
+
+    admin_headers = login(client)
+    allowed = client.post(
+        "/api/admin/users",
+        headers=admin_headers,
         json={"username": "frontdesk", "display_name": "櫃台", "pin": "112233", "role": "clerk"},
     )
     assert allowed.status_code == 201

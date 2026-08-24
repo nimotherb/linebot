@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 type Section = 'home' | 'services' | 'therapists' | 'offers' | 'store';
 type ServiceDraft = { code: string; name: string; summary: string; duration: string; price: string; visible: boolean };
 type OfferDraft = { name: string; summary: string; status: '顯示中' | '草稿' };
-type SiteDraft = {
+export type SiteDraft = {
   home: { subtitle: string; support: string };
   booking: { lineId: string; url: string };
   services: ServiceDraft[];
@@ -14,13 +14,13 @@ type SiteDraft = {
   store: { address: string; hours: string; payment: string; mapUrl: string };
 };
 
-type SiteContentPayload = {
+export type SiteContentPayload = {
   draft?: Partial<SiteDraft>;
   draft_version: number;
   published_at?: string | null;
 };
 
-type SiteAdminApi = {
+export type SiteAdminApi = {
   getAdminSiteContent: () => Promise<SiteContentPayload>;
   saveSiteDraft: (content: SiteDraft, expectedVersion: number) => Promise<SiteContentPayload>;
   publishSiteContent: (expectedVersion: number) => Promise<SiteContentPayload>;
