@@ -30,6 +30,7 @@ import {
   StaffIdentity,
   ReturnRuleSetView,
 } from './api-client';
+import { useNavigationLoading } from './components/NavigationLoading';
 
 type SectionId = 'dashboard' | 'appointments' | 'schedule' | 'operations' | 'checkout' | 'customers' | 'staff' | 'services' | 'exports' | 'users' | 'staffPortal';
 type ModalState =
@@ -153,8 +154,18 @@ export default function Home() {
   const [staffToken, setStaffToken] = useState('');
   const [staffPortalName, setStaffPortalName] = useState('師傅');
   const [staffPortalError, setStaffPortalError] = useState('');
+  const { runNavigation, startNavigation, stopNavigation } = useNavigationLoading();
 
   const api = useMemo(() => new SpaApi(token), [token]);
+
+  const navigateTo = (section: SectionId) => {
+    if (section === active) return;
+    runNavigation(() => {
+      setActive(section);
+      setModal(null);
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    }, '正在切換頁面…');
+  };
 
   const applyBootstrap = (data: BootstrapData, mode: 'live' | 'public' | 'staff' = 'live') => {
     setIdentity(data.user || null);
@@ -250,18 +261,24 @@ export default function Home() {
     event.preventDefault();
     setLoginBusy(true);
     setLoginError('');
+    startNavigation('正在登入後台…');
     const data = new FormData(event.currentTarget);
     try {
       const result = await new SpaApi().login(String(data.get('username')), String(data.get('pin')));
       const authenticatedApi = new SpaApi(result.access_token);
       const bootstrap = await authenticatedApi.bootstrap();
       window.sessionStorage.setItem('equalspa-admin-token', result.access_token);
+      window.sessionStorage.removeItem('equalspa-staff-token');
       setToken(result.access_token);
       applyBootstrap(bootstrap);
+      setActive('dashboard');
+      setModal(null);
+      window.scrollTo({ top: 0, behavior: 'auto' });
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : '登入失敗');
     } finally {
       setLoginBusy(false);
+      stopNavigation();
     }
   };
 
@@ -269,6 +286,7 @@ export default function Home() {
     event.preventDefault();
     setLoginBusy(true);
     setLoginError('');
+    startNavigation('正在切換員工帳號…');
     const data = new FormData(event.currentTarget);
     const selectedId = Number(data.get('staffId') || 0);
     const phone = String(data.get('staffPhone') || '').trim();
@@ -279,16 +297,20 @@ export default function Home() {
       window.sessionStorage.removeItem('equalspa-admin-token');
       setToken(result.access_token);
       applyBootstrap(bootstrap, 'staff');
+      setActive('dashboard');
       setModal(null);
+      window.scrollTo({ top: 0, behavior: 'auto' });
       notify(`已切換為員工：${result.staff.name}`);
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : '員工身分切換失敗');
     } finally {
       setLoginBusy(false);
+      stopNavigation();
     }
   };
 
   const logout = async () => {
+    startNavigation('正在登出並返回公開總覽…');
     try { if (token) await api.logout(appMode === 'staff' ? 'staff' : 'admin'); } catch {}
     window.sessionStorage.removeItem('equalspa-admin-token');
     window.sessionStorage.removeItem('equalspa-staff-token');
@@ -302,6 +324,8 @@ export default function Home() {
       applyBootstrap(data, 'public');
     } catch {
       setAppMode('demo');
+    } finally {
+      stopNavigation();
     }
   };
 
@@ -798,7 +822,7 @@ export default function Home() {
             {metrics.map((metric) => <article className="metric-card" key={metric.label}><p>{metric.label}</p><strong>{metric.currency && <small>NT$</small>}{metric.value}</strong><span>{metric.note}</span></article>)}
           </section>
           <section className="panel schedule-panel">
-            <div className="panel-heading"><div><p className="eyebrow">TODAY’S FLOW</p><h2>今日預約進度</h2></div><button className="text-button" onClick={() => setActive('appointments')}>查看全部 →</button></div>
+            <div className="panel-heading"><div><p className="eyebrow">TODAY’S FLOW</p><h2>今日預約進度</h2></div><button className="text-button" onClick={() => navigateTo('appointments')}>查看全部 →</button></div>
             <div className="appointment-list">
               {todayAppointments.slice(0, 6).map((appointment) => (
                 <button className="appointment-row interactive" key={appointment.id} onClick={() => setModal({ type: 'appointmentDetail', id: appointment.id })}>
@@ -820,8 +844,8 @@ export default function Home() {
           </section>
           <section className="panel action-panel">
             <p className="eyebrow">NEEDS ATTENTION</p><h2>需要處理</h2>
-            <button onClick={() => sensitiveVisible ? setActive('checkout') : notify('帳務資訊需使用客服、店長或 Admin 帳號登入。')}><span className="action-number">{pendingCheckout.length}</span><div><strong>待結帳訂單</strong><small>{sensitiveVisible ? '現金或轉帳待確認' : '帳務內容已隱藏'}</small></div><b>→</b></button>
-            <button onClick={() => setActive('appointments')}><span className="action-number amber">1</span><div><strong>場地待確認</strong><small>今天 18:00 的預約</small></div><b>→</b></button>
+            <button onClick={() => sensitiveVisible ? navigateTo('checkout') : notify('帳務資訊需使用客服、店長或 Admin 帳號登入。')}><span className="action-number">{pendingCheckout.length}</span><div><strong>待結帳訂單</strong><small>{sensitiveVisible ? '現金或轉帳待確認' : '帳務內容已隱藏'}</small></div><b>→</b></button>
+            <button onClick={() => navigateTo('appointments')}><span className="action-number amber">1</span><div><strong>場地待確認</strong><small>今天 18:00 的預約</small></div><b>→</b></button>
           </section>
         </aside>
       </div>
@@ -857,7 +881,7 @@ export default function Home() {
     const rosterStaff = staff.filter((item) => item.status === '在職').slice(0, 7);
     return (
       <>
-        <section className="rule-banner"><div><strong>90 分鐘鎖定規則</strong><span>師傅端距開始 90 分鐘內不可新增、修改或撤銷；店長與 Admin 可填寫原因強制處理。</span></div>{appMode === 'live' && <button onClick={() => setActive('staffPortal')}>預覽師傅畫面</button>}</section>
+        <section className="rule-banner"><div><strong>90 分鐘鎖定規則</strong><span>師傅端距開始 90 分鐘內不可新增、修改或撤銷；店長與 Admin 可填寫原因強制處理。</span></div>{appMode === 'live' && <button onClick={() => navigateTo('staffPortal')}>預覽師傅畫面</button>}</section>
         <section className="panel roster-panel">
           <div className="toolbar"><div className="segmented"><button className={week === 'current' ? 'active' : ''} onClick={() => setWeek('current')}>本週</button><button className={week === 'next' ? 'active' : ''} onClick={() => setWeek('next')}>下週</button></div><div className="toolbar-spacer" />{appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('shifts')}>⇩ 匯出班表</button>}{(canManageAll || isStaffUser) && <button className="primary-button" onClick={() => setModal({ type: 'shift', origin: isStaffUser ? 'staff' : 'admin' })}>＋ 新增排班</button>}</div>
           <div className="roster-grid" style={{ gridTemplateColumns: `120px repeat(${days.length}, minmax(112px, 1fr))` }}>
@@ -965,9 +989,9 @@ export default function Home() {
   return (
     <main className="app-shell">
       <aside className="sidebar">
-        <button className="brand-mark" onClick={() => setActive('dashboard')}><span className="brand-seal">E</span><div><strong>伊果 SPA</strong><small>EQUAL OPERATIONS</small></div></button>
-        <div className="nav-scroll">{visibleNavGroups.map((group) => <nav aria-label={group.label} key={group.label}><p>{group.label}</p>{group.items.map((item) => <button className={active === item.id ? 'nav-item active' : 'nav-item'} key={item.id} onClick={() => setActive(item.id)}><span className="nav-glyph">{item.glyph}</span>{item.label}</button>)}</nav>)}</div>
-        {appMode === 'live' && <button className={active === 'staffPortal' ? 'portal-link active' : 'portal-link'} onClick={() => setActive('staffPortal')}><span>↗</span><div><strong>師傅班表連結</strong><small>免登入入口預覽</small></div></button>}
+        <button className="brand-mark" onClick={() => navigateTo('dashboard')}><span className="brand-seal">E</span><div><strong>伊果 SPA</strong><small>EQUAL OPERATIONS</small></div></button>
+        <div className="nav-scroll">{visibleNavGroups.map((group) => <nav aria-label={group.label} key={group.label}><p>{group.label}</p>{group.items.map((item) => <button className={active === item.id ? 'nav-item active' : 'nav-item'} key={item.id} onClick={() => navigateTo(item.id)}><span className="nav-glyph">{item.glyph}</span>{item.label}</button>)}</nav>)}</div>
+        {appMode === 'live' && <button className={active === 'staffPortal' ? 'portal-link active' : 'portal-link'} onClick={() => navigateTo('staffPortal')}><span>↗</span><div><strong>師傅班表連結</strong><small>免登入入口預覽</small></div></button>}
         <div className="sidebar-user account-entry" onClick={() => setModal({ type: 'account' })} role="button" tabIndex={0}><span className="avatar">{role === 'admin' ? 'A' : role === 'manager' ? 'J' : role === 'clerk' ? '客' : role === 'staff' ? '師' : '？'}</span><div><strong>{identity?.display_name || staffIdentity?.name || '登入資訊'}</strong><small>{role === 'admin' ? '系統管理員' : role === 'manager' ? '店長' : role === 'clerk' ? '客服' : role === 'staff' ? '員工' : '訪客唯讀'}</small></div>{(appMode === 'live' || appMode === 'staff') ? <button className="logout-button" onClick={(event) => { event.stopPropagation(); logout(); }}>登出</button> : <button className="logout-button" onClick={(event) => { event.stopPropagation(); setModal({ type: 'account' }); }}>登入</button>}</div>
       </aside>
 

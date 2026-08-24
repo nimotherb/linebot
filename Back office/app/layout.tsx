@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { NavigationLoadingProvider } from './components/NavigationLoading';
 
 export const metadata: Metadata = {
   title: '伊果 SPA｜營運管理後台',
@@ -22,7 +23,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-Hant">
-      <body>{children}</body>
+      <body><NavigationLoadingProvider>{children}</NavigationLoadingProvider></body>
     </html>
   );
 }
