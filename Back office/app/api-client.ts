@@ -212,7 +212,7 @@ export const mapShift = (item: RawShift): Shift => {
   return {
     id: String(item.id),
     apiId: item.id,
-    staff: item.staff_name,
+    staff: item.staff_name || '我的班表',
     staffId: String(item.staff_id),
     date: start.date,
     start: start.time,

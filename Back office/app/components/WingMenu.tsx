@@ -1,1 +1,1 @@
-export { PointerLight, SiteHeader, WingMenu } from '../../components/WingMenu';
+export { PointerLight, SiteHeader, WingMenu } from '../../../components/WingMenu';

@@ -17,7 +17,7 @@
 
 ## 官網內容管理
 
-`/site-admin` 目前會把草稿保存在使用者自己的瀏覽器，不會直接更動所有訪客看到的正式官網。若設定 `NEXT_PUBLIC_API_URL`，發布按鈕會以營運後台登入取得的 `equalspa_admin_token` 呼叫 `PUT /api/site-content`；後端必須再次驗證店長或 Admin 權限，才可寫入正式內容。
+`/site-admin` 目前會把草稿保存在使用者自己的瀏覽器，不會直接更動所有訪客看到的正式官網。若設定 `NEXT_PUBLIC_API_BASE_URL`，發布按鈕會以營運後台登入取得的 `equalspa_admin_token` 呼叫後端；後端必須再次驗證店長或 Admin 權限，才可寫入正式內容。
 
 圖片上傳尚未開放；接上後端檔案 API 前，師傅照片仍由 `public/images/therapists/` 管理。
 
