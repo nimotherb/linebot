@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { SpaApi } from '../api-client';
 
 type Section = 'home' | 'services' | 'therapists' | 'offers' | 'store';
 type ServiceDraft = { code: string; name: string; summary: string; duration: string; price: string; visible: boolean };
@@ -13,6 +12,18 @@ type SiteDraft = {
   therapists: { intro: string; carouselSpeed: number; showMeasurements: boolean };
   offers: OfferDraft[];
   store: { address: string; hours: string; payment: string; mapUrl: string };
+};
+
+type SiteContentPayload = {
+  draft?: Partial<SiteDraft>;
+  draft_version: number;
+  published_at?: string | null;
+};
+
+type SiteAdminApi = {
+  getAdminSiteContent: () => Promise<SiteContentPayload>;
+  saveSiteDraft: (content: SiteDraft, expectedVersion: number) => Promise<SiteContentPayload>;
+  publishSiteContent: (expectedVersion: number) => Promise<SiteContentPayload>;
 };
 
 const initialDraft: SiteDraft = {
@@ -59,7 +70,7 @@ function Field({ label, value, onChange, multiline = false, hint }: { label: str
   return <label className="studio-field"><span>{label}</span>{multiline ? <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={3} /> : <input value={value} onChange={(event) => onChange(event.target.value)} />}{hint && <small>{hint}</small>}</label>;
 }
 
-export default function SiteAdminEditor({ api, notify }: { api: SpaApi; notify: (msg: string) => void }) {
+export default function SiteAdminEditor({ api, notify }: { api: SiteAdminApi; notify: (msg: string) => void }) {
   const [active, setActive] = useState<Section>('home');
   const [draft, setDraft] = useState<SiteDraft>(initialDraft);
   const [notice, setNotice] = useState('讀取中...');
@@ -76,9 +87,9 @@ export default function SiteAdminEditor({ api, notify }: { api: SpaApi; notify: 
         if (data.published_at) {
           setPublishedAt(new Date(data.published_at).toLocaleString('zh-TW'));
         }
-        if (data.draft_json && Object.keys(data.draft_json).length > 0) {
-          // 將雲端的 draft_json 與 initialDraft 合併，避免新欄位遺失
-          setDraft({ ...initialDraft, ...data.draft_json });
+        if (data.draft && Object.keys(data.draft).length > 0) {
+          // 將雲端草稿與預設內容合併，避免新增欄位遺失。
+          setDraft({ ...initialDraft, ...data.draft });
         }
         setNotice('已載入雲端最新草稿');
       } catch (error) {
@@ -101,11 +112,11 @@ export default function SiteAdminEditor({ api, notify }: { api: SpaApi; notify: 
     try {
       setNotice('儲存中...');
       const res = await api.saveSiteDraft(draft, version);
-      setVersion(res.new_version);
+      setVersion(res.draft_version);
       const timestamp = new Intl.DateTimeFormat('zh-TW', { hour: '2-digit', minute: '2-digit' }).format(new Date());
       setSavedAt(timestamp);
       setNotice('草稿已安全儲存至 MySQL');
-      notify(`💾 草稿已儲存，版本更新至 v${res.new_version}`);
+      notify(`💾 草稿已儲存，版本更新至 v${res.draft_version}`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : '儲存失敗';
       setNotice(`儲存失敗: ${msg}`);
@@ -132,10 +143,10 @@ export default function SiteAdminEditor({ api, notify }: { api: SpaApi; notify: 
       setNotice('發布中...');
       // 為了安全，發布前先自動存一次最新草稿
       const draftRes = await api.saveSiteDraft(draft, version);
-      const newVersion = draftRes.new_version;
+      const newVersion = draftRes.draft_version;
       
       const pubRes = await api.publishSiteContent(newVersion);
-      setVersion(pubRes.new_version);
+      setVersion(pubRes.draft_version);
       setPublishedAt(new Date().toLocaleString('zh-TW'));
       setNotice('官網內容已正式發布');
       notify('🚀 正式發布成功！官網內容已同步至前端。');

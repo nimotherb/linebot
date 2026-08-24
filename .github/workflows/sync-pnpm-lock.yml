@@ -1,13 +1,15 @@
-name: Update pnpm lockfiles and build verification
+name: Verify frontend lockfiles and builds
 
 on:
   workflow_dispatch: {}
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
-  sync-pnpm-lock:
-    name: Install & Sync pnpm lockfiles
+  verify-frontends:
+    name: Install and build both frontends
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -19,30 +21,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22.13.0'
-          cache: 'pnpm'
 
       - name: Enable and prepare pnpm
         run: |
           corepack enable
-          corepack prepare pnpm@latest --activate
+          corepack prepare pnpm@11.19.0 --activate
 
-      - name: Install Back office dependencies
+      - name: Install and build Back office
         working-directory: "Back office"
-        run: pnpm install --ignore-scripts
-
-      - name: Install official-website dependencies
-        working-directory: official-website
-        run: pnpm install --ignore-scripts
-
-      - name: Commit and push updated lockfiles if changed
         run: |
-          git status --porcelain
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if ! git diff --staged --quiet; then
-            git commit -m "chore(ci): update pnpm-lock.yaml via workflow"
-            git push
-          else
-            echo "No lockfile changes to commit"
-          fi
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+      - name: Install and build official website
+        working-directory: official-website
+        run: |
+          npm ci
+          npm run build

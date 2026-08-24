@@ -1,1 +1,1 @@
-export { default } from '../../components/TherapistCatalog';
+export { default } from '../../../components/TherapistCatalog';

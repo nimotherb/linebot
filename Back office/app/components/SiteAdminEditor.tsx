@@ -1,1 +1,1 @@
-export { default } from '../../components/SiteAdminEditor';
+export { default } from '../../../components/SiteAdminEditor';

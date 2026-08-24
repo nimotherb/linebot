@@ -25,6 +25,7 @@ import {
   mapService,
   mapShift,
   mapStaff,
+  PromotionView,
   SpaApi,
   StaffIdentity,
   ReturnRuleSetView,
@@ -130,7 +131,7 @@ export default function Home() {
   const [plans, setPlans] = useState(servicePlans);
   const [staff, setStaff] = useState(staffMembers);
   const [customers, setCustomers] = useState(initialCustomers);
-  const [promotions, setPromotions] = useState(initialPromotions);
+  const [promotions, setPromotions] = useState<PromotionView[]>(initialPromotions);
   const [adminUsers, setAdminUsers] = useState(initialAdminUsers);
   const [rooms, setRooms] = useState([{ id: 1, name: '房間 1' }, { id: 2, name: '房間 2' }]);
   const [modal, setModal] = useState<ModalState>(null);
