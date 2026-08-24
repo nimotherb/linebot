@@ -15,7 +15,7 @@ const pageMeta = {
   privacy: ['PRIVACY', '你的資料，我們謹慎對待', '只在提供服務所需的範圍內使用資料。'],
 } as const;
 
-const bookingUrl = 'https://equalspa-ops-preview.c83500699.chatgpt.site/booking';
+const bookingUrl = 'https://equalspa-admin.pages.dev/booking';
 
 const plans = [
   {

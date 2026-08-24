@@ -33,7 +33,7 @@ const initialDraft: SiteDraft = {
   },
   booking: {
     lineId: '@017ktlhm',
-    url: 'https://equalspa-ops-preview.c83500699.chatgpt.site/booking',
+    url: 'https://equalspa-admin.pages.dev/booking',
   },
   services: [
     { code: 'A', name: '舒壓方案', summary: '指壓或油壓擇一，簡單整理日常疲勞', duration: '60 MIN', price: 'NT$ 1,500', visible: true },

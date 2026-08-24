@@ -11,7 +11,7 @@ const categoryMeta: Record<Category, { label: string; english: string; note: str
   bisexual: { label: '雙性師傅', english: 'BISEXUAL', note: '開放而細膩，提供另一種柔韌平衡的節奏。' },
 };
 
-const bookingUrl = 'https://equalspa-ops-preview.c83500699.chatgpt.site/booking';
+const bookingUrl = 'https://equalspa-admin.pages.dev/booking';
 
 const therapists: Therapist[] = [
   { name: 'Eason', slug: 'eason', category: 'straight', height: 180, weight: 72 },
