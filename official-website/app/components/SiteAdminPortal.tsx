@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import SiteAdminEditor from './SiteAdminEditor';
-import type { SiteAdminApi, SiteContentPayload, SiteDraft, StaffProfile } from './SiteAdminEditor';
+import type { PromotionRecord, ServiceRecord, SiteAdminApi, SiteContentPayload, SiteDraft, StaffProfile } from './SiteAdminEditor';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com';
 const TOKEN_KEY = 'equalspa_site_studio_token';
@@ -114,6 +114,14 @@ export default function SiteAdminPortal() {
       method: 'POST',
       body: JSON.stringify({ expected_version: expectedVersion }),
     }),
+    listServices: () => request<ServiceRecord[]>('/api/admin/services'),
+    createService: (payload: Record<string, unknown>) => request<ServiceRecord>('/api/admin/services', { method: 'POST', body: JSON.stringify(payload) }),
+    updateService: (id: number, payload: Record<string, unknown>) => request<ServiceRecord>(`/api/admin/services/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+    deleteService: (id: number) => request<{ ok: boolean; history_preserved: boolean }>(`/api/admin/services/${id}?reason=${encodeURIComponent('官網編輯器刪除方案')}`, { method: 'DELETE' }),
+    listPromotions: () => request<PromotionRecord[]>('/api/admin/promotions'),
+    createPromotion: (payload: Record<string, unknown>) => request<PromotionRecord>('/api/admin/promotions', { method: 'POST', body: JSON.stringify(payload) }),
+    updatePromotion: (id: number, payload: Record<string, unknown>) => request<PromotionRecord>(`/api/admin/promotions/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+    deletePromotion: (id: number) => request<{ ok: boolean; history_preserved: boolean }>(`/api/admin/promotions/${id}?reason=${encodeURIComponent('官網編輯器刪除優惠')}`, { method: 'DELETE' }),
     listStaff: () => request<StaffProfile[]>('/api/admin/staff'),
     createStaff: (payload: Record<string, unknown>) => request<StaffProfile>('/api/admin/staff', { method: 'POST', body: JSON.stringify(payload) }),
     updateStaff: (id: number, payload: Record<string, unknown>) => request<StaffProfile>(`/api/admin/staff/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),

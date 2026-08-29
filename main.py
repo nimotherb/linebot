@@ -1310,6 +1310,8 @@ def on_startup():
             "ALTER TABLE staffs ADD COLUMN return_rule_set_id INTEGER;",
             "ALTER TABLE admin_users ADD COLUMN line_user_id VARCHAR(255);",
             "ALTER TABLE promotions ADD COLUMN description VARCHAR(500);",
+            "ALTER TABLE service_plans ADD COLUMN deleted_at DATETIME NULL;",
+            "ALTER TABLE promotions ADD COLUMN deleted_at DATETIME NULL;",
             "ALTER TABLE appointment_details ADD COLUMN promotion_id INTEGER;",
             "ALTER TABLE appointment_details ADD COLUMN contact_phone VARCHAR(20);",
             "ALTER TABLE appointments ADD COLUMN plan_name VARCHAR(50);"

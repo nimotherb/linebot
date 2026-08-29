@@ -1,21 +1,39 @@
+'use client';
+
 import { PointerLight, SiteHeader, WingMenu } from './components/WingMenu';
+import { usePublishedSiteDraft } from './components/PublishedSiteContent';
 
-const bookingUrl = 'https://equalspa-admin.pages.dev/booking';
+const fallbackBookingUrl = 'https://equalspa-admin.pages.dev/booking';
 
-const services = [
+const fallbackServices = [
   ['A', '舒壓方案', '指壓或油壓，簡單整理日常疲勞', '60 MIN', 'NT$ 1,500'],
   ['B', '愉悅方案', '可指定師傅，加入體推與機能保養', '60 MIN', 'NT$ 2,000'],
   ['C', '享受方案', '指壓與油壓完整銜接，節奏更從容', '90 MIN', 'NT$ 2,500'],
   ['D', '極緻方案', '兩小時完整照顧，充分整理全身', '120 MIN', 'NT$ 3,000'],
 ] as const;
 
-function MobileSequence() {
+function MobileSequence({ content }: { content: ReturnType<typeof usePublishedSiteDraft> }) {
+  const bookingUrl = content?.booking?.url || fallbackBookingUrl;
+  const services = content && Array.isArray(content.services)
+    ? content.services.filter((item) => item.visible).map((item) => [item.code, item.name, item.summary, item.duration, item.price] as const)
+    : fallbackServices;
+  const currentOffer = content && Array.isArray(content.offers)
+    ? content.offers.find((item) => item.status === '顯示中')
+    : undefined;
+  const address = content?.store?.address || '台北市萬華區西寧南路 36 號';
+  const hours = content?.store?.hours || '每日 10:00—24:00';
   return (
     <div className="mobile-sequence">
       <section className="mobile-panel mobile-intro">
         <p className="mobile-index">01 / EQUAL SPA</p>
-        <h2>RETURN<br />TO<br />EQUAL.</h2>
-        <p>回到平衡，也回到更自在的自己。</p>
+        <h2 className="mobile-equal-wordmark" aria-label="EQUAL">
+          <span className="mobile-equal-e">E</span>
+          <span className="mobile-equal-q">Q</span>
+          <span className="mobile-equal-u">U</span>
+          <span className="mobile-equal-a">A</span>
+          <span className="mobile-equal-l">L</span>
+        </h2>
+        <p>{content?.home?.subtitle || '回到平衡，也回到更自在的自己。'}</p>
         <span className="mobile-down">SCROLL ↓</span>
       </section>
 
@@ -23,7 +41,7 @@ function MobileSequence() {
         <p className="mobile-index">02 / BOOKING</p>
         <div className="glass-orbit">
           <small>預約客服</small>
-          <strong>@017ktlhm</strong>
+          <strong>{content?.booking?.lineId || '@017ktlhm'}</strong>
           <span>LINE</span>
         </div>
         <h2>BOOK<br />WITH<br />LINE.</h2>
@@ -58,8 +76,8 @@ function MobileSequence() {
         <div className="offer-number">01</div>
         <p className="offer-kicker">CURRENT SELECTION</p>
         <h2>CURRENT<br />OFFER.</h2>
-        <p className="mobile-translation">生日月，把照顧自己排進行程。</p>
-        <p>實際適用方案與期間請洽 LINE 客服，預約時即可一併確認。</p>
+        <p className="mobile-translation">{currentOffer?.name || '生日月，把照顧自己排進行程。'}</p>
+        <p>{currentOffer?.summary || '實際適用方案與期間請洽 LINE 客服，預約時即可一併確認。'}</p>
         <a href="/offers">查看所有優惠 →</a>
       </section>
 
@@ -67,15 +85,16 @@ function MobileSequence() {
         <p className="mobile-index">06 / LOCATION</p>
         <div className="map-grid" aria-hidden="true"><span>西門</span><i /></div>
         <h2>TAIPEI<br />XIMEN</h2>
-        <p>台北市萬華區西寧南路 36 號<br />營業時間 10:00—24:00</p>
+        <p>{address}<br />{hours}</p>
         <a href="/location">交通與店鋪資訊 →</a>
-        <small>06 / 06 · END OF PAGE</small>
       </section>
     </div>
   );
 }
 
 export default function Home() {
+  const content = usePublishedSiteDraft();
+  const bookingUrl = content?.booking?.url || fallbackBookingUrl;
   return (
     <main className="home-shell">
       <PointerLight />
@@ -90,14 +109,14 @@ export default function Home() {
         </h1>
         <div className="hero-copy">
           <p>PRECISION IN<br />EVERY TOUCH.</p>
-          <span>精準理解每一種身體需求，讓舒適重新回到應有的位置。</span>
+          <span>{content?.home?.support || '精準理解每一種身體需求，讓舒適重新回到應有的位置。'}</span>
           <a href={bookingUrl} target="_blank" rel="noreferrer">立即線上預約</a>
         </div>
         <p className="scroll-cue">EQUAL SPA · MOVE · RESET</p>
       </section>
 
       <div className="mobile-flow">
-        <MobileSequence />
+        <MobileSequence content={content} />
       </div>
 
       <WingMenu />
