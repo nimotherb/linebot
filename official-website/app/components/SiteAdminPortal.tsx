@@ -119,7 +119,7 @@ export default function SiteAdminPortal() {
     updateStaff: (id: number, payload: Record<string, unknown>) => request<StaffProfile>(`/api/admin/staff/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
     updateStaffStatus: (id: number, employmentStatus: StaffProfile['employment_status'], reason: string) => request<StaffProfile>(`/api/admin/staff/${id}/status`, { method: 'PATCH', body: JSON.stringify({ employment_status: employmentStatus, reason }) }),
     uploadStaffPhoto: (id: number, dataUrl: string) => request<StaffProfile>(`/api/admin/staff/${id}/photo`, { method: 'PUT', body: JSON.stringify({ data_url: dataUrl }) }),
-    permanentlyDeleteStaff: (id: number) => request<{ ok: boolean }>(`/api/admin/staff/${id}`, { method: 'DELETE' }),
+    permanentlyDeleteStaff: (id: number) => request<{ ok: boolean }>(`/api/admin/staff/${id}?reason=${encodeURIComponent('官網編輯器永久刪除')}`, { method: 'DELETE' }),
   }), [request]);
 
   const login = async (event: FormEvent<HTMLFormElement>) => {

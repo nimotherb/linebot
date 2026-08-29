@@ -1,6 +1,6 @@
 import os
 import tempfile
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -14,7 +14,7 @@ os.environ["ADMIN_INITIAL_PIN"] = "123456"
 os.environ["MANAGER_INITIAL_PIN"] = "654321"
 os.environ["CUSTOMER_SERIAL_START"] = "4800"
 
-from main import Base, SessionLocal, Staff, app, build_staff_week_appointments, engine, now_taipei_naive  # noqa: E402
+from main import Base, SessionLocal, Staff, app, build_staff_bubble, build_staff_week_appointments, engine, now_taipei_naive  # noqa: E402
 from identifiers import customer_serial  # noqa: E402
 
 
@@ -68,8 +68,8 @@ def test_staff_photo_upload_and_safe_permanent_delete(client):
     assert public_photo.status_code == 200
     assert public_photo.headers["content-type"] == "image/png"
 
-    assert client.delete(f"/api/admin/staff/{staff_id}", headers=manager_headers).status_code == 403
-    deleted = client.delete(f"/api/admin/staff/{staff_id}", headers=admin_headers)
+    assert client.delete(f"/api/admin/staff/{staff_id}", headers=manager_headers, params={"reason": "權限測試"}).status_code == 403
+    deleted = client.delete(f"/api/admin/staff/{staff_id}", headers=admin_headers, params={"reason": "照片刪除測試"})
     assert deleted.status_code == 200, deleted.text
     assert client.get(uploaded.json()["photo_url"]).status_code == 404
 
@@ -90,9 +90,9 @@ def test_staff_photo_upload_and_safe_permanent_delete(client):
         },
     )
     assert shift.status_code == 201, shift.text
-    blocked = client.delete(f"/api/admin/staff/{used.json()['id']}", headers=admin_headers)
+    blocked = client.delete(f"/api/admin/staff/{used.json()['id']}", headers=admin_headers, params={"reason": "驗證歷史保護"})
     assert blocked.status_code == 409
-    assert "只能設為暫時退役" in blocked.json()["detail"]
+    assert "暫時退役" in blocked.json()["detail"]
 
 
 def test_appointment_end_and_staff_room_conflicts(client):
@@ -110,7 +110,6 @@ def test_appointment_end_and_staff_room_conflicts(client):
     )
     assert staff_response.status_code == 201, staff_response.text
     staff = staff_response.json()
-
     payload = {
         "customer_name": "測試客戶",
         "phone": "0912345678",
@@ -217,6 +216,59 @@ def test_staff_passwordless_session_only_returns_own_data(client):
     assert all(item["staff_id"] == staff["id"] for item in data["shifts"])
 
 
+def test_permanent_staff_delete_is_confirmed_and_preserves_history(client):
+    headers = login(client)
+    removable = client.post(
+        "/api/admin/staff",
+        headers=headers,
+        json={"name": "永久刪除測試師傅", "category": "gay", "phone": "0955000001"},
+    )
+    assert removable.status_code == 201, removable.text
+    removable_staff = removable.json()
+
+    with SessionLocal() as db:
+        staff_obj = db.query(Staff).filter(Staff.id == removable_staff["id"]).first()
+        bubble = build_staff_bubble(staff_obj)
+        actions = str(bubble)
+        assert "request_permanent_delete_staff" in actions
+        assert "永久刪除" in actions
+
+    assert client.delete(f"/api/admin/staff/{removable_staff['id']}", headers=headers).status_code == 422
+    deleted = client.delete(
+        f"/api/admin/staff/{removable_staff['id']}",
+        headers=headers,
+        params={"reason": "重複建立的測試帳戶"},
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["deleted_staff_name"] == "永久刪除測試師傅"
+    assert all(item["id"] != removable_staff["id"] for item in client.get("/api/admin/bootstrap", headers=headers).json()["staff"])
+
+    protected = client.post(
+        "/api/admin/staff",
+        headers=headers,
+        json={"name": "保留歷史測試師傅", "category": "gay"},
+    ).json()
+    shift = client.post(
+        "/api/admin/shifts",
+        headers=headers,
+        json={
+            "staff_id": protected["id"],
+            "start_time": "2030-01-02T14:00:00",
+            "end_time": "2030-01-02T18:00:00",
+            "source": "admin",
+        },
+    )
+    assert shift.status_code == 201, shift.text
+    blocked = client.delete(
+        f"/api/admin/staff/{protected['id']}",
+        headers=headers,
+        params={"reason": "嘗試刪除已有歷史的師傅"},
+    )
+    assert blocked.status_code == 409
+    assert "排班 1 筆" in blocked.json()["detail"]
+    assert "暫時退役" in blocked.json()["detail"]
+
+
 def test_staff_line_magic_link_is_short_lived_and_single_use(client):
     db = SessionLocal()
     try:
@@ -281,8 +333,8 @@ def test_public_booking_checks_availability_and_is_idempotent(client):
         headers=headers,
         json={
             "staff_id": staff["id"],
-                "start_time": "2099-08-27T18:00:00",
-                "end_time": "2099-08-27T23:00:00",
+            "start_time": "2099-08-27T18:00:00",
+            "end_time": "2099-08-27T23:00:00",
             "source": "admin",
         },
     )

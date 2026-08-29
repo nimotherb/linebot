@@ -504,6 +504,15 @@ def register_admin_api(
         data_base64 = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False)
         updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
 
+    class DeletedStaffIdentity(Base):
+        __tablename__ = "deleted_staff_identities"
+        id = Column(Integer, primary_key=True)
+        normalized_name = Column(String(255), unique=True, nullable=False, index=True)
+        original_name = Column(String(255), nullable=False)
+        deleted_by_user_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+        reason = Column(String(500), nullable=True)
+        deleted_at = Column(DateTime, nullable=False, default=now_taipei_naive)
+
     class ReturnRuleSet(Base):
         __tablename__ = "return_rule_sets"
         id = Column(Integer, primary_key=True)
@@ -573,6 +582,7 @@ def register_admin_api(
         "StaffSession": StaffSession,
         "StaffMagicLink": StaffMagicLink,
         "StaffPhoto": StaffPhoto,
+        "DeletedStaffIdentity": DeletedStaffIdentity,
         "ReturnRuleSet": ReturnRuleSet,
         "ReturnRule": ReturnRule,
         "StaffReturn": StaffReturn,
@@ -751,6 +761,51 @@ def register_admin_api(
             before_json=_json(before) if before is not None else None,
             after_json=_json(after) if after is not None else None,
         ))
+
+    def permanently_delete_staff(
+        staff_id: int,
+        db: Session,
+        *,
+        actor_id: int | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        item = db.query(Staff).filter(Staff.id == staff_id).with_for_update().first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到員工")
+
+        dependencies = {
+            "預約": db.query(Appointment).filter(Appointment.staff_id == staff_id).count(),
+            "排班": db.query(Shift).filter(Shift.staff_id == staff_id).count(),
+            "付款": db.query(Payment).filter(Payment.received_by_staff_id == staff_id).count(),
+            "回帳": db.query(StaffReturn).filter(StaffReturn.staff_id == staff_id).count(),
+        }
+        retained = [f"{label} {count} 筆" for label, count in dependencies.items() if count]
+        if retained:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{item.name} 仍有{'、'.join(retained)}歷史，不能永久刪除；請改用暫時退役以保留帳務與稽核紀錄。",
+            )
+
+        actor = db.query(AdminUser).filter(AdminUser.id == actor_id).first() if actor_id else None
+        normalized_name = item.name.strip().casefold()
+        if normalized_name and not db.query(DeletedStaffIdentity).filter(DeletedStaffIdentity.normalized_name == normalized_name).first():
+            db.add(DeletedStaffIdentity(
+                normalized_name=normalized_name,
+                original_name=item.name,
+                deleted_by_user_id=actor_id,
+                reason=reason,
+            ))
+
+        before = staff_dict(item)
+        for model in (StaffScheduleToken, StaffPrivateHealth, StaffSession, StaffMagicLink, StaffPhoto):
+            db.query(model).filter(model.staff_id == staff_id).delete(synchronize_session=False)
+        deleted_name = item.name
+        db.delete(item)
+        audit(db, actor, "permanent_delete", "staff", staff_id, reason=reason, before=before)
+        db.commit()
+        return {"ok": True, "deleted_staff_id": staff_id, "deleted_staff_name": deleted_name}
+
+    app.state.permanently_delete_staff = permanently_delete_staff
 
     def decode_site_content(value: str | None) -> dict[str, Any]:
         if not value:
@@ -1391,6 +1446,7 @@ def register_admin_api(
     def bootstrap(db: Session = Depends(get_db), user=Depends(current_admin)):
         appointments = db.query(Appointment).order_by(Appointment.start_time.desc()).limit(300).all()
         shift_rows = db.query(Shift).filter(Shift.status == "active").order_by(Shift.start_time).limit(500).all()
+        audit_rows = db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(20).all()
         return {
             "user": serialize_admin(user),
             "appointments": [appointment_dict(db, item) for item in appointments],
@@ -1403,6 +1459,15 @@ def register_admin_api(
             "customers": [customer_dict(db, item) for item in db.query(User).order_by(User.created_at.desc()).limit(1000).all()],
             "admin_users": [serialize_admin(item) for item in db.query(AdminUser).order_by(AdminUser.id).all()] if user.role in {"admin", "manager"} else [],
             "return_rule_sets": return_rule_sets_dict(db),
+            "audit_logs": [{
+                "id": item.id,
+                "actor_name": (db.query(AdminUser).filter(AdminUser.id == item.actor_user_id).first().display_name if item.actor_user_id and db.query(AdminUser).filter(AdminUser.id == item.actor_user_id).first() else "系統／員工"),
+                "action": item.action,
+                "entity_type": item.entity_type,
+                "entity_id": item.entity_id,
+                "reason": item.reason,
+                "created_at": _iso(item.created_at),
+            } for item in audit_rows],
         }
 
     @app.get("/api/admin/appointments")
@@ -1975,30 +2040,13 @@ def register_admin_api(
         return staff_dict(item)
 
     @app.delete("/api/admin/staff/{staff_id}")
-    def permanently_delete_staff(staff_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin"))):
-        item = db.query(Staff).filter(Staff.id == staff_id).with_for_update().first()
-        if not item:
-            raise HTTPException(status_code=404, detail="找不到員工")
-        history = {
-            "預約": db.query(Appointment).filter(Appointment.staff_id == staff_id).count(),
-            "排班": db.query(Shift).filter(Shift.staff_id == staff_id).count(),
-            "回帳": db.query(StaffReturn).filter(StaffReturn.staff_id == staff_id).count(),
-            "代收付款": db.query(Payment).filter(Payment.received_by_staff_id == staff_id).count(),
-        }
-        used = {label: count for label, count in history.items() if count}
-        if used:
-            summary = "、".join(f"{label} {count} 筆" for label, count in used.items())
-            raise HTTPException(status_code=409, detail=f"這位師傅已有歷史紀錄（{summary}），為保留帳務與稽核資料，只能設為暫時退役")
-        before = staff_dict(item)
-        db.query(StaffScheduleToken).filter(StaffScheduleToken.staff_id == staff_id).delete(synchronize_session=False)
-        db.query(StaffPrivateHealth).filter(StaffPrivateHealth.staff_id == staff_id).delete(synchronize_session=False)
-        db.query(StaffSession).filter(StaffSession.staff_id == staff_id).delete(synchronize_session=False)
-        db.query(StaffMagicLink).filter(StaffMagicLink.staff_id == staff_id).delete(synchronize_session=False)
-        db.query(StaffPhoto).filter(StaffPhoto.staff_id == staff_id).delete(synchronize_session=False)
-        db.delete(item)
-        audit(db, actor, "permanent_delete", "staff", staff_id, reason="admin permanent delete", before=before)
-        db.commit()
-        return {"ok": True, "staff_id": staff_id}
+    def delete_staff_permanently(
+        staff_id: int,
+        reason: str = Query(min_length=3, max_length=500),
+        db: Session = Depends(get_db),
+        actor=Depends(require_roles("admin")),
+    ):
+        return permanently_delete_staff(staff_id, db, actor_id=actor.id, reason=reason)
 
     @app.post("/api/admin/staff/{staff_id}/schedule-link")
     def rotate_staff_schedule_link(staff_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):

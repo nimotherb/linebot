@@ -1,4 +1,4 @@
-import type { Appointment, AppointmentStatus, Customer, ServicePlan, Shift, StaffMember } from './mock-data';
+import type { Appointment, AppointmentStatus, Customer, ServicePlan, Shift, StaffMember } from './models';
 
 export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com').replace(/\/$/, '');
 
@@ -99,6 +99,16 @@ export type AdminUserView = {
   lastLogin: string;
 };
 
+export type AuditLogView = {
+  id: number;
+  actorName: string;
+  action: string;
+  entityType: string;
+  entityId?: string;
+  reason?: string;
+  createdAt: string;
+};
+
 export type BootstrapData = {
   mode?: 'public' | 'staff';
   user: AdminIdentity | null;
@@ -112,6 +122,15 @@ export type BootstrapData = {
   customers?: Array<{ id: number; vip_serial: string; display_name?: string; primary_phone?: string; phones: string[]; visits: number; spent: number; last_visit?: string }>;
   admin_users?: AdminIdentity[];
   return_rule_sets?: ReturnRuleSetView[];
+  audit_logs?: Array<{
+    id: number;
+    actor_name: string;
+    action: string;
+    entity_type: string;
+    entity_id?: string;
+    reason?: string;
+    created_at: string;
+  }>;
 };
 
 export type ReturnRuleSetView = {
@@ -270,6 +289,16 @@ export const mapAdminUser = (item: AdminIdentity): AdminUserView => ({
   lastLogin: '—',
 });
 
+export const mapAuditLog = (item: NonNullable<BootstrapData['audit_logs']>[number]): AuditLogView => ({
+  id: item.id,
+  actorName: item.actor_name,
+  action: item.action,
+  entityType: item.entity_type,
+  entityId: item.entity_id,
+  reason: item.reason,
+  createdAt: item.created_at,
+});
+
 export class SpaApi {
   constructor(private token = '') {}
 
@@ -390,8 +419,9 @@ export class SpaApi {
     return this.request<RawStaff>(`/api/admin/staff/${id}/photo`, { method: 'PUT', body: JSON.stringify({ data_url: dataUrl }) });
   }
 
-  permanentlyDeleteStaff(id: number) {
-    return this.request<{ ok: boolean; staff_id: number }>(`/api/admin/staff/${id}`, { method: 'DELETE' });
+  deleteStaff(id: number, reason: string) {
+    const query = new URLSearchParams({ reason });
+    return this.request<{ ok: boolean; deleted_staff_id: number; deleted_staff_name: string }>(`/api/admin/staff/${id}?${query}`, { method: 'DELETE' });
   }
 
   createPromotion(payload: Record<string, unknown>) {
@@ -465,11 +495,11 @@ export class SpaApi {
 
   // 1. 取得目前草稿與發布狀態 (Admin / 店長專用)
   async getAdminSiteContent() {
-    return this.request<any>('/api/admin/site-content', { method: 'GET' });
+    return this.request<Record<string, unknown>>('/api/admin/site-content', { method: 'GET' });
   }
 
   // 2. 儲存草稿
-  async saveSiteDraft(content: any, expectedVersion: number) {
+  async saveSiteDraft(content: Record<string, unknown>, expectedVersion: number) {
     try {
       const result = await fetch(`${API_BASE_URL}/api/admin/site-content/draft`, {
         method: 'PUT',
@@ -492,8 +522,8 @@ export class SpaApi {
       if (!result.ok) throw new Error('儲存草稿失敗');
       
       return await result.json();
-    } catch (e: any) {
-      throw new Error(e.message || '儲存草稿失敗');
+    } catch (error: unknown) {
+      throw new Error(error instanceof Error ? error.message : '儲存草稿失敗');
     }
   }
 
@@ -517,8 +547,8 @@ export class SpaApi {
       if (!result.ok) throw new Error('發布失敗');
       
       return await result.json();
-    } catch (e: any) {
-      throw new Error(e.message || '發布失敗');
+    } catch (error: unknown) {
+      throw new Error(error instanceof Error ? error.message : '發布失敗');
     }
   }
 }

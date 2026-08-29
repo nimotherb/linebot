@@ -541,6 +541,7 @@ def build_staff_bubble(staff):
             "type": "box", "layout": "vertical", "spacing": "sm",
             "contents": [
                 {"type": "text", "text": staff.name, "wrap": True, "weight": "bold", "size": "xxl"},
+                {"type": "text", "text": "在職" if staff.employment_status == "active" else "暫時退役", "size": "sm", "color": "#059669" if staff.employment_status == "active" else "#9CA3AF"},
                 {
                     "type": "box", "layout": "baseline",
                     "contents": [
@@ -552,8 +553,8 @@ def build_staff_bubble(staff):
         "footer": {
             "type": "box", "layout": "vertical", "spacing": "sm",
             "contents": [
-                {"type": "button", "style": "primary", "color": "#e11d48", "action": {"type": "postback", "label": "刪除", "data": f"action=delete_staff&staff_id={staff.id}"}},
-                {"type": "button", "action": {"type": "postback", "label": "暫不上架", "data": f"action=toggle_staff&staff_id={staff.id}"}}
+                {"type": "button", "style": "primary", "color": "#6B7280", "action": {"type": "postback", "label": "恢復在職" if staff.employment_status == "retired" else "暫時退役", "data": f"action=toggle_staff&staff_id={staff.id}"}},
+                {"type": "button", "style": "primary", "color": "#e11d48", "action": {"type": "postback", "label": "永久刪除", "data": f"action=request_permanent_delete_staff&staff_id={staff.id}"}}
             ]
         }
     }
@@ -566,6 +567,26 @@ def build_staff_bubble(staff):
             "aspectMode": "cover",
         }
     return bubble
+
+
+def build_permanent_delete_staff_confirmation(staff):
+    return FlexSendMessage(
+        alt_text=f"確認永久刪除 {staff.name}",
+        contents={
+            "type": "bubble",
+            "header": {"type": "box", "layout": "vertical", "backgroundColor": "#991B1B", "contents": [
+                {"type": "text", "text": "永久刪除師傅", "weight": "bold", "size": "xl", "color": "#FFFFFF"},
+            ]},
+            "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
+                {"type": "text", "text": f"確定永久刪除「{staff.name}」？", "weight": "bold", "size": "lg", "wrap": True},
+                {"type": "text", "text": "這會移除 LINE 綁定、登入連結與私密資料，無法復原。若已有預約、班表、付款或回帳歷史，系統會拒絕刪除並要求改用暫時退役。", "size": "sm", "color": "#6B7280", "wrap": True},
+            ]},
+            "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                {"type": "button", "style": "primary", "color": "#DC2626", "action": {"type": "postback", "label": "確認永久刪除", "data": f"action=confirm_permanent_delete_staff&staff_id={staff.id}"}},
+                {"type": "button", "style": "secondary", "action": {"type": "postback", "label": "取消", "data": "action=admin_staff&offset=0"}},
+            ]},
+        },
+    )
 
 
 def build_staff_week_appointments(staff, db: Session):
@@ -622,7 +643,7 @@ def build_staff_week_appointments(staff, db: Session):
 
 def handle_root_action(data, user_id, db, is_staff_side=False):
     """處理管理員（root）相關的 Postback 動作"""
-    if not any(action in data for action in ("action=admin_", "action=delete_staff", "action=toggle_staff")):
+    if not any(action in data for action in ("action=admin_", "action=delete_staff", "action=toggle_staff", "action=request_permanent_delete_staff", "action=confirm_permanent_delete_staff")):
         return None
     if not is_line_manager(user_id, db):
         return TextSendMessage(text="此功能只開放管理帳號使用。")
@@ -650,7 +671,7 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         # LINE carousel 上限為 12 張；以 10 位師傅加 1 張下一頁卡片分頁。
         qs = parse_qs(data)
         offset = max(0, int(qs.get("offset", ["0"])[0] or 0))
-        staffs = db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.id).offset(offset).limit(11).all()
+        staffs = db.query(Staff).filter(Staff.employment_status.in_(["active", "retired"])).order_by(Staff.id).offset(offset).limit(11).all()
         if not staffs:
             return TextSendMessage(text="目前無師傅資料")
         has_more = len(staffs) > 10
@@ -668,6 +689,26 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
             })
         return FlexSendMessage(alt_text="師傅管理", contents={"type": "carousel", "contents": bubbles})
     
+    elif "action=request_permanent_delete_staff" in data:
+        qs = parse_qs(data)
+        staff_id = qs.get("staff_id", [None])[0]
+        staff = db.query(Staff).filter(Staff.id == int(staff_id)).first() if staff_id else None
+        return build_permanent_delete_staff_confirmation(staff) if staff else TextSendMessage(text="查無師傅資料")
+
+    elif "action=confirm_permanent_delete_staff" in data:
+        qs = parse_qs(data)
+        staff_id = qs.get("staff_id", [None])[0]
+        delete_staff = getattr(getattr(app, "state", None), "permanently_delete_staff", None)
+        identity_getter = getattr(getattr(app, "state", None), "line_admin_identity", None)
+        if not staff_id or not delete_staff:
+            return TextSendMessage(text="永久刪除功能目前無法使用，請改從後台操作。")
+        identity = identity_getter(user_id, db) if identity_getter else None
+        try:
+            result = delete_staff(int(staff_id), db, actor_id=identity.get("id") if identity else None, reason="LINE Bot 管理員確認永久刪除")
+            return TextSendMessage(text=f"已永久刪除師傅 {result['deleted_staff_name']}。")
+        except Exception as exc:
+            return TextSendMessage(text=getattr(exc, "detail", "永久刪除失敗，請改從後台查看原因。"))
+
     elif "action=delete_staff" in data:
         # 保留歷史訂單，僅將師傅標為暫時退役
         qs = parse_qs(data)
@@ -681,13 +722,14 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         return TextSendMessage(text="更新失敗")
     
     elif "action=toggle_staff" in data:
-        # 舊的「在線」功能已停用；接單資格改由正式班表決定
         qs = parse_qs(data)
         staff_id = qs.get("staff_id", [None])[0]
         if staff_id:
             staff = db.query(Staff).filter(Staff.id == int(staff_id)).first()
             if staff:
-                return TextSendMessage(text=f"{staff.name} 的接單狀態請由正式班表管理。")
+                staff.employment_status = "active" if staff.employment_status == "retired" else "retired"
+                db.commit()
+                return TextSendMessage(text=f"{staff.name} 已{'恢復在職' if staff.employment_status == 'active' else '設為暫時退役'}。")
         return TextSendMessage(text="查無師傅資料")
     return None
 
@@ -1288,8 +1330,15 @@ def on_startup():
 
     db = SessionLocal()
     try:
+        admin_models = getattr(app.state, "admin_models", {})
+        DeletedStaffIdentity = admin_models.get("DeletedStaffIdentity")
+        deleted_staff_names = {
+            item.normalized_name for item in db.query(DeletedStaffIdentity).all()
+        } if DeletedStaffIdentity else set()
         existing_staff = {item.name.strip().casefold(): item for item in db.query(Staff).all()}
         for profile in THERAPIST_PROFILES:
+            if profile.name.strip().casefold() in deleted_staff_names:
+                continue
             staff_obj = existing_staff.get(profile.name.casefold())
             if not staff_obj:
                 staff_obj = Staff(
