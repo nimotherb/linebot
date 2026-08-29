@@ -1,25 +1,14 @@
 'use client';
 
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
-import {
-  adminUsers as initialAdminUsers,
-  Appointment,
-  customers as initialCustomers,
-  demoNow,
-  initialAppointments,
-  initialShifts,
-  nextWeekDays,
-  promotions as initialPromotions,
-  servicePlans,
-  Shift,
-  staffMembers,
-  weekDays,
-} from './mock-data';
+import type { Appointment, Customer, ServicePlan, Shift, StaffMember } from './models';
 import {
   AdminIdentity,
+  AuditLogView,
   BootstrapData,
   mapAdminUser,
   mapAppointment,
+  mapAuditLog,
   mapCustomer,
   mapPromotion,
   mapService,
@@ -46,6 +35,7 @@ type ModalState =
   | { type: 'returnRule'; setId: number; ruleId: number }
   | { type: 'customer'; id: string }
   | { type: 'staff' }
+  | { type: 'staffDelete'; id: string }
   | { type: 'user' }
   | { type: 'account' }
   | null;
@@ -74,7 +64,7 @@ const navGroups: { label: string; items: { id: SectionId; label: string; glyph: 
 ];
 
 const headings: Record<SectionId, { eyebrow: string; title: string; description: string }> = {
-  dashboard: { eyebrow: '2026 年 8 月 22 日・星期六', title: '歡迎回到伊果SPA', description: '目前登入：員工' },
+  dashboard: { eyebrow: 'TODAY', title: '歡迎回到伊果SPA', description: '目前登入：員工' },
   appointments: { eyebrow: 'APPOINTMENTS', title: '預約管理', description: '建立、搜尋、改期與人工修正預約。' },
   schedule: { eyebrow: 'WEEKLY ROSTER', title: '師傅排班', description: '本週與下週班表，距開始 90 分鐘後鎖定。' },
   operations: { eyebrow: 'SERVICE FLOW', title: '現場進度', description: '從報到、服務中到待結帳的即時看板。' },
@@ -84,7 +74,7 @@ const headings: Record<SectionId, { eyebrow: string; title: string; description:
   services: { eyebrow: 'PRICING', title: '服務與優惠', description: '方案價格、期間與附加費都可隨時調整。' },
   exports: { eyebrow: 'DATA CENTER', title: '資料中心', description: '依日期範圍匯出 Excel 相容 CSV 或純文字。' },
   users: { eyebrow: 'ACCESS CONTROL', title: '帳號與權限', description: '管理 Admin、店長與客服角色。' },
-  staffPortal: { eyebrow: 'STAFF LINK PREVIEW', title: '師傅免登入班表', description: '模擬師傅從 LINE 專屬連結看到的畫面。' },
+  staffPortal: { eyebrow: 'STAFF LINK PREVIEW', title: '師傅免登入班表', description: '使用資料庫中的師傅與班表預覽 LINE 專屬入口。' },
 };
 
 const formatCurrency = (value: number) => `NT$ ${value.toLocaleString('zh-TW')}`;
@@ -93,15 +83,44 @@ const toMinutes = (clock: string) => {
   const [hours, minutes] = clock.split(':').map(Number);
   return hours * 60 + minutes;
 };
-const toClock = (minutes: number) => {
-  if (minutes >= 1440) return '24:00';
-  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
-};
 const overlaps = (aStart: string, aEnd: string, bStart: string, bEnd: string) => toMinutes(aStart) < toMinutes(bEnd) && toMinutes(aEnd) > toMinutes(bStart);
+const TAIPEI_TIME_ZONE = 'Asia/Taipei';
+const taipeiParts = (date: Date) => Object.fromEntries(
+  new Intl.DateTimeFormat('en-US', {
+    timeZone: TAIPEI_TIME_ZONE,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]),
+) as Record<string, string>;
+const taipeiDateValue = (date: Date) => {
+  const parts = taipeiParts(date);
+  return `${parts.year}-${parts.month}-${parts.day}`;
+};
+const buildBusinessWeek = (weekOffset: number, reference = new Date()) => {
+  const parts = taipeiParts(reference);
+  const localDate = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)));
+  const daysSinceSaturday = (localDate.getUTCDay() + 1) % 7;
+  localDate.setUTCDate(localDate.getUTCDate() - daysSinceSaturday + weekOffset * 7);
+  const dayNames = ['日', '一', '二', '三', '四', '五', '六'];
+  return Array.from({ length: 7 }, (_, index) => {
+    const day = new Date(localDate);
+    day.setUTCDate(localDate.getUTCDate() + index);
+    return {
+      date: day.toISOString().slice(0, 10),
+      day: dayNames[day.getUTCDay()],
+      label: `${day.getUTCMonth() + 1}/${day.getUTCDate()}`,
+    };
+  });
+};
+const nextBookableSlot = () => {
+  const threshold = Date.now() + 90 * 60 * 1000;
+  const rounded = new Date(Math.ceil(threshold / (30 * 60 * 1000)) * 30 * 60 * 1000);
+  const parts = taipeiParts(rounded);
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}` };
+};
 const isShiftLocked = (shift: Shift) => {
   if (typeof shift.locked === 'boolean') return shift.locked;
   const shiftStart = new Date(`${shift.date}T${shift.start}:00+08:00`).getTime();
-  const cutoff = new Date(demoNow).getTime() + 90 * 60 * 1000;
+  const cutoff = Date.now() + 90 * 60 * 1000;
   return shiftStart <= cutoff;
 };
 
@@ -125,30 +144,36 @@ function StatusPill({ status }: { status: string }) {
 }
 
 export default function Home() {
+  const todayIso = taipeiDateValue(new Date());
+  const currentWeekDays = buildBusinessWeek(0);
+  const followingWeekDays = buildBusinessWeek(1);
+  const bookingDefault = nextBookableSlot();
+  const todayLabel = new Intl.DateTimeFormat('zh-TW', { timeZone: TAIPEI_TIME_ZONE, year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }).format(new Date());
   const [active, setActive] = useState<SectionId>('dashboard');
   const [role, setRole] = useState<'admin' | 'manager' | 'clerk' | 'staff' | 'viewer'>('viewer');
-  const [appointments, setAppointments] = useState(initialAppointments);
-  const [shifts, setShifts] = useState(initialShifts);
-  const [plans, setPlans] = useState(servicePlans);
-  const [staff, setStaff] = useState(staffMembers);
-  const [customers, setCustomers] = useState(initialCustomers);
-  const [promotions, setPromotions] = useState<PromotionView[]>(initialPromotions);
-  const [adminUsers, setAdminUsers] = useState(initialAdminUsers);
-  const [rooms, setRooms] = useState([{ id: 1, name: '房間 1' }, { id: 2, name: '房間 2' }]);
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [shifts, setShifts] = useState<Shift[]>([]);
+  const [plans, setPlans] = useState<ServicePlan[]>([]);
+  const [staff, setStaff] = useState<StaffMember[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [promotions, setPromotions] = useState<PromotionView[]>([]);
+  const [adminUsers, setAdminUsers] = useState<ReturnType<typeof mapAdminUser>[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogView[]>([]);
+  const [rooms, setRooms] = useState<{ id: number; name: string }[]>([]);
   const [modal, setModal] = useState<ModalState>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [appointmentSearch, setAppointmentSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('全部');
   const [customerSearch, setCustomerSearch] = useState('');
   const [week, setWeek] = useState<'current' | 'next'>('current');
-  const [appMode, setAppMode] = useState<'checking' | 'demo' | 'public' | 'live' | 'staff' | 'staffLink'>('checking');
+  const [appMode, setAppMode] = useState<'checking' | 'unavailable' | 'public' | 'live' | 'staff' | 'staffLink'>('checking');
+  const [connectionError, setConnectionError] = useState('');
   const [token, setToken] = useState('');
   const [identity, setIdentity] = useState<AdminIdentity | null>(null);
   const [staffIdentity, setStaffIdentity] = useState<StaffIdentity | null>(null);
-  const [returnRuleSets, setReturnRuleSets] = useState<ReturnRuleSetView[]>([
-    { id: 1, code: 'TABLE_1', name: '回帳表一（A–E／借房）', active: true, rules: [{ id: 1, service_code: 'A', name: 'A方案', amount: 700, duration_minutes: 60, active: true }, { id: 2, service_code: 'B', name: 'B方案', amount: 800, duration_minutes: 60, active: true }, { id: 3, service_code: 'C', name: 'C方案', amount: 1000, duration_minutes: 90, active: true }, { id: 4, service_code: 'D', name: 'D方案', amount: 1200, duration_minutes: 120, active: true }, { id: 5, service_code: 'E', name: 'E方案', amount: 1200, duration_minutes: 100, active: true }, { id: 6, service_code: 'BORROW', name: '借房', amount: 300, duration_minutes: 60, active: true }] },
-    { id: 2, code: 'TABLE_2', name: '回帳表二（A–D）', active: true, rules: [{ id: 7, service_code: 'A', name: 'A方案', amount: 300, duration_minutes: 60, active: true }, { id: 8, service_code: 'B', name: 'B方案', amount: 300, duration_minutes: 60, active: true }, { id: 9, service_code: 'C', name: 'C方案', amount: 400, duration_minutes: 90, active: true }, { id: 10, service_code: 'D', name: 'D方案', amount: 500, duration_minutes: 120, active: true }] },
-  ]);
+  const [returnRuleSets, setReturnRuleSets] = useState<ReturnRuleSetView[]>([]);
+  const [exportStart, setExportStart] = useState(currentWeekDays[0].date);
+  const [exportEnd, setExportEnd] = useState(todayIso);
   const [loginError, setLoginError] = useState('');
   const [loginBusy, setLoginBusy] = useState(false);
   const [staffToken, setStaffToken] = useState('');
@@ -179,7 +204,9 @@ export default function Home() {
     setRooms(data.rooms.map((room) => ({ id: room.id, name: room.name })));
     setCustomers((data.customers || []).map(mapCustomer));
     setAdminUsers((data.admin_users || []).map(mapAdminUser));
-    if (data.return_rule_sets?.length) setReturnRuleSets(data.return_rule_sets);
+    setReturnRuleSets(data.return_rule_sets || []);
+    setAuditLogs((data.audit_logs || []).map(mapAuditLog));
+    setConnectionError('');
     setAppMode(mode);
   };
 
@@ -222,7 +249,8 @@ export default function Home() {
       const backendReady = await SpaApi.probe();
       if (!activeRequest) return;
       if (!backendReady) {
-        setAppMode('demo');
+        setConnectionError('目前無法連線至 FastAPI／MySQL，畫面不會顯示任何測試資料。請稍後重試。');
+        setAppMode('unavailable');
         return;
       }
       const savedAdminToken = window.sessionStorage.getItem('equalspa-admin-token');
@@ -249,8 +277,9 @@ export default function Home() {
         const data = await new SpaApi().publicBootstrap();
         if (!activeRequest) return;
         applyBootstrap(data, 'public');
-      } catch {
-        setAppMode('demo');
+      } catch (error) {
+        setConnectionError(error instanceof Error ? error.message : '目前無法讀取資料庫資料');
+        setAppMode('unavailable');
       }
     };
     initialize();
@@ -334,8 +363,9 @@ export default function Home() {
     try {
       const data = await new SpaApi().publicBootstrap();
       applyBootstrap(data, 'public');
-    } catch {
-      setAppMode('demo');
+    } catch (error) {
+      setConnectionError(error instanceof Error ? error.message : '目前無法讀取資料庫資料');
+      setAppMode('unavailable');
     } finally {
       stopNavigation();
     }
@@ -346,13 +376,13 @@ export default function Home() {
     window.setTimeout(() => setToast(null), 3200);
   };
 
-  const todayAppointments = appointments.filter((item) => item.date === '2026-08-22' && item.status !== '已取消');
+  const todayAppointments = appointments.filter((item) => item.date === todayIso && item.status !== '已取消');
   const pendingCheckout = appointments.filter((item) => item.status === '待結帳');
-  const completedRevenue = appointments.filter((item) => item.status === '已完成' || item.payment === '已付款').reduce((sum, item) => sum + item.total, 0);
+  const completedRevenue = todayAppointments.filter((item) => item.status === '已完成' || item.payment === '已付款').reduce((sum, item) => sum + item.total, 0);
   const selectedAppointment = modal && 'id' in modal ? appointments.find((item) => item.id === modal.id) : undefined;
   const selectedShift = modal && 'id' in modal ? shifts.find((item) => item.id === modal.id) : undefined;
   const selectedCustomer = modal?.type === 'customer' ? customers.find((item) => item.id === modal.id) : undefined;
-  const isViewer = appMode === 'public' || appMode === 'demo';
+  const isViewer = appMode === 'public' || appMode === 'unavailable';
   const isStaffUser = appMode === 'staff';
   const canManageAll = appMode === 'live' && (role === 'admin' || role === 'manager');
   const canCreateUsers = appMode === 'live' && role === 'admin';
@@ -373,7 +403,7 @@ export default function Home() {
   const filteredCustomers = useMemo(() => customers.filter((customer) => {
     const query = customerSearch.trim().toLowerCase();
     return !query || [customer.vipSerial, customer.name, customer.lineName, ...customer.phones].some((value) => value.toLowerCase().includes(query));
-  }), [customerSearch]);
+  }), [customerSearch, customers]);
 
   const addAppointment = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -382,10 +412,8 @@ export default function Home() {
     if (!plan) return;
     const date = String(data.get('date'));
     const start = String(data.get('start'));
-    const end = toClock(toMinutes(start) + plan.duration);
     const selectedStaffMember = staff.find((item) => item.id === String(data.get('staff')));
     if (!selectedStaffMember) return notify('請選擇師傅。');
-    const selectedStaff = selectedStaffMember.name;
     const room = String(data.get('room'));
 
     if (appMode === 'live' || appMode === 'staff') {
@@ -412,30 +440,7 @@ export default function Home() {
       }
       return;
     }
-    const staffConflict = appointments.some((item) => item.date === date && item.staff === selectedStaff && item.status !== '已取消' && overlaps(item.start, item.end, start, end));
-    const roomConflict = room !== '外出場地' && room !== '待確認' && appointments.some((item) => item.date === date && item.room === room && item.status !== '已取消' && overlaps(item.start, item.end, start, end));
-    if (staffConflict) return notify(`無法新增：${selectedStaff} 在 ${start}–${end} 已有預約。`);
-    if (roomConflict) return notify(`無法新增：${room} 在 ${start}–${end} 已被使用。`);
-    const item: Appointment = {
-      id: `AP-MOCK-${String(appointments.length + 1).padStart(3, '0')}`,
-      date,
-      start,
-      end,
-      customer: String(data.get('customer')),
-      phone: String(data.get('phone')),
-      staff: selectedStaff,
-      serviceId: plan.id,
-      service: `${plan.code}・${plan.name}`,
-      room,
-      location: room === '外出場地' ? '外出' : room === '待確認' ? '待確認' : '店內',
-      status: '已確認',
-      total: plan.price,
-      payment: '未付款',
-      note: String(data.get('note') || ''),
-    };
-    setAppointments((current) => [item, ...current]);
-    setModal(null);
-    notify(`已建立 ${item.id}，結束時間自動計算為 ${end}。`);
+    notify('目前未連線至資料庫，不能建立預約。');
   };
 
   const addShift = async (event: FormEvent<HTMLFormElement>, origin: 'admin' | 'staff') => {
@@ -448,7 +453,7 @@ export default function Home() {
     const staffName = origin === 'staff' ? staffPortalName : selectedMember?.name || '未指定';
     if (toMinutes(end) - toMinutes(start) < 120) return notify('排班至少需要 2 小時。');
     const startAt = new Date(`${date}T${start}:00+08:00`).getTime();
-    if (origin === 'staff' && startAt <= new Date(demoNow).getTime() + 90 * 60 * 1000) return notify('開始時間已進入 90 分鐘鎖定範圍，請聯絡店長。');
+    if (origin === 'staff' && startAt <= Date.now() + 90 * 60 * 1000) return notify('開始時間已進入 90 分鐘鎖定範圍，請聯絡店長。');
     if (shifts.some((item) => item.staff === staffName && item.date === date && overlaps(item.start, item.end, start, end))) return notify(`${staffName} 在這段時間已有排班。`);
     if (appMode === 'staffLink' && origin === 'staff') {
       try {
@@ -482,9 +487,7 @@ export default function Home() {
       }
       return;
     }
-    setShifts((current) => [...current, { id: `SH-${String(current.length + 1).padStart(3, '0')}`, staff: staffName, date, start, end, source: origin === 'staff' ? '師傅連結' : role === 'admin' ? 'Admin' : '店長' }]);
-    setModal(null);
-    notify(`已新增 ${staffName} 的 ${start}–${end} 排班。`);
+    notify('目前未連線至資料庫，不能新增排班。');
   };
 
   const saveService = async (event: FormEvent<HTMLFormElement>, id: string) => {
@@ -503,9 +506,7 @@ export default function Home() {
       }
       return;
     }
-    setPlans((current) => current.map((item) => item.id === id ? { ...item, ...updatedFields } : item));
-    setModal(null);
-    notify('方案已在原型資料中更新；串接後會寫入 MySQL。');
+    notify('目前未連線至資料庫，不能修改方案。');
   };
 
   const finishCheckout = async (event: FormEvent<HTMLFormElement>, id: string) => {
@@ -525,9 +526,7 @@ export default function Home() {
       }
       return;
     }
-    setAppointments((current) => current.map((item) => item.id === id ? { ...item, status: '已完成', payment: '已付款' } : item));
-    setModal(null);
-    notify(paymentMethod === '現金' ? '訂單已完成，現金回帳狀態設為「待確認」。' : '訂單已完成，付款方式：轉帳。');
+    notify('目前未連線至資料庫，不能完成結帳。');
   };
 
   const removeShift = async (shift: Shift, origin: 'admin' | 'staff', reason = '') => {
@@ -565,34 +564,20 @@ export default function Home() {
       }
       return;
     }
-    setShifts((current) => current.filter((item) => item.id !== shift.id));
-    setModal(null);
-    notify(origin === 'admin' && isShiftLocked(shift) ? '已強制撤銷並留下稽核原因。' : '排班已撤銷。');
+    notify('目前未連線至資料庫，不能撤銷排班。');
   };
 
   const exportCsv = async (kind: 'appointments' | 'shifts' | 'customers') => {
     if (appMode === 'live') {
       try {
-        await api.download(kind);
+        await api.download(kind, exportStart, exportEnd);
         notify('已從 MySQL 匯出 CSV。');
       } catch (error) {
         notify(error instanceof Error ? error.message : '匯出失敗');
       }
       return;
     }
-    const rows = kind === 'appointments'
-      ? [['訂單編號', '日期', '開始', '結束', '客戶', '師傅', '方案', '場地', '狀態', '金額'], ...appointments.map((item) => [item.id, item.date, item.start, item.end, item.customer, item.staff, item.service, `${item.location}/${item.room}`, item.status, String(item.total)])]
-      : kind === 'shifts'
-        ? [['排班編號', '師傅', '日期', '開始', '結束', '來源'], ...shifts.map((item) => [item.id, item.staff, item.date, item.start, item.end, item.source])]
-        : [['客戶流水', '客戶名稱', '客戶 ID（手機，可多支）', '到訪次數', '累計消費'], ...customers.map((item) => [item.vipSerial, item.name, item.phones.join('、'), String(item.visits), String(item.spent)])];
-    const csv = `\uFEFF${rows.map((row) => row.map((cell) => `"${cell.replaceAll('"', '""')}"`).join(',')).join('\r\n')}`;
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `equalspa-${kind}-20260822.csv`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    notify('CSV 已產生；正式版會依你選擇的日期範圍從 MySQL 匯出。');
+    notify('目前未連線至資料庫，不能匯出資料。');
   };
 
   const updateAppointmentStatus = async (appointment: Appointment, status: Appointment['status']) => {
@@ -618,9 +603,7 @@ export default function Home() {
       }
       return;
     }
-    setAppointments((current) => current.map((item) => item.id === appointment.id ? { ...item, status } : item));
-    setModal(null);
-    notify(`預約已更新為「${status}」。`);
+    notify('目前未連線至資料庫，不能更新預約。');
   };
 
   const saveAppointmentEdit = async (event: FormEvent<HTMLFormElement>, appointment: Appointment) => {
@@ -694,9 +677,7 @@ export default function Home() {
       }
       return;
     }
-    setStaff((current) => [...current, { id: `ST-${String(current.length + 1).padStart(3, '0')}`, name, category: categoryLabel, status: '在職', lineConnected: false, privateProfile: true }]);
-    setModal(null);
-    notify(`${name} 已加入員工原型資料。`);
+    notify('目前未連線至資料庫，不能新增員工。');
   };
 
   const toggleStaffStatus = async (member: typeof staff[number]) => {
@@ -711,8 +692,22 @@ export default function Home() {
       }
       return;
     }
-    setStaff((current) => current.map((item) => item.id === member.id ? { ...item, status: nextStatus } : item));
-    notify(`${member.name} 已${nextStatus === '在職' ? '恢復在職' : '設為暫時退役'}。`);
+    notify('目前未連線至資料庫，不能更新員工狀態。');
+  };
+
+  const permanentlyDeleteStaff = async (event: FormEvent<HTMLFormElement>, member: StaffMember) => {
+    event.preventDefault();
+    if (!member.apiId || !canManageAll) return notify('你沒有永久刪除員工的權限。');
+    const data = new FormData(event.currentTarget);
+    const reason = String(data.get('reason') || '').trim();
+    try {
+      await api.deleteStaff(member.apiId, reason);
+      setStaff((current) => current.filter((item) => item.id !== member.id));
+      setModal(null);
+      notify(`${member.name} 已永久刪除。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '永久刪除員工失敗');
+    }
   };
 
   const assignReturnRuleSet = async (member: typeof staff[number], setId: number) => {
@@ -746,8 +741,7 @@ export default function Home() {
       }
       return;
     }
-    setModal(null);
-    notify('優惠規則已加入原型。');
+    notify('目前未連線至資料庫，不能新增優惠。');
   };
 
   const savePromotion = async (event: FormEvent<HTMLFormElement>, id: string) => {
@@ -803,8 +797,7 @@ export default function Home() {
       }
       return;
     }
-    setModal(null);
-    notify('使用者原型已建立；真實 PIN 不會寫入 HTML。');
+    notify('目前未連線至資料庫，不能新增使用者。');
   };
 
   const deactivateAdminUser = async (user: (typeof adminUsers)[number]) => {
@@ -822,10 +815,13 @@ export default function Home() {
   };
 
   const renderDashboard = () => {
+    const inService = todayAppointments.filter((item) => item.status === '服務中');
+    const todayPendingCheckout = todayAppointments.filter((item) => item.status === '待結帳');
+    const pendingVenue = todayAppointments.filter((item) => item.location === '待確認' || item.room === '待確認');
     const metrics = [
-      { label: '今日預約', value: String(todayAppointments.length), note: '含 2 筆進行中' },
-      { label: '服務中', value: String(todayAppointments.filter((item) => item.status === '服務中').length), note: '2 間房使用中' },
-      { label: '待結帳', value: String(pendingCheckout.length), note: isViewer ? '金額已隱藏' : `共 ${formatCurrency(pendingCheckout.reduce((sum, item) => sum + item.total, 0))}` },
+      { label: '今日預約', value: String(todayAppointments.length), note: `含 ${inService.length} 筆進行中` },
+      { label: '服務中', value: String(inService.length), note: `${inService.filter((item) => item.location === '店內').length} 間房使用中` },
+      { label: '待結帳', value: String(todayPendingCheckout.length), note: isViewer ? '金額已隱藏' : `共 ${formatCurrency(todayPendingCheckout.reduce((sum, item) => sum + item.total, 0))}` },
       sensitiveVisible
         ? { label: '今日營收', value: completedRevenue.toLocaleString('zh-TW'), note: '依已完成訂單計算', currency: true }
         : isStaffUser
@@ -849,20 +845,21 @@ export default function Home() {
                   <StatusPill status={appointment.status} /><span className="row-arrow">›</span>
                 </button>
               ))}
+              {todayAppointments.length === 0 && <div className="empty-state">今天尚無預約。</div>}
             </div>
           </section>
         </div>
         <aside className="right-column">
           <section className="panel room-panel">
-            <div className="panel-heading compact"><div><p className="eyebrow">ROOM STATUS</p><h2>空間使用</h2></div><span className="room-count">2 / 2</span></div>
-            <div className="room-card occupied"><span>房間 1</span><strong>Harry・服務中</strong><small>預計 17:30 結束</small></div>
-            <div className="room-card occupied"><span>房間 2</span><strong>沐恩・服務中</strong><small>預計 18:30 結束</small></div>
-            <div className="notice">18:00 預約尚未分配房間，可改為外出場地或等待客服確認。</div>
+            <div className="panel-heading compact"><div><p className="eyebrow">ROOM STATUS</p><h2>空間使用</h2></div><span className="room-count">{inService.filter((item) => item.location === '店內').length} / {rooms.length}</span></div>
+            {rooms.map((room) => { const appointment = inService.find((item) => item.room === room.name); return <div className={appointment ? 'room-card occupied' : 'room-card'} key={room.id}><span>{room.name}</span><strong>{appointment ? `${appointment.staff}・服務中` : '目前空房'}</strong><small>{appointment ? `預計 ${appointment.end} 結束` : '等待預約'}</small></div>; })}
+            {rooms.length === 0 && <div className="empty-state">資料庫尚未建立房間資料。</div>}
+            {pendingVenue.length > 0 && <div className="notice">今天有 {pendingVenue.length} 筆預約尚未分配場地，請由客服確認。</div>}
           </section>
           <section className="panel action-panel">
             <p className="eyebrow">NEEDS ATTENTION</p><h2>需要處理</h2>
             <button onClick={() => sensitiveVisible ? navigateTo('checkout') : notify('帳務資訊需使用客服、店長或 Admin 帳號登入。')}><span className="action-number">{pendingCheckout.length}</span><div><strong>待結帳訂單</strong><small>{sensitiveVisible ? '現金或轉帳待確認' : '帳務內容已隱藏'}</small></div><b>→</b></button>
-            <button onClick={() => navigateTo('appointments')}><span className="action-number amber">1</span><div><strong>場地待確認</strong><small>今天 18:00 的預約</small></div><b>→</b></button>
+            <button onClick={() => navigateTo('appointments')}><span className="action-number amber">{pendingVenue.length}</span><div><strong>場地待確認</strong><small>{pendingVenue.length ? '請開啟預約明細處理' : '目前沒有待確認場地'}</small></div><b>→</b></button>
           </section>
         </aside>
       </div>
@@ -894,7 +891,7 @@ export default function Home() {
   );
 
   const renderSchedule = () => {
-    const days = week === 'current' ? weekDays : nextWeekDays;
+    const days = week === 'current' ? currentWeekDays : followingWeekDays;
     const rosterStaff = appMode === 'live' ? staff : staff.filter((item) => item.status === '在職');
     return (
       <>
@@ -903,7 +900,7 @@ export default function Home() {
           <div className="toolbar"><div className="segmented"><button className={week === 'current' ? 'active' : ''} onClick={() => setWeek('current')}>本週</button><button className={week === 'next' ? 'active' : ''} onClick={() => setWeek('next')}>下週</button></div><div className="filter-note"><strong>{rosterStaff.length}</strong><span>{appMode === 'live' ? '位師傅（全部）' : '位在職師傅'}</span></div><div className="toolbar-spacer" />{appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('shifts')}>⇩ 匯出班表</button>}{(canManageAll || isStaffUser) && <button className="primary-button" onClick={() => setModal({ type: 'shift', origin: isStaffUser ? 'staff' : 'admin' })}>＋ 新增排班</button>}</div>
           <div className="roster-grid" style={{ gridTemplateColumns: `120px repeat(${days.length}, minmax(112px, 1fr))` }}>
             <div className="roster-corner">師傅</div>
-            {days.map((day) => <div className={day.date === '2026-08-22' ? 'roster-day today' : 'roster-day'} key={day.date}><strong>{day.day}</strong><span>{day.label}</span></div>)}
+            {days.map((day) => <div className={day.date === todayIso ? 'roster-day today' : 'roster-day'} key={day.date}><strong>{day.day}</strong><span>{day.label}</span></div>)}
             {rosterStaff.map((member) => (
               <div className="roster-row" key={member.id} style={{ gridColumn: `1 / span ${days.length + 1}`, gridTemplateColumns: `120px repeat(${days.length}, minmax(112px, 1fr))` }}>
                 <div className="roster-name"><span className="staff-avatar">{member.name.slice(0, 1)}</span><div><strong>{member.name}</strong><small>{member.category.replace('師傅', '')}</small></div></div>
@@ -922,7 +919,7 @@ export default function Home() {
 
   const renderOperations = () => {
     const columns = ['已確認', '已報到', '服務中', '待結帳'];
-    return <div className="kanban">{columns.map((status) => <section className="kanban-column" key={status}><header><div><strong>{status}</strong><span>{appointments.filter((item) => item.status === status).length}</span></div>{status === '服務中' && <small>房間 2 / 2</small>}</header><div className="kanban-list">{appointments.filter((item) => item.status === status).map((item) => <button className="kanban-card" key={item.id} onClick={() => setModal({ type: 'appointmentDetail', id: item.id })}><span className="kanban-time">{item.start}–{item.end}</span><strong>{item.customer}・{item.staff}</strong><small>{item.service}</small><small>{item.room}</small></button>)}{appointments.filter((item) => item.status === status).length === 0 && <div className="kanban-empty">目前沒有項目</div>}</div></section>)}</div>;
+    return <div className="kanban">{columns.map((status) => <section className="kanban-column" key={status}><header><div><strong>{status}</strong><span>{appointments.filter((item) => item.status === status).length}</span></div>{status === '服務中' && <small>房間 {appointments.filter((item) => item.status === '服務中' && item.location === '店內').length} / {rooms.length}</small>}</header><div className="kanban-list">{appointments.filter((item) => item.status === status).map((item) => <button className="kanban-card" key={item.id} onClick={() => setModal({ type: 'appointmentDetail', id: item.id })}><span className="kanban-time">{item.start}–{item.end}</span><strong>{item.customer}・{item.staff}</strong><small>{item.service}</small><small>{item.room}</small></button>)}{appointments.filter((item) => item.status === status).length === 0 && <div className="kanban-empty">目前沒有項目</div>}</div></section>)}</div>;
   };
 
   const renderCheckout = () => (
@@ -940,7 +937,21 @@ export default function Home() {
   );
 
   const renderStaff = () => (
-    <section className="panel table-panel"><div className="toolbar"><div className="filter-note"><strong>{staff.filter((item) => item.status === '在職').length}</strong><span>位在職師傅</span></div><div className="toolbar-spacer" />{canManageAll && <button className="primary-button" onClick={() => setModal({ type: 'staff' })}>＋ 新增員工</button>}</div><div className="staff-card-grid">{staff.map((member) => <article className={member.status === '暫時退役' ? 'staff-card retired' : 'staff-card'} key={member.id}><header>{member.photoUrl ? <img className="large-avatar staff-photo" src={member.photoUrl} alt={`${member.name}師傅`} /> : <span className="large-avatar">{member.name.slice(0, 1)}</span>}<StatusPill status={member.status} /></header><h3>{member.name}</h3><p>{member.category}・{[member.height && `${member.height} cm`, member.weight && `${member.weight} kg`].filter(Boolean).join('・') || member.id}</p><div className="staff-meta"><span>{member.lineConnected ? 'LINE 已串接' : 'LINE 待串接'}</span><span>{isViewer || isStaffUser ? '公開基本資料' : '私密資料已分離'}</span></div>{canManageAll && <label className="staff-rule-select">回帳表<select value={member.returnRuleSetId || returnRuleSets[0]?.id || ''} onChange={(event) => assignReturnRuleSet(member, Number(event.target.value))}>{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label>}{canManageAll && <button className="text-button" onClick={() => toggleStaffStatus(member)}>{member.status === '在職' ? '暫時退役' : '恢復在職'}</button>}</article>)}</div>{sensitiveVisible && <div className="privacy-note"><strong>健康資訊不顯示於此畫面</strong><span>私密欄位存放在獨立加密資料表，且不包含在一般匯出中。</span></div>}</section>
+    <section className="panel table-panel">
+      <div className="toolbar"><div className="filter-note"><strong>{staff.filter((item) => item.status === '在職').length}</strong><span>位在職師傅</span></div><div className="toolbar-spacer" />{canManageAll && <button className="primary-button" onClick={() => setModal({ type: 'staff' })}>＋ 新增員工</button>}</div>
+      <div className="staff-card-grid">{staff.map((member) => (
+        <article className={member.status === '暫時退役' ? 'staff-card retired' : 'staff-card'} key={member.id}>
+          <header>{member.photoUrl ? <img className="large-avatar staff-photo" src={member.photoUrl} alt={`${member.name}師傅`} /> : <span className="large-avatar">{member.name.slice(0, 1)}</span>}<StatusPill status={member.status} /></header>
+          <h3>{member.name}</h3>
+          <p>{member.category}・{[member.height && `${member.height} cm`, member.weight && `${member.weight} kg`].filter(Boolean).join('・') || member.id}</p>
+          <div className="staff-meta"><span>{member.lineConnected ? 'LINE 已串接' : 'LINE 待串接'}</span><span>{isViewer || isStaffUser ? '公開基本資料' : '私密資料已分離'}</span></div>
+          {canManageAll && returnRuleSets.length > 0 && <label className="staff-rule-select">回帳表<select value={member.returnRuleSetId || returnRuleSets[0]?.id || ''} onChange={(event) => assignReturnRuleSet(member, Number(event.target.value))}>{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label>}
+          {canManageAll && <div className="staff-management-actions"><button className="text-button" onClick={() => toggleStaffStatus(member)}>{member.status === '在職' ? '暫時退役' : '恢復在職'}</button><button className="danger-text" onClick={() => setModal({ type: 'staffDelete', id: member.id })}>永久刪除</button></div>}
+        </article>
+      ))}</div>
+      {staff.length === 0 && <div className="empty-state">資料庫目前沒有師傅資料。</div>}
+      {sensitiveVisible && <div className="privacy-note"><strong>健康資訊不顯示於此畫面</strong><span>私密欄位存放在獨立加密資料表，且不包含在一般匯出中。</span></div>}
+    </section>
   );
 
   const renderServices = () => (
@@ -948,7 +959,14 @@ export default function Home() {
   );
 
   const renderExports = () => (
-    <div className="exports-layout"><section className="panel export-control"><div className="panel-heading"><div><p className="eyebrow">EXPORT RANGE</p><h2>選擇資料期間</h2></div></div><div className="form-grid two"><label>開始日期<input type="date" defaultValue="2026-08-01" /></label><label>結束日期<input type="date" defaultValue="2026-08-22" /></label></div><div className="export-card-grid"><button onClick={() => exportCsv('appointments')}><span>預約與訂單</span><strong>{appointments.length} 筆示範資料</strong><small>CSV・Excel 可開啟</small></button><button onClick={() => exportCsv('shifts')}><span>師傅排班</span><strong>{shifts.length} 筆示範資料</strong><small>CSV・Excel 可開啟</small></button><button onClick={() => exportCsv('customers')}><span>客戶資料</span><strong>{customers.length} 筆示範資料</strong><small>不含私密健康資訊</small></button></div></section><aside className="panel audit-panel"><p className="eyebrow">AUDIT LOG</p><h2>最近強制操作</h2><article><span>A</span><div><strong>Admin 修改訂單 AP-0821-014</strong><small>更正師傅名稱・今天 15:48</small></div></article><article><span>J</span><div><strong>Jerry 強制撤銷班表</strong><small>師傅臨時請假・今天 14:12</small></div></article><article><span>A</span><div><strong>Admin 更新 D 方案價格</strong><small>NT$ 2,900 → 3,000・昨天</small></div></article></aside></div>
+    <div className="exports-layout">
+      <section className="panel export-control">
+        <div className="panel-heading"><div><p className="eyebrow">EXPORT RANGE</p><h2>選擇資料期間</h2></div></div>
+        <div className="form-grid two"><label>開始日期<input type="date" value={exportStart} onChange={(event) => setExportStart(event.target.value)} /></label><label>結束日期<input type="date" value={exportEnd} min={exportStart} onChange={(event) => setExportEnd(event.target.value)} /></label></div>
+        <div className="export-card-grid"><button onClick={() => exportCsv('appointments')}><span>預約與訂單</span><strong>{appointments.length} 筆資料庫紀錄</strong><small>CSV・Excel 可開啟</small></button><button onClick={() => exportCsv('shifts')}><span>師傅排班</span><strong>{shifts.length} 筆資料庫紀錄</strong><small>CSV・Excel 可開啟</small></button><button onClick={() => exportCsv('customers')}><span>客戶資料</span><strong>{customers.length} 筆資料庫紀錄</strong><small>不含私密健康資訊</small></button></div>
+      </section>
+      <aside className="panel audit-panel"><p className="eyebrow">AUDIT LOG</p><h2>最近操作紀錄</h2>{auditLogs.map((item) => <article key={item.id}><span>{item.actorName.slice(0, 1)}</span><div><strong>{item.actorName}・{item.action} {item.entityType}{item.entityId ? ` #${item.entityId}` : ''}</strong><small>{item.reason || '未填寫原因'}・{item.createdAt.replace('T', ' ').slice(0, 16)}</small></div></article>)}{auditLogs.length === 0 && <div className="empty-state">資料庫目前沒有操作紀錄。</div>}</aside>
+    </div>
   );
 
   const renderUsers = () => (
@@ -975,8 +993,9 @@ export default function Home() {
   );
 
   const renderStaffPortal = () => {
-    const harryShifts = shifts.filter((item) => item.staff === 'Harry');
-    return <div className="portal-layout"><section className="phone-preview"><header><span className="brand-seal">E</span><div><small>伊果 SPA 師傅班表</small><strong>Harry，辛苦了</strong></div><span className="link-badge">專屬連結</span></header><div className="portal-rule"><strong>排班提醒</strong><span>開始前 90 分鐘內不可自行變更；需要協助請聯絡店長。</span></div><div className="portal-week"><div className="portal-week-head"><strong>我的班表</strong><button onClick={() => setModal({ type: 'shift', origin: 'staff' })}>＋ 新增</button></div>{harryShifts.map((shift) => <button className="portal-shift" key={shift.id} onClick={() => setModal({ type: 'shiftDetail', id: shift.id, origin: 'staff' })}><span><strong>{shift.date.slice(5).replace('-', '/')}</strong><small>{shift.date === '2026-08-22' ? '今天' : '已排班'}</small></span><div><strong>{shift.start}–{shift.end}</strong><small>共 {(toMinutes(shift.end) - toMinutes(shift.start)) / 60} 小時</small></div><StatusPill status={isShiftLocked(shift) ? '已鎖定' : '可調整'} /></button>)}</div></section><aside className="panel portal-notes"><p className="eyebrow">NO-LOGIN LINK</p><h2>免輸入密碼，但不是公開網址</h2><p>正式版由 LINE Bot 傳送每位師傅自己的不可猜測連結，只能看到與修改自己的班表。</p><div><strong>可查看</strong><span>自己的本週／下週班表</span></div><div><strong>可操作</strong><span>新增至少 2 小時的班、撤銷未鎖定班</span></div><div><strong>看不到</strong><span>其他師傅、客戶電話、健康資料、營收</span></div></aside></div>;
+    const previewStaff = staff.find((item) => item.status === '在職');
+    const previewShifts = previewStaff ? shifts.filter((item) => item.staffId === previewStaff.id) : [];
+    return <div className="portal-layout"><section className="phone-preview"><header><span className="brand-seal">E</span><div><small>伊果 SPA 師傅班表</small><strong>{previewStaff ? `${previewStaff.name}，辛苦了` : '尚無在職師傅'}</strong></div><span className="link-badge">資料庫預覽</span></header><div className="portal-rule"><strong>排班提醒</strong><span>開始前 90 分鐘內不可自行變更；需要協助請聯絡店長。</span></div><div className="portal-week"><div className="portal-week-head"><strong>我的班表</strong></div>{previewShifts.map((shift) => <div className="portal-shift" key={shift.id}><span><strong>{shift.date.slice(5).replace('-', '/')}</strong><small>{shift.date === todayIso ? '今天' : '已排班'}</small></span><div><strong>{shift.start}–{shift.end}</strong><small>共 {(toMinutes(shift.end) - toMinutes(shift.start)) / 60} 小時</small></div><StatusPill status={isShiftLocked(shift) ? '已鎖定' : '可調整'} /></div>)}{previewShifts.length === 0 && <div className="empty-state">此師傅目前沒有班表。</div>}</div></section><aside className="panel portal-notes"><p className="eyebrow">NO-LOGIN LINK</p><h2>免輸入密碼，但不是公開網址</h2><p>由 LINE Bot 傳送每位師傅自己的不可猜測連結，只能看到與修改自己的班表。</p><div><strong>可查看</strong><span>自己的本週／下週班表</span></div><div><strong>可操作</strong><span>新增至少 2 小時的班、撤銷未鎖定班</span></div><div><strong>看不到</strong><span>其他師傅、客戶電話、健康資料、營收</span></div></aside></div>;
   };
 
   const renderActiveSection = () => {
@@ -996,11 +1015,11 @@ export default function Home() {
   };
 
   if (appMode === 'checking') {
-    return <main className="auth-shell"><section className="auth-card"><span className="brand-seal">E</span><p className="eyebrow">EQUAL SPA</p><h1>正在確認管理服務</h1><p>連線後會自動選擇 MySQL 真實資料或安全示範模式。</p><div className="auth-loading" /></section></main>;
+    return <main className="auth-shell"><section className="auth-card"><span className="brand-seal">E</span><p className="eyebrow">EQUAL SPA</p><h1>正在讀取管理資料</h1><p>正在連線 FastAPI 與 MySQL。</p><div className="auth-loading" /></section></main>;
   }
 
   if (appMode === 'staffLink') {
-    return <main className="staff-standalone"><section className="staff-portal-card"><header><span className="brand-seal">E</span><div><small>伊果 SPA 師傅班表</small><strong>{staffPortalName}，辛苦了</strong></div><span className="link-badge">專屬連結</span></header><div className="portal-rule"><strong>排班提醒</strong><span>每段至少 2 小時；開始前 90 分鐘內不可自行新增或撤銷，請聯絡店長。</span></div>{staffPortalError ? <div className="auth-error">{staffPortalError}</div> : <><form className="public-shift-form" onSubmit={(event) => addShift(event, 'staff')}><label>日期<input name="date" type="date" required /></label><label>開始<input name="start" type="time" required /></label><label>結束<input name="end" type="time" required /></label><button className="primary-button" type="submit">新增排班</button></form><div className="portal-week"><div className="portal-week-head"><strong>我的班表</strong><span>{shifts.length} 段</span></div>{shifts.map((shift) => <article className="portal-shift public-shift" key={shift.id}><span><strong>{shift.date.slice(5).replace('-', '/')}</strong><small>{isShiftLocked(shift) ? '已鎖定' : '可調整'}</small></span><div><strong>{shift.start}–{shift.end}</strong><small>共 {(toMinutes(shift.end) - toMinutes(shift.start)) / 60} 小時</small></div><button className="danger-text" disabled={isShiftLocked(shift)} onClick={() => removeShift(shift, 'staff')}>{isShiftLocked(shift) ? '洽店長' : '撤銷'}</button></article>)}{shifts.length === 0 && <div className="empty-state">本週與下週尚未排班。</div>}</div></>}</section>{toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}</main>;
+    return <main className="staff-standalone"><section className="staff-portal-card"><header><span className="brand-seal">E</span><div><small>伊果 SPA 師傅班表</small><strong>{staffPortalName}，辛苦了</strong></div><span className="link-badge">專屬連結</span></header><div className="portal-rule"><strong>排班提醒</strong><span>每段至少 2 小時；開始前 90 分鐘內不可自行新增或撤銷，請聯絡店長。</span></div>{staffPortalError ? <div className="auth-error">{staffPortalError}</div> : <><form className="public-shift-form" onSubmit={(event) => addShift(event, 'staff')}><label>日期<input name="date" type="date" min={todayIso} defaultValue={bookingDefault.date} required /></label><label>開始<input name="start" type="time" defaultValue={bookingDefault.time} required /></label><label>結束<input name="end" type="time" required /></label><button className="primary-button" type="submit">新增排班</button></form><div className="portal-week"><div className="portal-week-head"><strong>我的班表</strong><span>{shifts.length} 段</span></div>{shifts.map((shift) => <article className="portal-shift public-shift" key={shift.id}><span><strong>{shift.date.slice(5).replace('-', '/')}</strong><small>{isShiftLocked(shift) ? '已鎖定' : '可調整'}</small></span><div><strong>{shift.start}–{shift.end}</strong><small>共 {(toMinutes(shift.end) - toMinutes(shift.start)) / 60} 小時</small></div><button className="danger-text" disabled={isShiftLocked(shift)} onClick={() => removeShift(shift, 'staff')}>{isShiftLocked(shift) ? '洽店長' : '撤銷'}</button></article>)}{shifts.length === 0 && <div className="empty-state">本週與下週尚未排班。</div>}</div></>}</section>{toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}</main>;
   }
 
   return (
@@ -1013,8 +1032,8 @@ export default function Home() {
       </aside>
 
       <section className="workspace">
-        <div className={(appMode === 'live' || appMode === 'staff' || appMode === 'public') ? 'prototype-ribbon live-ribbon' : 'prototype-ribbon'}><span>{appMode === 'live' ? '管理帳號' : appMode === 'staff' ? '員工模式' : appMode === 'public' ? '公開唯讀' : '離線示範'}</span>{appMode === 'live' ? '操作會經 FastAPI 權限驗證並保存到 MySQL。' : appMode === 'staff' ? '只顯示自己的班表與訂單，帳務總覽已隱藏。' : '可查看營運排程；客戶、帳務與營收等敏感資訊已隱藏。'}</div>
-        <header className="topbar"><div><p className="eyebrow">{headings[active].eyebrow}</p><h1>{headings[active].title}</h1><span>{active === 'dashboard' ? `目前登入：${currentLoginLabel}` : headings[active].description}</span></div><div className="topbar-actions"><button className="icon-button" aria-label="通知" onClick={() => notify('目前沒有新的系統通知。')}>●</button>{canCreateAppointments && !['staffPortal', 'users'].includes(active) && <button className="primary-button" onClick={() => setModal({ type: 'appointment' })}>＋ 新增預約</button>}</div></header>
+        <div className={(appMode === 'live' || appMode === 'staff' || appMode === 'public') ? 'prototype-ribbon live-ribbon' : 'prototype-ribbon'}><span>{appMode === 'live' ? '管理帳號' : appMode === 'staff' ? '員工模式' : appMode === 'public' ? '公開唯讀' : '資料庫未連線'}</span>{appMode === 'live' ? '操作會經 FastAPI 權限驗證並保存到 MySQL。' : appMode === 'staff' ? '只顯示自己的班表與訂單，帳務總覽已隱藏。' : appMode === 'public' ? '資料均來自 MySQL；敏感資訊已隱藏。' : connectionError}</div>
+        <header className="topbar"><div><p className="eyebrow">{active === 'dashboard' ? todayLabel : headings[active].eyebrow}</p><h1>{headings[active].title}</h1><span>{active === 'dashboard' ? `目前登入：${currentLoginLabel}` : headings[active].description}</span></div><div className="topbar-actions"><button className="icon-button" aria-label="通知" onClick={() => notify('目前沒有新的系統通知。')}>●</button>{canCreateAppointments && !['staffPortal', 'users'].includes(active) && <button className="primary-button" onClick={() => setModal({ type: 'appointment' })}>＋ 新增預約</button>}</div></header>
         {renderActiveSection()}
       </section>
 
@@ -1022,13 +1041,13 @@ export default function Home() {
 
       {modal?.type === 'account' && <Modal title="登入資訊" subtitle="訪客可直接唯讀；師傅使用姓名與手機，客服與管理者使用帳號及 PIN。" onClose={() => setModal(null)} wide><div className="account-login-grid"><form className="modal-form account-login-card" onSubmit={login}><p className="eyebrow">MANAGEMENT</p><h3>客服／店長／Admin</h3><label>登入帳號<input name="username" required autoCapitalize="none" autoComplete="username" placeholder="例如：admin" /></label><label>數字 PIN<input name="pin" required type="password" inputMode="numeric" pattern="[0-9]+" minLength={4} autoComplete="current-password" /></label><button className="primary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '管理帳號登入'}</button></form><form className="modal-form account-login-card" onSubmit={loginStaff}><p className="eyebrow">STAFF</p><h3>師傅免密碼登入</h3><label>選擇自己的名字<select name="staffId" required defaultValue={staff[0]?.apiId}>{staff.filter((item) => item.status === '在職').map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label><label>手機 ID<input name="staffPhone" required inputMode="tel" pattern="09[0-9]{8}" placeholder="09xxxxxxxx" /></label><button className="secondary-button full" disabled={loginBusy}>{loginBusy ? '切換中…' : '以員工身分進入'}</button></form></div>{loginError && <div className="auth-error modal-auth-error">{loginError}</div>}<div className="form-note">從 LINE Bot 開啟後台時會以安全連結直接登入，不會再出現登入畫面。</div></Modal>}
 
-      {modal?.type === 'appointment' && <Modal title="新增預約" subtitle="所有入口最少提前 90 分鐘，並檢查師傅與房間衝突。" onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={addAppointment}><div className="form-grid two"><label>客戶姓名<input name="customer" required placeholder="例如：王先生" /></label><label>手機號碼<input name="phone" required inputMode="numeric" pattern="09[0-9]{8}" placeholder="09xxxxxxxx" /></label><label>日期<input name="date" type="date" defaultValue="2026-08-23" required /></label><label>開始時間<input name="start" type="time" defaultValue="10:00" required /></label><label>服務方案<select name="serviceId" defaultValue={plans.find((item) => item.code === 'C')?.id}>{plans.filter((item) => item.active).map((plan) => <option value={plan.id} key={plan.id}>{plan.code}・{plan.name}｜{plan.duration} 分｜{formatCurrency(plan.price)}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue="0"><option value="0">不使用優惠</option>{promotions.filter((item) => item.active && item.kind.includes('折扣')).map((item) => <option key={item.id} value={item.apiId}>{item.name}｜{item.kind === '百分比折扣' ? `${item.value}%` : `折 ${formatCurrency(item.value)}`}</option>)}</select></label><label>指派師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label>場地／房間<select name="room" defaultValue="房間 1">{rooms.map((room) => <option key={room.id}>{room.name}</option>)}<option>外出場地</option><option>待確認</option></select></label><label className="span-two">客服備註<textarea name="note" rows={3} placeholder="不公開給客戶的內部備註" /></label></div><div className="form-note">例如 09:00 當下最早可預約 10:30；後端也會阻止重疊或過近的時間。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">建立預約</button></footer></form></Modal>}
+      {modal?.type === 'appointment' && <Modal title="新增預約" subtitle="所有入口最少提前 90 分鐘，並檢查師傅與房間衝突。" onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={addAppointment}><div className="form-grid two"><label>客戶姓名<input name="customer" required placeholder="例如：王先生" /></label><label>手機號碼<input name="phone" required inputMode="numeric" pattern="09[0-9]{8}" placeholder="09xxxxxxxx" /></label><label>日期<input name="date" type="date" min={todayIso} defaultValue={bookingDefault.date} required /></label><label>開始時間<input name="start" type="time" defaultValue={bookingDefault.time} required /></label><label>服務方案<select name="serviceId" defaultValue={plans.find((item) => item.code === 'C')?.id}>{plans.filter((item) => item.active).map((plan) => <option value={plan.id} key={plan.id}>{plan.code}・{plan.name}｜{plan.duration} 分｜{formatCurrency(plan.price)}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue="0"><option value="0">不使用優惠</option>{promotions.filter((item) => item.active && item.kind.includes('折扣')).map((item) => <option key={item.id} value={item.apiId}>{item.name}｜{item.kind === '百分比折扣' ? `${item.value}%` : `折 ${formatCurrency(item.value)}`}</option>)}</select></label><label>指派師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label>場地／房間<select name="room" defaultValue={rooms[0]?.name}>{rooms.map((room) => <option key={room.id}>{room.name}</option>)}<option>外出場地</option><option>待確認</option></select></label><label className="span-two">客服備註<textarea name="note" rows={3} placeholder="不公開給客戶的內部備註" /></label></div><div className="form-note">例如 09:00 當下最早可預約 10:30；後端也會阻止重疊或過近的時間。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">建立預約</button></footer></form></Modal>}
 
       {modal?.type === 'appointmentDetail' && selectedAppointment && <Modal title={selectedAppointment.id} subtitle={`${selectedAppointment.date}　${selectedAppointment.start}–${selectedAppointment.end}`} onClose={() => setModal(null)}><div className="detail-stack"><div className="detail-hero"><div><span>客戶</span><strong>{selectedAppointment.customer}</strong><small>{selectedAppointment.customerSerial ? `${selectedAppointment.customerSerial}（流水）・` : ''}{selectedAppointment.phone}</small></div><StatusPill status={selectedAppointment.status} /></div><dl><div><dt>師傅</dt><dd>{selectedAppointment.staff}</dd></div><div><dt>服務方案</dt><dd>{selectedAppointment.service}</dd></div><div><dt>優惠</dt><dd>{selectedAppointment.promotionName || '未使用'}</dd></div><div><dt>場地</dt><dd>{selectedAppointment.location}・{selectedAppointment.room}</dd></div><div><dt>應收金額</dt><dd>{isViewer ? '敏感資訊已隱藏' : formatCurrency(selectedAppointment.total)}</dd></div>{!isViewer && <div><dt>師傅應回帳</dt><dd>{formatCurrency(selectedAppointment.expectedReturn || 0)}</dd></div>}<div><dt>付款狀態</dt><dd>{isViewer ? '已隱藏' : selectedAppointment.payment}</dd></div></dl>{!isViewer && selectedAppointment.note && <div className="detail-note"><strong>客服備註</strong><p>{selectedAppointment.note}</p></div>}<div className="status-actions">{canEditAppointments && <button onClick={() => setModal({ type: 'appointmentEdit', id: selectedAppointment.id })}>編輯整張訂單</button>}{canEditAppointments && selectedAppointment.status === '已確認' && <button onClick={() => updateAppointmentStatus(selectedAppointment, '已報到')}>標記報到</button>}{(canEditAppointments || isStaffUser) && ['已確認', '已報到', '服務中'].includes(selectedAppointment.status) && <button onClick={() => updateAppointmentStatus(selectedAppointment, '待結帳')}>服務完成</button>}{canEditAppointments && selectedAppointment.status === '待結帳' && <button onClick={() => setModal({ type: 'checkout', id: selectedAppointment.id })}>開始結帳</button>}{canEditAppointments && <button className="danger-text" onClick={() => updateAppointmentStatus(selectedAppointment, '已取消')}>取消預約</button>}</div></div></Modal>}
 
       {modal?.type === 'appointmentEdit' && selectedAppointment && <Modal title={`編輯 ${selectedAppointment.id}`} subtitle={canManageAll ? '店長與 Admin 可修改整張訂單所有欄位。' : '客服可調整預約與服務內容，金額需由店長或 Admin 處理。'} onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={(event) => saveAppointmentEdit(event, selectedAppointment)}><div className="form-grid two"><label>客戶姓名<input name="customer" defaultValue={selectedAppointment.customer} required /></label><label>手機號碼<input name="phone" defaultValue={selectedAppointment.phone} required /></label><label>日期<input name="date" type="date" defaultValue={selectedAppointment.date} required /></label><label>開始時間<input name="start" type="time" defaultValue={selectedAppointment.start} required /></label><label>服務方案<select name="serviceId" defaultValue={selectedAppointment.serviceId}>{plans.map((plan) => <option key={plan.id} value={plan.apiId}>{plan.code}・{plan.name}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue={selectedAppointment.promotionId || '0'}><option value="0">不使用優惠</option>{promotions.map((promotion) => <option key={promotion.id} value={promotion.apiId}>{promotion.name}</option>)}</select></label><label>指派師傅<select name="staffId" defaultValue={selectedAppointment.staffId}>{staff.filter((item) => item.status === '在職').map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label><label>場地／房間<select name="room" defaultValue={selectedAppointment.room}>{rooms.map((room) => <option key={room.id}>{room.name}</option>)}<option>外出場地</option><option>待確認</option></select></label><label>訂單狀態<select name="status" defaultValue={selectedAppointment.status}>{['待確認', '已確認', '已報到', '服務中', '待結帳', '已完成', '已取消'].map((status) => <option key={status}>{status}</option>)}</select></label>{canManageAll && <><label>原價<input name="basePrice" type="number" min="0" defaultValue={selectedAppointment.basePrice || 0} /></label><label>折扣<input name="discountAmount" type="number" min="0" defaultValue={selectedAppointment.discountAmount || 0} /></label><label>加價<input name="extraAmount" type="number" min="0" defaultValue={selectedAppointment.extraAmount || 0} /></label><label>訂單總額<input name="totalAmount" type="number" min="0" defaultValue={selectedAppointment.total} /></label></>}<label className="span-two">客服備註<textarea name="note" rows={3} defaultValue={selectedAppointment.note || ''} /></label><label className="span-two">修改原因<input name="reason" placeholder="例如：客戶改期、人工修正優惠" /></label></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存訂單</button></footer></form></Modal>}
 
-      {modal?.type === 'shift' && <Modal title={modal.origin === 'staff' ? '新增我的排班' : '新增師傅排班'} subtitle="每段至少 2 小時；師傅端需距開始時間超過 90 分鐘。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => addShift(event, modal.origin)}><div className="form-grid">{modal.origin === 'admin' && <label>師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<label>日期<input name="date" type="date" defaultValue="2026-08-24" required /></label><div className="form-grid two"><label>開始<input name="start" type="time" defaultValue="14:00" required /></label><label>結束<input name="end" type="time" defaultValue="18:00" required /></label></div></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">確認排班</button></footer></form></Modal>}
+      {modal?.type === 'shift' && <Modal title={modal.origin === 'staff' ? '新增我的排班' : '新增師傅排班'} subtitle="每段至少 2 小時；師傅端需距開始時間超過 90 分鐘。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => addShift(event, modal.origin)}><div className="form-grid">{modal.origin === 'admin' && <label>師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<label>日期<input name="date" type="date" min={todayIso} defaultValue={bookingDefault.date} required /></label><div className="form-grid two"><label>開始<input name="start" type="time" defaultValue={bookingDefault.time} required /></label><label>結束<input name="end" type="time" required /></label></div></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">確認排班</button></footer></form></Modal>}
 
       {modal?.type === 'shiftDetail' && selectedShift && <Modal title={`${selectedShift.staff} 的排班`} subtitle={`${selectedShift.date}　${selectedShift.start}–${selectedShift.end}`} onClose={() => setModal(null)}><div className="detail-stack"><div className="detail-hero"><div><span>建立來源</span><strong>{selectedShift.source}</strong><small>共 {(toMinutes(selectedShift.end) - toMinutes(selectedShift.start)) / 60} 小時</small></div><StatusPill status={isShiftLocked(selectedShift) ? '已鎖定' : '可調整'} /></div>{isShiftLocked(selectedShift) && <div className="locked-message">此班已進入開始前 90 分鐘範圍。師傅不能自行撤銷，店長或 Admin 強制處理時必須留下原因。</div>}{modal.origin === 'staff' ? <button className="danger-button full" onClick={() => removeShift(selectedShift, 'staff')}>{isShiftLocked(selectedShift) ? '聯絡店長處理' : '撤銷這段排班'}</button> : <form onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget); removeShift(selectedShift, 'admin', String(data.get('reason') || '')); }}><label className="field-label">{isShiftLocked(selectedShift) ? '強制撤銷原因' : '撤銷備註'}<textarea name="reason" rows={3} placeholder={isShiftLocked(selectedShift) ? '必填，例如：師傅臨時請假' : '選填'} /></label><button className="danger-button full" type="submit">{isShiftLocked(selectedShift) ? '強制撤銷並記錄' : '撤銷排班'}</button></form>}</div></Modal>}
 
@@ -1036,13 +1055,15 @@ export default function Home() {
 
       {modal?.type === 'service' && (() => { const plan = plans.find((item) => item.id === modal.id); return plan ? <Modal title={`編輯 ${plan.code} 方案`} subtitle="正式版會保存生效日期與每次價格修改紀錄。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => saveService(event, plan.id)}><label>方案名稱<input name="name" defaultValue={plan.name} required /></label><div className="form-grid two"><label>服務分鐘<input name="duration" type="number" min="30" step="10" defaultValue={plan.duration} required /></label><label>售價<input name="price" type="number" min="0" step="100" defaultValue={plan.price} required /></label></div><label className="checkbox-field"><input name="active" type="checkbox" defaultChecked={plan.active} />啟用此方案</label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">儲存變更</button></footer></form></Modal> : null; })()}
 
-      {modal?.type === 'promotion' && <Modal title="新增優惠或附加費" subtitle="規則會保留生效期間與計算方式。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={addPromotion}><label>規則名稱<input name="name" required placeholder="例如：週年慶折扣" /></label><div className="form-grid two"><label>計算方式<select name="calculationType"><option value="fixed_discount">固定折扣</option><option value="percent_discount">百分比折扣</option><option value="fixed_fee">固定加價</option><option value="per_30_minutes">每 30 分鐘</option><option value="per_km">每公里</option></select></label><label>金額／百分比<input name="value" type="number" min="0" required /></label><label>生效日期<input name="startsAt" type="date" defaultValue="2026-08-22" /></label><label>結束日期<input name="endsAt" type="date" /></label></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">新增規則</button></footer></form></Modal>}
+      {modal?.type === 'promotion' && <Modal title="新增優惠或附加費" subtitle="規則會保留生效期間與計算方式。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={addPromotion}><label>規則名稱<input name="name" required placeholder="例如：週年慶折扣" /></label><div className="form-grid two"><label>計算方式<select name="calculationType"><option value="fixed_discount">固定折扣</option><option value="percent_discount">百分比折扣</option><option value="fixed_fee">固定加價</option><option value="per_30_minutes">每 30 分鐘</option><option value="per_km">每公里</option></select></label><label>金額／百分比<input name="value" type="number" min="0" required /></label><label>生效日期<input name="startsAt" type="date" defaultValue={todayIso} /></label><label>結束日期<input name="endsAt" type="date" min={todayIso} /></label></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">新增規則</button></footer></form></Modal>}
 
       {modal?.type === 'promotionEdit' && (() => { const promotion = promotions.find((item) => item.id === modal.id); const typeValue = promotion?.kind === '百分比折扣' ? 'percent_discount' : promotion?.kind === '固定折扣' ? 'fixed_discount' : promotion?.kind === '每 30 分鐘' ? 'per_30_minutes' : promotion?.kind === '每公里' ? 'per_km' : 'fixed_fee'; return promotion ? <Modal title={`編輯 ${promotion.name}`} subtitle="儲存後，後台預約與 LINE Bot 優惠輪播會共用此規則。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => savePromotion(event, promotion.id)}><label>規則名稱<input name="name" defaultValue={promotion.name} required /></label><label>說明<input name="description" placeholder="顯示在 LINE Flex 卡片上的適用說明" /></label><div className="form-grid two"><label>計算方式<select name="calculationType" defaultValue={typeValue}><option value="fixed_discount">固定折扣</option><option value="percent_discount">百分比折扣</option><option value="fixed_fee">固定加價</option><option value="per_30_minutes">每 30 分鐘</option><option value="per_km">每公里</option></select></label><label>金額／百分比<input name="value" type="number" min="0" defaultValue={promotion.value} required /></label></div><label className="checkbox-field"><input name="active" type="checkbox" defaultChecked={promotion.active} />啟用此優惠</label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存優惠</button></footer></form></Modal> : null; })()}
 
       {modal?.type === 'returnRule' && (() => { const set = returnRuleSets.find((item) => item.id === modal.setId); const rule = set?.rules.find((item) => item.id === modal.ruleId); return set && rule ? <Modal title={`編輯 ${set.name}`} subtitle={`${rule.service_code}・${rule.name}`} onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => saveReturnRule(event, set.id, rule.id)}><label>顯示名稱<input name="name" defaultValue={rule.name} required /></label><div className="form-grid two"><label>回帳金額<input name="amount" type="number" min="0" step="100" defaultValue={rule.amount} required /></label><label>服務分鐘<input name="duration" type="number" min="30" defaultValue={rule.duration_minutes} required /></label></div><label className="checkbox-field"><input name="active" type="checkbox" defaultChecked={rule.active} />啟用此回帳規則</label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存回帳規則</button></footer></form></Modal> : null; })()}
 
       {modal?.type === 'staff' && <Modal title="新增員工" subtitle="健康資訊不會出現在公開資料或一般匯出。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={addStaff}><label>姓名／稱呼<input name="name" required /></label><label>手機 ID<input name="phone" inputMode="tel" placeholder="師傅免密碼登入使用" /></label><label>師傅分類<select name="category"><option>直男師傅</option><option>圈內師傅</option><option>雙性師傅</option></select></label><label>回帳表<select name="returnRuleSetId">{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label><label>LINE User ID<input name="lineUserId" placeholder="可稍後由 LINE Bot 自動綁定" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立員工</button></footer></form></Modal>}
+
+      {modal?.type === 'staffDelete' && (() => { const member = staff.find((item) => item.id === modal.id); return member ? <Modal title={`永久刪除 ${member.name}`} subtitle="這項操作無法復原，系統會先檢查是否存在營運歷史。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => permanentlyDeleteStaff(event, member)}><div className="locked-message">永久刪除會移除 LINE 綁定、登入連結與私密資料。若已有預約、排班、付款或回帳紀錄，系統會拒絕刪除；這種情況請使用「暫時退役」。</div><label>刪除原因<input name="reason" required minLength={3} maxLength={500} placeholder="例如：重複建立的錯誤帳戶" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="danger-button" type="submit">確認永久刪除</button></footer></form></Modal> : null; })()}
 
       {modal?.type === 'user' && canCreateUsers && <Modal title="新增後台使用者" subtitle="只有 Admin 可以新增任何後台帳號。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={addAdminUser}><label>顯示名稱<input name="displayName" required /></label><label>登入帳號<input name="username" required autoCapitalize="none" /></label><label>角色<select name="role"><option>Admin</option><option>店長</option><option>客服</option></select></label><label>初始數字 PIN<input name="pin" required inputMode="numeric" pattern="[0-9]+" minLength={4} maxLength={12} type="password" placeholder="至少 4 位" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立帳號</button></footer></form></Modal>}
       {modal?.type === 'customer' && selectedCustomer && <Modal title={`編輯 ${selectedCustomer.name}`} subtitle="VIP 是流水；真正的客戶 ID 是手機號碼，同一客戶可保存多支。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={saveCustomer}><label>客戶流水<input value={selectedCustomer.vipSerial} disabled /></label><label>客戶名稱<input name="displayName" defaultValue={selectedCustomer.name} required placeholder="可由後台建立或採用 LINE 顯示名稱" /></label><label>客戶 ID（手機號碼）<textarea name="phones" rows={4} defaultValue={selectedCustomer.phones.join('\n')} required placeholder={"0912345678\n0987654321"} /></label><div className="form-note">每行一支手機；第一支是主要聯絡號碼。每支手機只能屬於一位客戶。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存客戶資料</button></footer></form></Modal>}
