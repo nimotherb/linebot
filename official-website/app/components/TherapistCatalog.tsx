@@ -1,17 +1,24 @@
 'use client';
 
 import { type CSSProperties, useEffect, useMemo, useState } from 'react';
+import { usePublishedSiteDraft } from './PublishedSiteContent';
 
 type Category = 'straight' | 'community' | 'bisexual';
 type Therapist = { id?: number; name: string; slug: string; category: Category; height?: string | number; weight?: string | number; photoUrl?: string };
 
-const categoryMeta: Record<Category, { label: string; english: string; note: string }> = {
-  straight: { label: '直男師傅', english: 'STRAIGHT', note: '自然俐落，保留舒服距離的專業互動。' },
-  community: { label: '圈內師傅', english: 'COMMUNITY', note: '熟悉多元需求，讓溝通更直接、更自在。' },
-  bisexual: { label: '雙性師傅', english: 'BISEXUAL', note: '開放而細膩，提供另一種柔韌平衡的節奏。' },
+const categoryMeta: Record<Category, { label: string; english: string }> = {
+  straight: { label: '直男師傅', english: 'STRAIGHT' },
+  community: { label: '圈內師傅', english: 'COMMUNITY' },
+  bisexual: { label: '雙性師傅', english: 'BISEXUAL' },
 };
 
-const bookingUrl = 'https://equalspa-admin.pages.dev/booking';
+const categoryFallbackNotes: Record<Category, string> = {
+  straight: '自然俐落，保留舒服距離的專業互動。',
+  community: '熟悉多元需求，讓溝通更直接、更自在。',
+  bisexual: '開放而細膩，提供另一種柔韌平衡的節奏。',
+};
+
+const fallbackBookingUrl = 'https://equalspa-admin.pages.dev/booking';
 const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com').replace(/\/$/, '');
 
 const therapists: Therapist[] = [
@@ -72,6 +79,14 @@ function imagePath(therapist: Therapist) {
 export default function TherapistCatalog() {
   const [category, setCategory] = useState<'all' | Category>('all');
   const [profiles, setProfiles] = useState<Therapist[]>(therapists);
+  const siteContent = usePublishedSiteDraft();
+  const therapistSettings = siteContent?.therapists;
+  const bookingUrl = siteContent?.booking?.url || fallbackBookingUrl;
+  const categoryNotes: Record<Category, string> = {
+    straight: therapistSettings?.straightIntro || categoryFallbackNotes.straight,
+    community: therapistSettings?.communityIntro || categoryFallbackNotes.community,
+    bisexual: therapistSettings?.bisexualIntro || categoryFallbackNotes.bisexual,
+  };
   useEffect(() => {
     fetch(`${apiBaseUrl}/api/public/therapists`)
       .then((response) => response.ok ? response.json() : Promise.reject(new Error('therapist api unavailable')))
@@ -102,7 +117,7 @@ export default function TherapistCatalog() {
 
   return <>
     <section className="therapist-selector" aria-label="選擇師傅分類">
-      <div className="catalog-intro"><small>SELECT YOUR MATCH</small><h2>ONE STANDARD.<br />DIFFERENT PRESENCE.</h2><p>先從偏好的互動氣質開始，再於預約時確認當週班表。公開頁面只呈現姓名、身高體重與照片；健康資訊保留在內部管理系統。</p></div>
+      <div className="catalog-intro"><small>SELECT YOUR MATCH</small><h2>ONE STANDARD.<br />DIFFERENT PRESENCE.</h2><p>{therapistSettings?.intro || '先從偏好的互動氣質開始，再於預約時確認當週班表。'}<br />公開頁面只呈現姓名、身高體重與照片；健康資訊保留在內部管理系統。</p></div>
       <div className="category-tabs">
         <button className={category === 'all' ? 'active' : ''} onClick={() => setCategory('all')}><span>00</span><b>全部師傅</b><em>ALL</em></button>
         {(Object.keys(categoryMeta) as Category[]).map((key, index) => <button key={key} className={category === key ? 'active' : ''} onClick={() => setCategory(key)}><span>0{index + 1}</span><b>{categoryMeta[key].label}</b><em>{categoryMeta[key].english}</em></button>)}
@@ -111,14 +126,14 @@ export default function TherapistCatalog() {
 
     <section className="therapist-carousel" aria-label="師傅照片輪播">
       <header><div><small>PORTRAIT RAIL</small><p>{category === 'all' ? 'ALL THERAPISTS' : categoryMeta[category].english}</p></div><span>CONTINUOUS AUTOMATIC LOOP</span></header>
-      <div className="portrait-rail"><div key={category} className="portrait-track" style={{ '--rail-duration': `${Math.max(34, visible.length * 2.8)}s` } as CSSProperties}>{portraitSet()}{portraitSet(true)}</div></div>
+      <div className="portrait-rail"><div key={category} className="portrait-track" style={{ '--rail-duration': `${therapistSettings?.carouselSpeed || Math.max(34, visible.length * 2.8)}s` } as CSSProperties}>{portraitSet()}{portraitSet(true)}</div></div>
     </section>
 
     <section className="therapist-catalog" aria-live="polite">
       <header><small>CATALOG / {visible.length} PROFILES</small><h2>THERAPIST<br />SELECTION.</h2></header>
       <div className="therapist-product-grid">{visible.map((therapist, index) => <article key={`${therapist.category}-${therapist.slug}`}>
         <div className="therapist-product-image">{portrait(therapist, `${therapist.name}師傅`)}<span className="profile-index">{String(index + 1).padStart(2, '0')}</span></div>
-        <div className="therapist-product-copy"><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3>{(therapist.height || therapist.weight) && <dl>{therapist.height && <div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div>}{therapist.weight && <div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div>}</dl>}<p>{categoryMeta[therapist.category].note}</p><a href={bookingUrl} target="_blank" rel="noreferrer">詢問班表／指定預約 ↗</a></div>
+        <div className="therapist-product-copy"><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3>{therapistSettings?.showMeasurements !== false && (therapist.height || therapist.weight) && <dl>{therapist.height && <div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div>}{therapist.weight && <div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div>}</dl>}<p>{categoryNotes[therapist.category]}</p><a href={bookingUrl} target="_blank" rel="noreferrer">詢問班表／指定預約 ↗</a></div>
       </article>)}</div>
     </section>
   </>;

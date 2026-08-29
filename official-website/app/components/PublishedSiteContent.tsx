@@ -10,6 +10,14 @@ export type PublishedSiteDraft = {
   home?: { subtitle?: string; support?: string };
   booking?: { lineId?: string; url?: string };
   services?: PublishedService[];
+  therapists?: {
+    intro?: string;
+    straightIntro?: string;
+    communityIntro?: string;
+    bisexualIntro?: string;
+    carouselSpeed?: number;
+    showMeasurements?: boolean;
+  };
   offers?: PublishedOffer[];
   store?: { address?: string; hours?: string; payment?: string; mapUrl?: string };
 };
