@@ -19,7 +19,14 @@ export type SiteDraft = {
   home: { subtitle: string; support: string };
   booking: { lineId: string; url: string };
   services: ServiceDraft[];
-  therapists: { intro: string; carouselSpeed: number; showMeasurements: boolean };
+  therapists: {
+    intro: string;
+    straightIntro: string;
+    communityIntro: string;
+    bisexualIntro: string;
+    carouselSpeed: number;
+    showMeasurements: boolean;
+  };
   offers: OfferDraft[];
   store: { address: string; hours: string; payment: string; mapUrl: string };
 };
@@ -103,6 +110,9 @@ const initialDraft: SiteDraft = {
   ],
   therapists: {
     intro: '先從偏好的互動氣質開始，再於預約時確認當週班表。',
+    straightIntro: '自然俐落，保留舒服距離的專業互動。',
+    communityIntro: '熟悉多元需求，讓溝通更直接、更自在。',
+    bisexualIntro: '開放而細膩，提供另一種柔韌平衡的節奏。',
     carouselSpeed: 45,
     showMeasurements: true,
   },
@@ -127,7 +137,7 @@ const sections: { id: Section; index: string; label: string; english: string }[]
 ];
 
 function Field({ label, value, onChange, multiline = false, hint }: { label: string; value: string; onChange: (value: string) => void; multiline?: boolean; hint?: string }) {
-  return <label className="studio-field"><span>{label}</span>{multiline ? <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={3} /> : <input value={value} onChange={(event) => onChange(event.target.value)} />}{hint && <small>{hint}</small>}</label>;
+  return <label className="studio-field"><span>{label}</span>{multiline ? <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={4} /> : <input value={value} onChange={(event) => onChange(event.target.value)} />}{hint && <small>{hint}</small>}</label>;
 }
 
 export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAdminApi; notify: (msg: string) => void; userRole: 'admin' | 'manager' }) {
@@ -143,6 +153,7 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
   const [showNewService, setShowNewService] = useState(false);
   const [showNewOffer, setShowNewOffer] = useState(false);
   const [catalogBusy, setCatalogBusy] = useState(false);
+  const [previewRevision, setPreviewRevision] = useState(0);
 
   // 1. 載入雲端草稿
   useEffect(() => {
@@ -185,6 +196,13 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
   }, [api, notify]);
 
   const activeMeta = useMemo(() => sections.find((section) => section.id === active) ?? sections[0], [active]);
+  const previewPath = useMemo(() => ({
+    home: '/',
+    services: '/services/',
+    therapists: '/therapists/',
+    offers: '/offers/',
+    store: '/location/',
+  } satisfies Record<Section, string>)[active], [active]);
   
   const markChanged = (next: SiteDraft) => {
     setDraft(next);
@@ -254,6 +272,7 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
       setVersion(pubRes.draft_version);
       setPublishedAt(new Date().toLocaleString('zh-TW'));
       setNotice('官網內容已正式發布');
+      setPreviewRevision(Date.now());
       notify('🚀 正式發布成功！官網內容已同步至前端。');
     } catch (error) {
       const msg = error instanceof Error ? error.message : '發布失敗';
@@ -475,6 +494,7 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
 
         {active === 'therapists' && <div className="studio-form-grid">
           <div className="studio-form-card"><small>CATALOG</small><h3>師傅目錄設定</h3><Field label="目錄介紹" value={draft.therapists.intro} onChange={(intro) => markChanged({ ...draft, therapists: { ...draft.therapists, intro } })} multiline /><label className="studio-range"><span>自動輪播速度</span><input type="range" min="24" max="80" value={draft.therapists.carouselSpeed} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, carouselSpeed: Number(event.target.value) } })} /><b>{draft.therapists.carouselSpeed} 秒</b></label><label className="studio-check"><input type="checkbox" checked={draft.therapists.showMeasurements} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, showMeasurements: event.target.checked } })} />公開顯示身高與體重</label></div>
+          <div className="studio-form-card studio-category-copy"><small>CATEGORY COPY</small><h3>三類師傅簡介</h3><p>這三段文字會顯示在每位師傅的資料卡內，可依不同分類調整語氣。</p><Field label="直男師傅簡介" value={draft.therapists.straightIntro} onChange={(straightIntro) => markChanged({ ...draft, therapists: { ...draft.therapists, straightIntro } })} multiline /><Field label="圈內師傅簡介" value={draft.therapists.communityIntro} onChange={(communityIntro) => markChanged({ ...draft, therapists: { ...draft.therapists, communityIntro } })} multiline /><Field label="雙性師傅簡介" value={draft.therapists.bisexualIntro} onChange={(bisexualIntro) => markChanged({ ...draft, therapists: { ...draft.therapists, bisexualIntro } })} multiline /></div>
           <div className="studio-form-card studio-upload-card"><small>LIVE DIRECTORY</small><h3>公開名單</h3><div className="upload-placeholder"><span>{staffProfiles.filter((item) => item.employment_status === 'active').length}</span><b>位在職師傅</b><p>名單與照片直接保存到 MySQL；暫時退役會保留所有歷史資料並停止公開。</p></div><p className="privacy-note">健康資訊只留在營運後台，不會出現在官網編輯器或公開頁面。</p></div>
           <section className="studio-form-card studio-staff-manager">
             <header><div><small>THERAPIST PROFILES</small><h3>新增、照片與退役管理</h3><p>照片可貼網址或從電腦上傳。上傳檔案限 JPEG、PNG、WebP，最大 3 MB。</p></div><button type="button" onClick={() => setShowNewStaff((current) => !current)}>{showNewStaff ? '取消新增' : '＋ 新增師傅'}</button></header>
@@ -493,11 +513,11 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
 
         {active === 'offers' && <div className="studio-catalog-editor">
           <header className="studio-catalog-toolbar"><div><small>MYSQL PROMOTION CATALOG</small><h3>優惠內容</h3><p>優惠可保留在草稿或設為顯示中；刪除後舊訂單仍會保存原優惠。</p></div><button type="button" onClick={() => setShowNewOffer((current) => !current)}>{showNewOffer ? '取消新增' : '＋ 新增優惠'}</button></header>
-          {showNewOffer && <form className="studio-new-catalog" onSubmit={createOffer}>
+          {showNewOffer && <form className="studio-new-catalog studio-new-offer" onSubmit={createOffer}>
             <label><span>優惠名稱</span><input name="name" required /></label>
             <label><span>計算方式</span><select name="calculationType" defaultValue="fixed_discount"><option value="fixed_discount">固定折扣</option><option value="percent_discount">百分比折扣</option><option value="fixed_fee">固定加價</option><option value="per_30_minutes">每 30 分鐘</option><option value="per_km">每公里</option></select></label>
             <label><span>金額／百分比</span><input name="value" type="number" min="0" required /></label>
-            <label className="wide"><span>簡短說明</span><input name="summary" maxLength={500} /></label>
+            <label className="wide"><span>簡短說明</span><textarea name="summary" maxLength={500} rows={4} /></label>
             <button type="submit" disabled={catalogBusy}>建立優惠</button>
           </form>}
           <div className="studio-offer-editor">{draft.offers.map((offer, index) => <article key={offer.id || `${offer.name}-${index}`}><span>0{index + 1}</span><div><Field label="優惠名稱" value={offer.name} onChange={(name) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, name } : item) })} /><Field label="簡短說明" value={offer.summary} onChange={(summary) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, summary } : item) })} multiline /><label className="studio-catalog-field"><span>計算方式</span><select value={offer.calculationType || 'fixed_discount'} onChange={(event) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, calculationType: event.target.value as CalculationType } : item) })}><option value="fixed_discount">固定折扣</option><option value="percent_discount">百分比折扣</option><option value="fixed_fee">固定加價</option><option value="per_30_minutes">每 30 分鐘</option><option value="per_km">每公里</option></select></label><label className="studio-catalog-field"><span>金額／百分比</span><input type="number" min="0" value={offer.value || 0} onChange={(event) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, value: Number(event.target.value) } : item) })} /></label></div><div className="studio-catalog-actions"><button type="button" onClick={() => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, status: item.status === '顯示中' ? '草稿' : '顯示中' } : item) })}>{offer.status}</button><button className="danger" type="button" disabled={catalogBusy} onClick={() => deleteOffer(offer)}>刪除優惠</button></div></article>)}</div>
@@ -510,16 +530,12 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
       </section>
 
       <aside className="studio-preview">
-        <header><small>LIVE CONTENT PREVIEW</small><span>即時預覽</span></header>
+        <header><small>LIVE OFFICIAL SITE</small><span>正式官網現況</span></header>
+        <div className="studio-preview-tools"><button type="button" onClick={() => setPreviewRevision(Date.now())}>重新整理</button><a href={previewPath} target="_blank" rel="noreferrer">另開頁面 ↗</a></div>
         <div className="studio-preview-screen">
-          <span className="preview-logo">E</span>
-          {active === 'home' && <><small>EQUAL SPA</small><h2>RETURN TO<br />EQUAL.</h2><p>{draft.home.subtitle}</p><a>{draft.booking.lineId}</a></>}
-          {active === 'services' && <><small>SELECT A SERVICE</small>{draft.services.filter((service) => service.visible).map((service) => <div className="preview-service" key={service.code}><i>{service.code}</i><span><b>{service.name}</b><small>{service.summary}</small><em>{service.duration}</em></span><strong>{service.price}</strong></div>)}</>}
-          {active === 'therapists' && <><small>THERAPISTS</small><h2>ONE STANDARD.<br />DIFFERENT PRESENCE.</h2><p>{draft.therapists.intro}</p><div className="preview-portraits"><i /><i /><i /></div></>}
-          {active === 'offers' && <><small>CURRENT OFFERS</small>{draft.offers.filter((offer) => offer.status === '顯示中').map((offer) => <div className="preview-offer" key={offer.name}><b>{offer.name}</b><p>{offer.summary}</p></div>)}</>}
-          {active === 'store' && <><small>STUDIO</small><h2>TAIPEI<br />XIMEN</h2><p>{draft.store.address}<br />{draft.store.hours}<br />{draft.store.payment}</p></>}
+          <iframe key={`${previewPath}-${previewRevision}`} src={`${previewPath}?studio-preview=${previewRevision}`} title={`${activeMeta.label}正式官網預覽`} />
         </div>
-        <p>此畫面為快速預覽文字層級用。發布後將套用至響應式對外官網。</p>
+        <p>這裡直接載入目前正式官網，不再使用另一套模擬畫面。草稿發布後會自動重新整理。</p>
       </aside>
     </div>
   </main>;
