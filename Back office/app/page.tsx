@@ -35,6 +35,7 @@ type ModalState =
   | { type: 'returnRule'; setId: number; ruleId: number }
   | { type: 'customer'; id: string }
   | { type: 'staff' }
+  | { type: 'staffEdit'; id: string }
   | { type: 'staffDelete'; id: string }
   | { type: 'user' }
   | { type: 'account' }
@@ -70,7 +71,7 @@ const headings: Record<SectionId, { eyebrow: string; title: string; description:
   operations: { eyebrow: 'SERVICE FLOW', title: '現場進度', description: '從報到、服務中到待結帳的即時看板。' },
   checkout: { eyebrow: 'CHECKOUT', title: '結帳與回帳', description: '現金與轉帳紀錄，完成後保留稽核軌跡。' },
   customers: { eyebrow: 'CUSTOMERS', title: '客戶管理', description: 'LINE 顯示名稱、電話、歷史紀錄與客服備註。' },
-  staff: { eyebrow: 'TEAM', title: '員工管理', description: '員工建檔、LINE 串接與暫時退役。' },
+  staff: { eyebrow: 'TEAM', title: '員工管理', description: '員工建檔、公開照片、暫時退役與永久刪除。' },
   services: { eyebrow: 'PRICING', title: '服務與優惠', description: '方案價格、期間與附加費都可隨時調整。' },
   exports: { eyebrow: 'DATA CENTER', title: '資料中心', description: '依日期範圍匯出 Excel 相容 CSV 或純文字。' },
   users: { eyebrow: 'ACCESS CONTROL', title: '帳號與權限', description: '管理 Admin、店長與客服角色。' },
@@ -84,6 +85,14 @@ const toMinutes = (clock: string) => {
   return hours * 60 + minutes;
 };
 const overlaps = (aStart: string, aEnd: string, bStart: string, bEnd: string) => toMinutes(aStart) < toMinutes(bEnd) && toMinutes(aEnd) > toMinutes(bStart);
+const staffPhotoDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) return reject(new Error('只接受 JPEG、PNG 或 WebP 圖片。'));
+  if (file.size > 3 * 1024 * 1024) return reject(new Error('照片大小必須小於 3 MB。'));
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result));
+  reader.onerror = () => reject(new Error('照片讀取失敗。'));
+  reader.readAsDataURL(file);
+});
 const TAIPEI_TIME_ZONE = 'Asia/Taipei';
 const taipeiParts = (date: Date) => Object.fromEntries(
   new Intl.DateTimeFormat('en-US', {
@@ -668,7 +677,9 @@ export default function Home() {
     if (appMode === 'live') {
       try {
         const category = categoryLabel === '直男師傅' ? 'straight' : categoryLabel === '雙性師傅' ? 'bisexual' : 'gay';
-        const created = await api.createStaff({ name, category, line_user_id: String(data.get('lineUserId') || '') || null, phone: String(data.get('phone') || '') || null, return_rule_set_id: Number(data.get('returnRuleSetId') || 0) || null });
+        let created = await api.createStaff({ name, category, line_user_id: String(data.get('lineUserId') || '') || null, phone: String(data.get('phone') || '') || null, return_rule_set_id: Number(data.get('returnRuleSetId') || 0) || null, photo_url: String(data.get('photoUrl') || '').trim() || null });
+        const photo = data.get('photoFile');
+        if (photo instanceof File && photo.size > 0) created = await api.uploadStaffPhoto(created.id, await staffPhotoDataUrl(photo));
         setStaff((current) => [...current, mapStaff(created)]);
         setModal(null);
         notify(`${name} 已建立並保存到 MySQL。`);
@@ -678,6 +689,32 @@ export default function Home() {
       return;
     }
     notify('目前未連線至資料庫，不能新增員工。');
+  };
+
+  const saveStaffProfile = async (event: FormEvent<HTMLFormElement>, member: typeof staff[number]) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const categoryLabel = String(data.get('category')) as typeof member.category;
+    const category = categoryLabel === '直男師傅' ? 'straight' : categoryLabel === '雙性師傅' ? 'bisexual' : 'gay';
+    const photo = data.get('photoFile');
+    try {
+      if (appMode === 'live' && member.apiId) {
+        let updated = await api.updateStaff(member.apiId, {
+          name: String(data.get('name')).trim(),
+          category,
+          photo_url: String(data.get('photoUrl') || '').trim() || null,
+        });
+        if (photo instanceof File && photo.size > 0) updated = await api.uploadStaffPhoto(member.apiId, await staffPhotoDataUrl(photo));
+        setStaff((current) => current.map((item) => item.id === member.id ? mapStaff(updated) : item));
+      } else {
+        const uploaded = photo instanceof File && photo.size > 0 ? await staffPhotoDataUrl(photo) : String(data.get('photoUrl') || '').trim();
+        setStaff((current) => current.map((item) => item.id === member.id ? { ...item, name: String(data.get('name')).trim(), category: categoryLabel, photoUrl: uploaded || undefined } : item));
+      }
+      setModal(null);
+      notify(`${member.name} 的公開資料與照片已更新。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '師傅資料更新失敗');
+    }
   };
 
   const toggleStaffStatus = async (member: typeof staff[number]) => {
@@ -697,7 +734,7 @@ export default function Home() {
 
   const permanentlyDeleteStaff = async (event: FormEvent<HTMLFormElement>, member: StaffMember) => {
     event.preventDefault();
-    if (!member.apiId || !canManageAll) return notify('你沒有永久刪除員工的權限。');
+    if (!member.apiId || role !== 'admin') return notify('永久刪除只開放 Admin 使用。');
     const data = new FormData(event.currentTarget);
     const reason = String(data.get('reason') || '').trim();
     try {
@@ -939,18 +976,15 @@ export default function Home() {
   const renderStaff = () => (
     <section className="panel table-panel">
       <div className="toolbar"><div className="filter-note"><strong>{staff.filter((item) => item.status === '在職').length}</strong><span>位在職師傅</span></div><div className="toolbar-spacer" />{canManageAll && <button className="primary-button" onClick={() => setModal({ type: 'staff' })}>＋ 新增員工</button>}</div>
-      <div className="staff-card-grid">{staff.map((member) => (
-        <article className={member.status === '暫時退役' ? 'staff-card retired' : 'staff-card'} key={member.id}>
-          <header>{member.photoUrl ? <img className="large-avatar staff-photo" src={member.photoUrl} alt={`${member.name}師傅`} /> : <span className="large-avatar">{member.name.slice(0, 1)}</span>}<StatusPill status={member.status} /></header>
-          <h3>{member.name}</h3>
-          <p>{member.category}・{[member.height && `${member.height} cm`, member.weight && `${member.weight} kg`].filter(Boolean).join('・') || member.id}</p>
-          <div className="staff-meta"><span>{member.lineConnected ? 'LINE 已串接' : 'LINE 待串接'}</span><span>{isViewer || isStaffUser ? '公開基本資料' : '私密資料已分離'}</span></div>
-          {canManageAll && returnRuleSets.length > 0 && <label className="staff-rule-select">回帳表<select value={member.returnRuleSetId || returnRuleSets[0]?.id || ''} onChange={(event) => assignReturnRuleSet(member, Number(event.target.value))}>{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label>}
-          {canManageAll && <div className="staff-management-actions"><button className="text-button" onClick={() => toggleStaffStatus(member)}>{member.status === '在職' ? '暫時退役' : '恢復在職'}</button><button className="danger-text" onClick={() => setModal({ type: 'staffDelete', id: member.id })}>永久刪除</button></div>}
-        </article>
-      ))}</div>
+      <div className="staff-card-grid">{staff.map((member) => <article className={member.status === '暫時退役' ? 'staff-card retired' : 'staff-card'} key={member.id}>
+        <header>{member.photoUrl ? <img className="large-avatar staff-photo" src={member.photoUrl} alt={`${member.name}師傅`} /> : <span className="large-avatar">{member.name.slice(0, 1)}</span>}<StatusPill status={member.status} /></header>
+        <h3>{member.name}</h3><p>{member.category}・{[member.height && `${member.height} cm`, member.weight && `${member.weight} kg`].filter(Boolean).join('・') || member.id}</p>
+        <div className="staff-meta"><span>{member.lineConnected ? 'LINE 已串接' : 'LINE 待串接'}</span><span>{isViewer || isStaffUser ? '公開基本資料' : '私密資料已分離'}</span></div>
+        {canManageAll && returnRuleSets.length > 0 && <label className="staff-rule-select">回帳表<select value={member.returnRuleSetId || returnRuleSets[0]?.id || ''} onChange={(event) => assignReturnRuleSet(member, Number(event.target.value))}>{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label>}
+        {canManageAll && <div className="staff-card-actions"><button className="text-button" onClick={() => setModal({ type: 'staffEdit', id: member.id })}>資料／照片</button><button className="text-button" onClick={() => toggleStaffStatus(member)}>{member.status === '在職' ? '暫時退役' : '恢復在職'}</button>{role === 'admin' && <button className="danger-text" onClick={() => setModal({ type: 'staffDelete', id: member.id })}>永久刪除</button>}</div>}
+      </article>)}</div>
       {staff.length === 0 && <div className="empty-state">資料庫目前沒有師傅資料。</div>}
-      {sensitiveVisible && <div className="privacy-note"><strong>健康資訊不顯示於此畫面</strong><span>私密欄位存放在獨立加密資料表，且不包含在一般匯出中。</span></div>}
+      {sensitiveVisible && <div className="privacy-note"><strong>健康資訊不顯示於此畫面</strong><span>私密欄位存放在獨立加密資料表，且不包含在一般匯出中。永久刪除只開放 Admin，且有歷史訂單、班表或回帳時會被阻止。</span></div>}
     </section>
   );
 
@@ -1061,7 +1095,9 @@ export default function Home() {
 
       {modal?.type === 'returnRule' && (() => { const set = returnRuleSets.find((item) => item.id === modal.setId); const rule = set?.rules.find((item) => item.id === modal.ruleId); return set && rule ? <Modal title={`編輯 ${set.name}`} subtitle={`${rule.service_code}・${rule.name}`} onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => saveReturnRule(event, set.id, rule.id)}><label>顯示名稱<input name="name" defaultValue={rule.name} required /></label><div className="form-grid two"><label>回帳金額<input name="amount" type="number" min="0" step="100" defaultValue={rule.amount} required /></label><label>服務分鐘<input name="duration" type="number" min="30" defaultValue={rule.duration_minutes} required /></label></div><label className="checkbox-field"><input name="active" type="checkbox" defaultChecked={rule.active} />啟用此回帳規則</label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存回帳規則</button></footer></form></Modal> : null; })()}
 
-      {modal?.type === 'staff' && <Modal title="新增員工" subtitle="健康資訊不會出現在公開資料或一般匯出。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={addStaff}><label>姓名／稱呼<input name="name" required /></label><label>手機 ID<input name="phone" inputMode="tel" placeholder="師傅免密碼登入使用" /></label><label>師傅分類<select name="category"><option>直男師傅</option><option>圈內師傅</option><option>雙性師傅</option></select></label><label>回帳表<select name="returnRuleSetId">{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label><label>LINE User ID<input name="lineUserId" placeholder="可稍後由 LINE Bot 自動綁定" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立員工</button></footer></form></Modal>}
+      {modal?.type === 'staff' && <Modal title="新增員工" subtitle="照片可貼網址或直接上傳；健康資訊不會出現在公開資料或一般匯出。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={addStaff}><label>姓名／稱呼<input name="name" required /></label><label>手機 ID<input name="phone" inputMode="tel" placeholder="師傅免密碼登入使用" /></label><label>師傅分類<select name="category"><option>直男師傅</option><option>圈內師傅</option><option>雙性師傅</option></select></label><label>公開照片網址<input name="photoUrl" type="url" placeholder="https://..." /></label><label>或從電腦上傳照片<input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label><div className="form-note">若同時填網址並選擇檔案，會以上傳檔案為準；限 JPEG、PNG、WebP，最大 3 MB。</div><label>回帳表<select name="returnRuleSetId">{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label><label>LINE User ID<input name="lineUserId" placeholder="可稍後由 LINE Bot 自動綁定" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立員工</button></footer></form></Modal>}
+
+      {modal?.type === 'staffEdit' && (() => { const member = staff.find((item) => item.id === modal.id); return member ? <Modal title={`編輯 ${member.name}`} subtitle="公開照片可貼網址或從電腦上傳。永久刪除不會用來取代暫時退役。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => saveStaffProfile(event, member)}><label>姓名／稱呼<input name="name" defaultValue={member.name} required /></label><label>師傅分類<select name="category" defaultValue={member.category}><option>直男師傅</option><option>圈內師傅</option><option>雙性師傅</option></select></label>{member.photoUrl && <img className="staff-edit-preview" src={member.photoUrl} alt={`${member.name}目前公開照片`} />}<label>公開照片網址<input name="photoUrl" type="url" defaultValue={member.photoUrl || ''} placeholder="https://..." /></label><label>或從電腦上傳新照片<input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label><div className="form-note">選擇新檔案時會覆蓋網址欄位的照片。限 JPEG、PNG、WebP，最大 3 MB。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button>{role === 'admin' && <button type="button" className="danger-button" onClick={() => setModal({ type: 'staffDelete', id: member.id })}>永久刪除</button>}<button className="primary-button">儲存公開資料</button></footer></form></Modal> : null; })()}
 
       {modal?.type === 'staffDelete' && (() => { const member = staff.find((item) => item.id === modal.id); return member ? <Modal title={`永久刪除 ${member.name}`} subtitle="這項操作無法復原，系統會先檢查是否存在營運歷史。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => permanentlyDeleteStaff(event, member)}><div className="locked-message">永久刪除會移除 LINE 綁定、登入連結與私密資料。若已有預約、排班、付款或回帳紀錄，系統會拒絕刪除；這種情況請使用「暫時退役」。</div><label>刪除原因<input name="reason" required minLength={3} maxLength={500} placeholder="例如：重複建立的錯誤帳戶" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="danger-button" type="submit">確認永久刪除</button></footer></form></Modal> : null; })()}
 

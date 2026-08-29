@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import SiteAdminEditor from './SiteAdminEditor';
-import type { SiteAdminApi, SiteContentPayload, SiteDraft } from './SiteAdminEditor';
+import type { SiteAdminApi, SiteContentPayload, SiteDraft, StaffProfile } from './SiteAdminEditor';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com';
 const TOKEN_KEY = 'equalspa_site_studio_token';
@@ -114,6 +114,12 @@ export default function SiteAdminPortal() {
       method: 'POST',
       body: JSON.stringify({ expected_version: expectedVersion }),
     }),
+    listStaff: () => request<StaffProfile[]>('/api/admin/staff'),
+    createStaff: (payload: Record<string, unknown>) => request<StaffProfile>('/api/admin/staff', { method: 'POST', body: JSON.stringify(payload) }),
+    updateStaff: (id: number, payload: Record<string, unknown>) => request<StaffProfile>(`/api/admin/staff/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+    updateStaffStatus: (id: number, employmentStatus: StaffProfile['employment_status'], reason: string) => request<StaffProfile>(`/api/admin/staff/${id}/status`, { method: 'PATCH', body: JSON.stringify({ employment_status: employmentStatus, reason }) }),
+    uploadStaffPhoto: (id: number, dataUrl: string) => request<StaffProfile>(`/api/admin/staff/${id}/photo`, { method: 'PUT', body: JSON.stringify({ data_url: dataUrl }) }),
+    permanentlyDeleteStaff: (id: number) => request<{ ok: boolean }>(`/api/admin/staff/${id}?reason=${encodeURIComponent('官網編輯器永久刪除')}`, { method: 'DELETE' }),
   }), [request]);
 
   const login = async (event: FormEvent<HTMLFormElement>) => {
@@ -209,7 +215,7 @@ export default function SiteAdminPortal() {
   }
 
   return <div className="studio-session-shell">
-    <SiteAdminEditor api={editorApi} notify={notify} />
+    <SiteAdminEditor api={editorApi} notify={notify} userRole={user.role === 'admin' ? 'admin' : 'manager'} />
     <aside className="studio-session-card">
       <span>{user.display_name.slice(0, 1).toUpperCase()}</span>
       <div><b>{user.display_name}</b><small>{roleLabel(user.role)} · @{user.username}</small></div>

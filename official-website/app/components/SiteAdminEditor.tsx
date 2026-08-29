@@ -1,10 +1,17 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 
 type Section = 'home' | 'services' | 'therapists' | 'offers' | 'store';
 type ServiceDraft = { code: string; name: string; summary: string; duration: string; price: string; visible: boolean };
 type OfferDraft = { name: string; summary: string; status: '顯示中' | '草稿' };
+export type StaffProfile = {
+  id: number;
+  name: string;
+  category: 'straight' | 'gay' | 'bisexual';
+  employment_status: 'active' | 'retired';
+  photo_url?: string | null;
+};
 export type SiteDraft = {
   home: { subtitle: string; support: string };
   booking: { lineId: string; url: string };
@@ -24,7 +31,25 @@ export type SiteAdminApi = {
   getAdminSiteContent: () => Promise<SiteContentPayload>;
   saveSiteDraft: (content: SiteDraft, expectedVersion: number) => Promise<SiteContentPayload>;
   publishSiteContent: (expectedVersion: number) => Promise<SiteContentPayload>;
+  listStaff: () => Promise<StaffProfile[]>;
+  createStaff: (payload: Record<string, unknown>) => Promise<StaffProfile>;
+  updateStaff: (id: number, payload: Record<string, unknown>) => Promise<StaffProfile>;
+  updateStaffStatus: (id: number, status: StaffProfile['employment_status'], reason: string) => Promise<StaffProfile>;
+  uploadStaffPhoto: (id: number, dataUrl: string) => Promise<StaffProfile>;
+  permanentlyDeleteStaff: (id: number) => Promise<{ ok: boolean }>;
 };
+
+const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com').replace(/\/$/, '');
+const categoryLabels: Record<StaffProfile['category'], string> = { straight: '直男師傅', gay: '圈內師傅', bisexual: '雙性師傅' };
+const resolvePhotoUrl = (value?: string | null) => value?.startsWith('/') ? `${API_BASE_URL}${value}` : value || '';
+const readPhoto = (file: File) => new Promise<string>((resolve, reject) => {
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) return reject(new Error('只接受 JPEG、PNG 或 WebP 圖片。'));
+  if (file.size > 3 * 1024 * 1024) return reject(new Error('照片大小必須小於 3 MB。'));
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result));
+  reader.onerror = () => reject(new Error('照片讀取失敗。'));
+  reader.readAsDataURL(file);
+});
 
 const initialDraft: SiteDraft = {
   home: {
@@ -70,19 +95,23 @@ function Field({ label, value, onChange, multiline = false, hint }: { label: str
   return <label className="studio-field"><span>{label}</span>{multiline ? <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={3} /> : <input value={value} onChange={(event) => onChange(event.target.value)} />}{hint && <small>{hint}</small>}</label>;
 }
 
-export default function SiteAdminEditor({ api, notify }: { api: SiteAdminApi; notify: (msg: string) => void }) {
+export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAdminApi; notify: (msg: string) => void; userRole: 'admin' | 'manager' }) {
   const [active, setActive] = useState<Section>('home');
   const [draft, setDraft] = useState<SiteDraft>(initialDraft);
   const [notice, setNotice] = useState('讀取中...');
   const [savedAt, setSavedAt] = useState('');
   const [version, setVersion] = useState(0);
   const [publishedAt, setPublishedAt] = useState<string | null>(null);
+  const [staffProfiles, setStaffProfiles] = useState<StaffProfile[]>([]);
+  const [showNewStaff, setShowNewStaff] = useState(false);
+  const [staffBusy, setStaffBusy] = useState(false);
 
   // 1. 載入雲端草稿
   useEffect(() => {
     const loadContent = async () => {
       try {
-        const data = await api.getAdminSiteContent();
+        const [data, staff] = await Promise.all([api.getAdminSiteContent(), api.listStaff()]);
+        setStaffProfiles(staff);
         setVersion(data.draft_version || 0);
         if (data.published_at) {
           setPublishedAt(new Date(data.published_at).toLocaleString('zh-TW'));
@@ -162,6 +191,86 @@ export default function SiteAdminEditor({ api, notify }: { api: SiteAdminApi; no
     markChanged({ ...draft, services });
   };
 
+  const upsertStaffProfile = (profile: StaffProfile) => {
+    setStaffProfiles((current) => current.some((item) => item.id === profile.id)
+      ? current.map((item) => item.id === profile.id ? profile : item)
+      : [...current, profile].sort((a, b) => a.name.localeCompare(b.name, 'zh-TW')));
+  };
+
+  const createStaffProfile = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setStaffBusy(true);
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    try {
+      let profile = await api.createStaff({
+        name: String(data.get('name')).trim(),
+        category: String(data.get('category')),
+        photo_url: String(data.get('photoUrl') || '').trim() || null,
+      });
+      const file = data.get('photoFile');
+      if (file instanceof File && file.size > 0) profile = await api.uploadStaffPhoto(profile.id, await readPhoto(file));
+      upsertStaffProfile(profile);
+      form.reset();
+      setShowNewStaff(false);
+      notify(`${profile.name} 已新增到師傅資料庫。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '新增師傅失敗');
+    } finally {
+      setStaffBusy(false);
+    }
+  };
+
+  const saveStaffProfile = async (event: FormEvent<HTMLFormElement>, profile: StaffProfile) => {
+    event.preventDefault();
+    setStaffBusy(true);
+    const data = new FormData(event.currentTarget);
+    try {
+      let updated = await api.updateStaff(profile.id, {
+        name: String(data.get('name')).trim(),
+        category: String(data.get('category')),
+        photo_url: String(data.get('photoUrl') || '').trim() || null,
+      });
+      const file = data.get('photoFile');
+      if (file instanceof File && file.size > 0) updated = await api.uploadStaffPhoto(profile.id, await readPhoto(file));
+      upsertStaffProfile(updated);
+      notify(`${updated.name} 的資料與照片已更新。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '師傅資料更新失敗');
+    } finally {
+      setStaffBusy(false);
+    }
+  };
+
+  const toggleStaffProfile = async (profile: StaffProfile) => {
+    const nextStatus = profile.employment_status === 'active' ? 'retired' : 'active';
+    const reason = nextStatus === 'retired' ? '官網編輯器暫時退役' : '官網編輯器恢復在職';
+    setStaffBusy(true);
+    try {
+      upsertStaffProfile(await api.updateStaffStatus(profile.id, nextStatus, reason));
+      notify(`${profile.name} 已${nextStatus === 'retired' ? '暫時退役' : '恢復在職'}。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '師傅狀態更新失敗');
+    } finally {
+      setStaffBusy(false);
+    }
+  };
+
+  const deleteStaffProfile = async (profile: StaffProfile) => {
+    if (userRole !== 'admin') return notify('永久刪除只開放 Admin 使用。');
+    if (!window.confirm(`確定永久刪除「${profile.name}」？\n此操作無法復原；已有訂單、排班或回帳紀錄時，系統會拒絕刪除。`)) return;
+    setStaffBusy(true);
+    try {
+      await api.permanentlyDeleteStaff(profile.id);
+      setStaffProfiles((current) => current.filter((item) => item.id !== profile.id));
+      notify(`${profile.name} 已永久刪除。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '永久刪除失敗');
+    } finally {
+      setStaffBusy(false);
+    }
+  };
+
   return <main className="site-studio-shell">
     <header className="studio-topbar">
       <a className="studio-brand" href="/"><i>E</i><span><b>SITE STUDIO</b><small>EQUAL SPA · CONTENT WORKSPACE</small></span></a>
@@ -200,7 +309,20 @@ export default function SiteAdminEditor({ api, notify }: { api: SiteAdminApi; no
 
         {active === 'therapists' && <div className="studio-form-grid">
           <div className="studio-form-card"><small>CATALOG</small><h3>師傅目錄設定</h3><Field label="目錄介紹" value={draft.therapists.intro} onChange={(intro) => markChanged({ ...draft, therapists: { ...draft.therapists, intro } })} multiline /><label className="studio-range"><span>自動輪播速度</span><input type="range" min="24" max="80" value={draft.therapists.carouselSpeed} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, carouselSpeed: Number(event.target.value) } })} /><b>{draft.therapists.carouselSpeed} 秒</b></label><label className="studio-check"><input type="checkbox" checked={draft.therapists.showMeasurements} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, showMeasurements: event.target.checked } })} />公開顯示身高與體重</label></div>
-          <div className="studio-form-card studio-upload-card"><small>PUBLIC PHOTOS</small><h3>公開照片</h3><div className="upload-placeholder"><span>47</span><b>張公開形象照</b><p>目前沿用官網既有圖片。真實師傅名單由後台「員工管理」自動帶入。</p></div><p className="privacy-note">健康資訊只留在營運後台，絕對不會出現在官網。</p></div>
+          <div className="studio-form-card studio-upload-card"><small>LIVE DIRECTORY</small><h3>公開名單</h3><div className="upload-placeholder"><span>{staffProfiles.filter((item) => item.employment_status === 'active').length}</span><b>位在職師傅</b><p>名單與照片直接保存到 MySQL；暫時退役會保留所有歷史資料並停止公開。</p></div><p className="privacy-note">健康資訊只留在營運後台，不會出現在官網編輯器或公開頁面。</p></div>
+          <section className="studio-form-card studio-staff-manager">
+            <header><div><small>THERAPIST PROFILES</small><h3>新增、照片與退役管理</h3><p>照片可貼網址或從電腦上傳。上傳檔案限 JPEG、PNG、WebP，最大 3 MB。</p></div><button type="button" onClick={() => setShowNewStaff((current) => !current)}>{showNewStaff ? '取消新增' : '＋ 新增師傅'}</button></header>
+            {showNewStaff && <form className="studio-new-staff" onSubmit={createStaffProfile}><label><span>姓名／稱呼</span><input name="name" required /></label><label><span>分類</span><select name="category" defaultValue="gay"><option value="straight">直男師傅</option><option value="gay">圈內師傅</option><option value="bisexual">雙性師傅</option></select></label><label><span>照片網址</span><input name="photoUrl" type="url" placeholder="https://..." /></label><label><span>或上傳照片</span><input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label><button type="submit" disabled={staffBusy}>建立師傅</button></form>}
+            <div className="studio-staff-grid">{staffProfiles.map((profile) => <form className={profile.employment_status === 'retired' ? 'studio-staff-card retired' : 'studio-staff-card'} key={profile.id} onSubmit={(event) => saveStaffProfile(event, profile)}>
+              <div className="studio-staff-photo">{profile.photo_url ? <img src={resolvePhotoUrl(profile.photo_url)} alt={`${profile.name}公開照片`} /> : <span>{profile.name.slice(0, 1)}</span>}<em>{profile.employment_status === 'active' ? '在職' : '暫時退役'}</em></div>
+              <label><span>姓名</span><input name="name" defaultValue={profile.name} required /></label>
+              <label><span>分類</span><select name="category" defaultValue={profile.category}>{Object.entries(categoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <label className="wide"><span>照片網址</span><input name="photoUrl" type="url" defaultValue={resolvePhotoUrl(profile.photo_url)} placeholder="https://..." /></label>
+              <label className="wide"><span>或上傳新照片</span><input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label>
+              <footer><button type="submit" disabled={staffBusy}>儲存資料</button><button type="button" disabled={staffBusy} onClick={() => toggleStaffProfile(profile)}>{profile.employment_status === 'active' ? '暫時退役' : '恢復在職'}</button>{userRole === 'admin' && <button className="danger" type="button" disabled={staffBusy} onClick={() => deleteStaffProfile(profile)}>永久刪除</button>}</footer>
+            </form>)}</div>
+            <p className="privacy-note">永久刪除只開放 Admin；已有預約、班表、付款或回帳紀錄時，後端會阻止刪除，請改用暫時退役。</p>
+          </section>
         </div>}
 
         {active === 'offers' && <div className="studio-offer-editor">{draft.offers.map((offer, index) => <article key={`${offer.name}-${index}`}><span>0{index + 1}</span><div><Field label="優惠名稱" value={offer.name} onChange={(name) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, name } : item) })} /><Field label="簡短說明" value={offer.summary} onChange={(summary) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, summary } : item) })} multiline /></div><button type="button" onClick={() => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, status: item.status === '顯示中' ? '草稿' : '顯示中' } : item) })}>{offer.status}</button></article>)}</div>}

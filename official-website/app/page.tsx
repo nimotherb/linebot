@@ -1,6 +1,3 @@
-'use client';
-
-import { useEffect } from 'react';
 import { PointerLight, SiteHeader, WingMenu } from './components/WingMenu';
 
 const bookingUrl = 'https://equalspa-admin.pages.dev/booking';
@@ -12,18 +9,18 @@ const services = [
   ['D', '極緻方案', '兩小時完整照顧，充分整理全身', '120 MIN', 'NT$ 3,000'],
 ] as const;
 
-function MobileSequence({ duplicate = false }: { duplicate?: boolean }) {
+function MobileSequence() {
   return (
-    <div className="mobile-sequence" aria-hidden={duplicate || undefined}>
+    <div className="mobile-sequence">
       <section className="mobile-panel mobile-intro">
-        <p className="mobile-index">00 / EQUAL SPA</p>
+        <p className="mobile-index">01 / EQUAL SPA</p>
         <h2>RETURN<br />TO<br />EQUAL.</h2>
         <p>回到平衡，也回到更自在的自己。</p>
         <span className="mobile-down">SCROLL ↓</span>
       </section>
 
       <section className="mobile-panel mobile-booking">
-        <p className="mobile-index">01 / BOOKING</p>
+        <p className="mobile-index">02 / BOOKING</p>
         <div className="glass-orbit">
           <small>預約客服</small>
           <strong>@017ktlhm</strong>
@@ -35,7 +32,7 @@ function MobileSequence({ duplicate = false }: { duplicate?: boolean }) {
       </section>
 
       <section className="mobile-panel mobile-services">
-        <p className="mobile-index">02 / SERVICES</p>
+        <p className="mobile-index">03 / SERVICES</p>
         <h2>CHOOSE<br />YOUR TIME.</h2>
         <p className="mobile-translation">依照今天的身體，選擇六十到一百二十分鐘。</p>
         <div className="mobile-service-list">
@@ -46,7 +43,7 @@ function MobileSequence({ duplicate = false }: { duplicate?: boolean }) {
       </section>
 
       <section className="mobile-panel mobile-therapists">
-        <p className="mobile-index">03 / THERAPISTS</p>
+        <p className="mobile-index">04 / THERAPISTS</p>
         <h2>MEET<br />YOUR MATCH.</h2>
         <p className="mobile-translation">從互動氣質開始，找到適合你的專業師傅。</p>
         <div className="category-stack">
@@ -57,7 +54,7 @@ function MobileSequence({ duplicate = false }: { duplicate?: boolean }) {
       </section>
 
       <section className="mobile-panel mobile-offer">
-        <p className="mobile-index">04 / OFFERS</p>
+        <p className="mobile-index">05 / OFFERS</p>
         <div className="offer-number">01</div>
         <p className="offer-kicker">CURRENT SELECTION</p>
         <h2>CURRENT<br />OFFER.</h2>
@@ -67,35 +64,18 @@ function MobileSequence({ duplicate = false }: { duplicate?: boolean }) {
       </section>
 
       <section className="mobile-panel mobile-location">
-        <p className="mobile-index">05 / LOCATION</p>
+        <p className="mobile-index">06 / LOCATION</p>
         <div className="map-grid" aria-hidden="true"><span>西門</span><i /></div>
         <h2>TAIPEI<br />XIMEN</h2>
         <p>台北市萬華區西寧南路 36 號<br />營業時間 10:00—24:00</p>
         <a href="/location">交通與店鋪資訊 →</a>
-        <small>KEEP SCROLLING · BACK TO EQUAL</small>
+        <small>06 / 06 · END OF PAGE</small>
       </section>
     </div>
   );
 }
 
 export default function Home() {
-  useEffect(() => {
-    let ticking = false;
-    const loopMobilePage = () => {
-      if (ticking || window.innerWidth > 760 || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-      ticking = true;
-      window.requestAnimationFrame(() => {
-        const sequence = document.querySelector<HTMLElement>('.mobile-sequence');
-        if (sequence && window.scrollY >= sequence.offsetHeight) {
-          window.scrollTo({ top: window.scrollY - sequence.offsetHeight, behavior: 'instant' as ScrollBehavior });
-        }
-        ticking = false;
-      });
-    };
-    window.addEventListener('scroll', loopMobilePage, { passive: true });
-    return () => window.removeEventListener('scroll', loopMobilePage);
-  }, []);
-
   return (
     <main className="home-shell">
       <PointerLight />
@@ -118,7 +98,6 @@ export default function Home() {
 
       <div className="mobile-flow">
         <MobileSequence />
-        <MobileSequence duplicate />
       </div>
 
       <WingMenu />
