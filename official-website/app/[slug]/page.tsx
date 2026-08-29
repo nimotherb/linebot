@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import TherapistCatalog from '../components/TherapistCatalog';
+import { PublishedOffers, PublishedServices } from '../components/PublishedSiteContent';
 import { PointerLight, SiteHeader, WingMenu } from '../components/WingMenu';
 
 const pageMeta = {
@@ -63,21 +64,13 @@ function AboutContent() {
 }
 
 function ServicesContent() {
-  return <>
-    <div className="service-overview"><small>FIVE WAYS TO RESET</small><p>所有方案皆可於每日 10:00—24:00 洽詢預約。A、B 兩個六十分鐘方案為指壓或油壓擇一；其餘方案依內容安排完整手法。實際流程會由師傅依身體回饋微調。</p></div>
-    <div className="service-journeys">{plans.map((plan, index) => <article key={plan.code} className="service-journey">
-      <header><span className="service-index">{String(index + 1).padStart(2, '0')}</span><i>{plan.code}</i><div><small>{plan.english}</small><h2>{plan.name}</h2></div><div className="service-quick-info"><small>{plan.summary}</small><p>{plan.duration}</p></div><strong>{plan.price}</strong></header>
-      <div className="service-journey-body"><h3>{plan.lead}</h3><div className="service-prose">{plan.paragraphs.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div><ul>{plan.tags.map((tag) => <li key={tag}>{tag}</li>)}</ul><a href={bookingUrl} target="_blank" rel="noreferrer">SELECT THIS PLAN ↗</a></div>
-    </article>)}</div>
-    <div className="service-notes"><h2>BOOKING NOTES</h2><dl><div><dt>午夜加成</dt><dd>00:00—06:00 · NT$ 600</dd></div><div><dt>預約時加時</dt><dd>每 30 分鐘 NT$ 500</dd></div><div><dt>現場加時</dt><dd>每 30 分鐘 NT$ 700</dd></div><div><dt>外出交通</dt><dd>超過 3 公里，每公里 NT$ 80</dd></div></dl><p>客服值班時間為每日 10:00—24:00；其他時段的服務請在客服值班時間內提前完成預約。方案、師傅與優惠可能調整，最終內容以 LINE 客服確認為準。</p></div>
-  </>;
+  return <PublishedServices fallbackPlans={plans} fallbackBookingUrl={bookingUrl} />;
 }
 
 function TherapistsContent() { return <TherapistCatalog />; }
 
 function OffersContent() {
-  const offers = [['BIRTHDAY', '生日月優惠', '在生日月替自己留一段完整的休息時間。'], ['NEW FACE', '新進師傅體驗', '認識不同手法與節奏，找到更適合自己的選擇。'], ['WEEKDAY', '平日時段精選', '避開繁忙時段，享受更安靜從容的體驗。']] as const;
-  return <div className="offer-grid">{offers.map(([tag, title, copy], index) => <article key={tag}><span>0{index + 1}</span><small>{tag}</small><h2>{title}</h2><p>{copy}</p><em>填充預覽內容</em><a href={bookingUrl} target="_blank" rel="noreferrer">查看可預約時段 ↗</a></article>)}</div>;
+  return <PublishedOffers fallbackBookingUrl={bookingUrl} />;
 }
 
 function LocationContent() {

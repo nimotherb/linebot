@@ -126,10 +126,23 @@ class PublicShiftCreateIn(BaseModel):
     end_time: datetime
 
 
+class ServiceCreateIn(BaseModel):
+    code: str = Field(min_length=1, max_length=30)
+    name: str = Field(min_length=1, max_length=120)
+    duration_minutes: int = Field(ge=30, le=480)
+    price: int = Field(ge=0)
+    description: str | None = Field(default=None, max_length=500)
+    location_type: Literal["onsite", "external"] = "onsite"
+    can_choose_staff: bool = True
+    effective_from: datetime | None = None
+    effective_to: datetime | None = None
+
+
 class ServicePatchIn(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     duration_minutes: int | None = Field(default=None, ge=30, le=480)
     price: int | None = Field(default=None, ge=0)
+    description: str | None = Field(default=None, max_length=500)
     active: bool | None = None
     effective_from: datetime | None = None
     effective_to: datetime | None = None
@@ -374,6 +387,7 @@ def register_admin_api(
         active = Column(Boolean, nullable=False, default=True)
         effective_from = Column(DateTime, nullable=True)
         effective_to = Column(DateTime, nullable=True)
+        deleted_at = Column(DateTime, nullable=True)
         updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     class Promotion(Base):
@@ -387,6 +401,7 @@ def register_admin_api(
         active = Column(Boolean, nullable=False, default=True)
         stackable = Column(Boolean, nullable=False, default=False)
         description = Column(String(500), nullable=True)
+        deleted_at = Column(DateTime, nullable=True)
         created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
         updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
 
@@ -939,6 +954,7 @@ def register_admin_api(
             "active": item.active,
             "effective_from": _iso(item.effective_from),
             "effective_to": _iso(item.effective_to),
+            "deleted_at": _iso(item.deleted_at),
         }
 
     def promotion_dict(item) -> dict[str, Any]:
@@ -952,6 +968,7 @@ def register_admin_api(
             "ends_at": _iso(item.ends_at),
             "stackable": item.stackable,
             "description": item.description,
+            "deleted_at": _iso(item.deleted_at),
         }
 
     def staff_dict(item) -> dict[str, Any]:
@@ -1231,8 +1248,8 @@ def register_admin_api(
             "appointments": [public_appointment_dict(db, item) for item in appointments],
             "staff": [{"id": item.id, "name": item.name, "category": item.category, "employment_status": item.employment_status, "line_connected": False} for item in db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.name).all()],
             "shifts": [shift_dict(item) | {"staff_name": (db.query(Staff).filter(Staff.id == item.staff_id).first().name if db.query(Staff).filter(Staff.id == item.staff_id).first() else "未知")} for item in shifts],
-            "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.active.is_(True)).order_by(ServicePlan.id).all()],
-            "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.active.is_(True)).order_by(Promotion.id).all()],
+            "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()],
+            "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.active.is_(True), Promotion.deleted_at.is_(None)).order_by(Promotion.id).all()],
             "rooms": [{"id": item.id, "name": item.name, "active": item.active} for item in db.query(Room).filter(Room.active.is_(True)).order_by(Room.id).all()],
             "customers": [],
             "admin_users": [],
@@ -1280,9 +1297,10 @@ def register_admin_api(
     @app.get("/api/public/booking/options")
     def public_booking_options(db: Session = Depends(get_db)):
         now = now_taipei_naive()
-        services = db.query(ServicePlan).filter(ServicePlan.active.is_(True)).order_by(ServicePlan.id).all()
+        services = db.query(ServicePlan).filter(ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()
         promotions = db.query(Promotion).filter(
             Promotion.active.is_(True),
+            Promotion.deleted_at.is_(None),
             Promotion.calculation_type.in_(["fixed_discount", "percent_discount"]),
         ).order_by(Promotion.id).all()
         promotions = [item for item in promotions if (not item.starts_at or item.starts_at <= now) and (not item.ends_at or item.ends_at >= now)]
@@ -1298,7 +1316,7 @@ def register_admin_api(
 
     @app.get("/api/public/booking/availability")
     def public_booking_availability(service_plan_id: int, start_time: datetime, db: Session = Depends(get_db)):
-        plan = db.query(ServicePlan).filter(ServicePlan.id == service_plan_id, ServicePlan.active.is_(True)).first()
+        plan = db.query(ServicePlan).filter(ServicePlan.id == service_plan_id, ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).first()
         if not plan:
             raise HTTPException(status_code=404, detail="找不到啟用中的服務方案")
         start_dt = parse_local_datetime(start_time)
@@ -1377,8 +1395,8 @@ def register_admin_api(
             "appointments": [appointment_dict(db, item) for item in appointments],
             "staff": [staff_dict(staff_obj)],
             "shifts": [shift_dict(item) | {"staff_name": staff_obj.name} for item in shifts],
-            "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.active.is_(True)).order_by(ServicePlan.id).all()],
-            "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.active.is_(True)).order_by(Promotion.id).all()],
+            "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()],
+            "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.active.is_(True), Promotion.deleted_at.is_(None)).order_by(Promotion.id).all()],
             "rooms": [{"id": item.id, "name": item.name, "active": item.active} for item in db.query(Room).filter(Room.active.is_(True)).order_by(Room.id).all()],
             "customers": [],
             "admin_users": [],
@@ -1452,8 +1470,8 @@ def register_admin_api(
             "appointments": [appointment_dict(db, item) for item in appointments],
             "staff": [staff_dict(item) for item in db.query(Staff).order_by(Staff.name).all()],
             "shifts": [shift_dict(item) | {"staff_name": db.query(Staff).filter(Staff.id == item.staff_id).first().name} for item in shift_rows],
-            "services": [service_dict(item) for item in db.query(ServicePlan).order_by(ServicePlan.id).all()],
-            "promotions": [promotion_dict(item) for item in db.query(Promotion).order_by(Promotion.id).all()],
+            "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()],
+            "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.deleted_at.is_(None)).order_by(Promotion.id).all()],
             "rooms": [{"id": item.id, "name": item.name, "active": item.active} for item in db.query(Room).order_by(Room.id).all()],
             "venues": [{"id": item.id, "name": item.name, "address": item.address, "room_name": item.room_name, "rental_cost": item.rental_cost, "notes": item.notes, "active": item.active} for item in db.query(Venue).filter(Venue.active.is_(True)).all()],
             "customers": [customer_dict(db, item) for item in db.query(User).order_by(User.created_at.desc()).limit(1000).all()],
@@ -1504,12 +1522,12 @@ def register_admin_api(
 
     @app.post("/api/admin/appointments", status_code=201)
     def create_appointment(payload: AppointmentCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
-        plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id, ServicePlan.active.is_(True)).first()
+        plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id, ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).first()
         if not plan:
             raise HTTPException(status_code=404, detail="找不到啟用中的服務方案")
         promotion = None
         if payload.promotion_id:
-            promotion = db.query(Promotion).filter(Promotion.id == payload.promotion_id, Promotion.active.is_(True)).first()
+            promotion = db.query(Promotion).filter(Promotion.id == payload.promotion_id, Promotion.active.is_(True), Promotion.deleted_at.is_(None)).first()
             if not promotion:
                 raise HTTPException(status_code=404, detail="找不到啟用中的優惠")
         start_dt = parse_local_datetime(payload.start_time)
@@ -1605,12 +1623,12 @@ def register_admin_api(
                     return {"duplicate": True, "appointment": appointment_dict(db, appointment)}
             raise HTTPException(status_code=409, detail="預約正在處理中，請勿重複送出")
 
-        plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id, ServicePlan.active.is_(True)).first()
+        plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id, ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).first()
         if not plan:
             raise HTTPException(status_code=404, detail="找不到啟用中的服務方案")
         promotion = None
         if payload.promotion_id:
-            promotion = db.query(Promotion).filter(Promotion.id == payload.promotion_id, Promotion.active.is_(True)).first()
+            promotion = db.query(Promotion).filter(Promotion.id == payload.promotion_id, Promotion.active.is_(True), Promotion.deleted_at.is_(None)).first()
             if not promotion or promotion_discount(promotion, plan.price) <= 0:
                 raise HTTPException(status_code=404, detail="這個優惠目前無法使用")
 
@@ -1720,13 +1738,13 @@ def register_admin_api(
                 customer.phone = contact_phone
         plan = None
         if payload.service_plan_id is not None:
-            plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id).first()
+            plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id, ServicePlan.deleted_at.is_(None)).first()
             if not plan:
                 raise HTTPException(status_code=404, detail="找不到服務方案")
         promotion = None
         promotion_changed = "promotion_id" in changes
         if promotion_changed and payload.promotion_id:
-            promotion = db.query(Promotion).filter(Promotion.id == payload.promotion_id, Promotion.active.is_(True)).first()
+            promotion = db.query(Promotion).filter(Promotion.id == payload.promotion_id, Promotion.active.is_(True), Promotion.deleted_at.is_(None)).first()
             if not promotion:
                 raise HTTPException(status_code=404, detail="找不到啟用中的優惠")
         start_dt = parse_local_datetime(payload.start_time) if payload.start_time else appointment.start_time
@@ -1828,7 +1846,33 @@ def register_admin_api(
 
     @app.get("/api/admin/services")
     def list_services(db: Session = Depends(get_db), user=Depends(current_admin)):
-        return [service_dict(item) for item in db.query(ServicePlan).order_by(ServicePlan.id).all()]
+        return [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()]
+
+    @app.post("/api/admin/services", status_code=201)
+    def create_service(payload: ServiceCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        code = payload.code.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9_-]+", code):
+            raise HTTPException(status_code=422, detail="方案代碼只能使用英文字母、數字、底線或連字號")
+        if db.query(ServicePlan).filter(ServicePlan.code == code).first():
+            raise HTTPException(status_code=409, detail="方案代碼已使用；已刪除方案的代碼也會保留給歷史訂單")
+        item = ServicePlan(
+            code=code,
+            name=payload.name.strip(),
+            duration_minutes=payload.duration_minutes,
+            price=payload.price,
+            description=payload.description,
+            location_type=payload.location_type,
+            can_choose_staff=payload.can_choose_staff,
+            active=True,
+            effective_from=parse_local_datetime(payload.effective_from) if payload.effective_from else None,
+            effective_to=parse_local_datetime(payload.effective_to) if payload.effective_to else None,
+        )
+        db.add(item)
+        db.flush()
+        audit(db, actor, "create", "service_plan", item.id, after=service_dict(item))
+        db.commit()
+        db.refresh(item)
+        return service_dict(item)
 
     @app.get("/api/admin/site-content")
     def get_site_content(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
@@ -1894,11 +1938,11 @@ def register_admin_api(
 
     @app.patch("/api/admin/services/{service_id}")
     def update_service(service_id: int, payload: ServicePatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
-        item = db.query(ServicePlan).filter(ServicePlan.id == service_id).first()
+        item = db.query(ServicePlan).filter(ServicePlan.id == service_id, ServicePlan.deleted_at.is_(None)).first()
         if not item:
             raise HTTPException(status_code=404, detail="找不到服務方案")
         before = service_dict(item)
-        for field in ("name", "duration_minutes", "price", "active"):
+        for field in ("name", "duration_minutes", "price", "description", "active"):
             value = getattr(payload, field)
             if value is not None:
                 setattr(item, field, value)
@@ -1910,13 +1954,28 @@ def register_admin_api(
         db.commit()
         return service_dict(item)
 
+    @app.delete("/api/admin/services/{service_id}")
+    def delete_service(service_id: int, reason: str | None = Query(default=None, max_length=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(ServicePlan).filter(ServicePlan.id == service_id, ServicePlan.deleted_at.is_(None)).with_for_update().first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到服務方案")
+        before = service_dict(item)
+        deleted_at = now_taipei_naive()
+        item.active = False
+        item.deleted_at = deleted_at
+        if item.effective_to is None or item.effective_to > deleted_at:
+            item.effective_to = deleted_at
+        audit(db, actor, "catalog_delete", "service_plan", item.id, reason=reason or "官網編輯器刪除", before=before, after=service_dict(item))
+        db.commit()
+        return {"ok": True, "id": item.id, "history_preserved": True}
+
     @app.get("/api/admin/promotions")
     def list_promotions(db: Session = Depends(get_db), user=Depends(current_admin)):
-        return [promotion_dict(item) for item in db.query(Promotion).order_by(Promotion.id).all()]
+        return [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.deleted_at.is_(None)).order_by(Promotion.id).all()]
 
     @app.post("/api/admin/promotions", status_code=201)
     def create_promotion(payload: PromotionCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
-        item = Promotion(name=payload.name, calculation_type=payload.calculation_type, value=payload.value, starts_at=parse_local_datetime(payload.starts_at) if payload.starts_at else None, ends_at=parse_local_datetime(payload.ends_at) if payload.ends_at else None, stackable=payload.stackable)
+        item = Promotion(name=payload.name, calculation_type=payload.calculation_type, value=payload.value, starts_at=parse_local_datetime(payload.starts_at) if payload.starts_at else None, ends_at=parse_local_datetime(payload.ends_at) if payload.ends_at else None, stackable=payload.stackable, description=payload.description)
         db.add(item)
         db.flush()
         audit(db, actor, "create", "promotion", item.id, after=_model_dump(payload))
@@ -1925,7 +1984,7 @@ def register_admin_api(
 
     @app.patch("/api/admin/promotions/{promotion_id}")
     def update_promotion(promotion_id: int, payload: PromotionPatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
-        item = db.query(Promotion).filter(Promotion.id == promotion_id).first()
+        item = db.query(Promotion).filter(Promotion.id == promotion_id, Promotion.deleted_at.is_(None)).first()
         if not item:
             raise HTTPException(status_code=404, detail="找不到優惠")
         before = promotion_dict(item)
@@ -1936,6 +1995,21 @@ def register_admin_api(
         audit(db, actor, "update", "promotion", item.id, before=before, after=promotion_dict(item))
         db.commit()
         return promotion_dict(item)
+
+    @app.delete("/api/admin/promotions/{promotion_id}")
+    def delete_promotion(promotion_id: int, reason: str | None = Query(default=None, max_length=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(Promotion).filter(Promotion.id == promotion_id, Promotion.deleted_at.is_(None)).with_for_update().first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到優惠")
+        before = promotion_dict(item)
+        deleted_at = now_taipei_naive()
+        item.active = False
+        item.deleted_at = deleted_at
+        if item.ends_at is None or item.ends_at > deleted_at:
+            item.ends_at = deleted_at
+        audit(db, actor, "catalog_delete", "promotion", item.id, reason=reason or "官網編輯器刪除", before=before, after=promotion_dict(item))
+        db.commit()
+        return {"ok": True, "id": item.id, "history_preserved": True}
 
     @app.get("/api/admin/staff")
     def list_staff(db: Session = Depends(get_db), user=Depends(current_admin)):

@@ -480,3 +480,61 @@ def test_site_content_draft_publish_permissions_and_versions(client):
     logs = client.get("/api/admin/audit-logs", headers=admin_headers).json()
     site_actions = {item["action"] for item in logs if item["entity_type"] == "site_content"}
     assert {"save_draft", "publish"}.issubset(site_actions)
+
+
+def test_catalog_create_and_delete_preserves_historical_order_links(client):
+    headers = login(client)
+    service = client.post(
+        "/api/admin/services",
+        headers=headers,
+        json={
+            "code": "ARCHIVE_TEST",
+            "name": "歷史保留測試方案",
+            "duration_minutes": 60,
+            "price": 1800,
+            "description": "刪除後仍保留舊訂單關聯",
+        },
+    )
+    assert service.status_code == 201, service.text
+    service_row = service.json()
+
+    promotion = client.post(
+        "/api/admin/promotions",
+        headers=headers,
+        json={
+            "name": "歷史保留測試優惠",
+            "calculation_type": "fixed_discount",
+            "value": 100,
+            "description": "舊訂單仍可辨識",
+        },
+    )
+    assert promotion.status_code == 201, promotion.text
+    promotion_row = promotion.json()
+
+    appointment = client.post(
+        "/api/admin/appointments",
+        headers=headers,
+        json={
+            "customer_name": "歷史保留客戶",
+            "phone": "0911222333",
+            "service_plan_id": service_row["id"],
+            "promotion_id": promotion_row["id"],
+            "start_time": "2099-12-20T11:00:00",
+            "location_type": "pending",
+        },
+    )
+    assert appointment.status_code == 201, appointment.text
+    appointment_id = appointment.json()["id"]
+
+    removed_service = client.delete(f"/api/admin/services/{service_row['id']}", headers=headers)
+    removed_promotion = client.delete(f"/api/admin/promotions/{promotion_row['id']}", headers=headers)
+    assert removed_service.status_code == 200, removed_service.text
+    assert removed_service.json()["history_preserved"] is True
+    assert removed_promotion.status_code == 200, removed_promotion.text
+    assert removed_promotion.json()["history_preserved"] is True
+
+    assert all(item["id"] != service_row["id"] for item in client.get("/api/admin/services", headers=headers).json())
+    assert all(item["id"] != promotion_row["id"] for item in client.get("/api/admin/promotions", headers=headers).json())
+    appointment_after = next(item for item in client.get("/api/admin/bootstrap", headers=headers).json()["appointments"] if item["id"] == appointment_id)
+    assert appointment_after["service_name"] == "歷史保留測試方案"
+    assert appointment_after["promotion_name"] == "歷史保留測試優惠"

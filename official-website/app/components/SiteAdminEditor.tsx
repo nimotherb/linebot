@@ -3,8 +3,11 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 
 type Section = 'home' | 'services' | 'therapists' | 'offers' | 'store';
-type ServiceDraft = { code: string; name: string; summary: string; duration: string; price: string; visible: boolean };
-type OfferDraft = { name: string; summary: string; status: '顯示中' | '草稿' };
+type CalculationType = 'fixed_discount' | 'percent_discount' | 'fixed_fee' | 'per_30_minutes' | 'per_km';
+type ServiceDraft = { id?: number; code: string; name: string; summary: string; duration: string; price: string; visible: boolean };
+type OfferDraft = { id?: number; name: string; summary: string; status: '顯示中' | '草稿'; calculationType?: CalculationType; value?: number };
+export type ServiceRecord = { id: number; code: string; name: string; duration_minutes: number; price: number; description?: string | null; active: boolean };
+export type PromotionRecord = { id: number; name: string; calculation_type: CalculationType; value: number; description?: string | null; active: boolean };
 export type StaffProfile = {
   id: number;
   name: string;
@@ -31,6 +34,14 @@ export type SiteAdminApi = {
   getAdminSiteContent: () => Promise<SiteContentPayload>;
   saveSiteDraft: (content: SiteDraft, expectedVersion: number) => Promise<SiteContentPayload>;
   publishSiteContent: (expectedVersion: number) => Promise<SiteContentPayload>;
+  listServices: () => Promise<ServiceRecord[]>;
+  createService: (payload: Record<string, unknown>) => Promise<ServiceRecord>;
+  updateService: (id: number, payload: Record<string, unknown>) => Promise<ServiceRecord>;
+  deleteService: (id: number) => Promise<{ ok: boolean; history_preserved: boolean }>;
+  listPromotions: () => Promise<PromotionRecord[]>;
+  createPromotion: (payload: Record<string, unknown>) => Promise<PromotionRecord>;
+  updatePromotion: (id: number, payload: Record<string, unknown>) => Promise<PromotionRecord>;
+  deletePromotion: (id: number) => Promise<{ ok: boolean; history_preserved: boolean }>;
   listStaff: () => Promise<StaffProfile[]>;
   createStaff: (payload: Record<string, unknown>) => Promise<StaffProfile>;
   updateStaff: (id: number, payload: Record<string, unknown>) => Promise<StaffProfile>;
@@ -50,6 +61,30 @@ const readPhoto = (file: File) => new Promise<string>((resolve, reject) => {
   reader.onerror = () => reject(new Error('照片讀取失敗。'));
   reader.readAsDataURL(file);
 });
+
+const serviceDraftFromRecord = (record: ServiceRecord, current?: ServiceDraft): ServiceDraft => ({
+  id: record.id,
+  code: record.code,
+  name: record.name,
+  summary: current?.summary || record.description || '',
+  duration: `${record.duration_minutes} MIN`,
+  price: `NT$ ${record.price.toLocaleString('en-US')}`,
+  visible: current?.visible ?? record.active,
+});
+
+const offerDraftFromRecord = (record: PromotionRecord, current?: OfferDraft): OfferDraft => ({
+  id: record.id,
+  name: record.name,
+  summary: current?.summary || record.description || '',
+  status: current?.status || (record.active ? '顯示中' : '草稿'),
+  calculationType: record.calculation_type,
+  value: record.value,
+});
+
+const numberFromLabel = (value: string, fallback: number) => {
+  const parsed = Number(value.replace(/[^0-9]/g, ''));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
 
 const initialDraft: SiteDraft = {
   home: {
@@ -105,21 +140,41 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
   const [staffProfiles, setStaffProfiles] = useState<StaffProfile[]>([]);
   const [showNewStaff, setShowNewStaff] = useState(false);
   const [staffBusy, setStaffBusy] = useState(false);
+  const [showNewService, setShowNewService] = useState(false);
+  const [showNewOffer, setShowNewOffer] = useState(false);
+  const [catalogBusy, setCatalogBusy] = useState(false);
 
   // 1. 載入雲端草稿
   useEffect(() => {
     const loadContent = async () => {
       try {
-        const [data, staff] = await Promise.all([api.getAdminSiteContent(), api.listStaff()]);
+        const [data, staff, serviceRecords, promotionRecords] = await Promise.all([
+          api.getAdminSiteContent(),
+          api.listStaff(),
+          api.listServices(),
+          api.listPromotions(),
+        ]);
         setStaffProfiles(staff);
         setVersion(data.draft_version || 0);
         if (data.published_at) {
           setPublishedAt(new Date(data.published_at).toLocaleString('zh-TW'));
         }
-        if (data.draft && Object.keys(data.draft).length > 0) {
-          // 將雲端草稿與預設內容合併，避免新增欄位遺失。
-          setDraft({ ...initialDraft, ...data.draft });
-        }
+        const saved = data.draft && Object.keys(data.draft).length > 0 ? data.draft : {};
+        const merged: SiteDraft = {
+          ...initialDraft,
+          ...saved,
+          home: { ...initialDraft.home, ...(saved.home || {}) },
+          booking: { ...initialDraft.booking, ...(saved.booking || {}) },
+          therapists: { ...initialDraft.therapists, ...(saved.therapists || {}) },
+          store: { ...initialDraft.store, ...(saved.store || {}) },
+          services: Array.isArray(saved.services) ? saved.services : initialDraft.services,
+          offers: Array.isArray(saved.offers) ? saved.offers : initialDraft.offers,
+        };
+        setDraft({
+          ...merged,
+          services: serviceRecords.map((record) => serviceDraftFromRecord(record, merged.services.find((item) => item.id === record.id || (!item.id && item.code === record.code)))),
+          offers: promotionRecords.map((record) => offerDraftFromRecord(record, merged.offers.find((item) => item.id === record.id || (!item.id && item.name === record.name)))),
+        });
         setNotice('已載入雲端最新草稿');
       } catch (error) {
         setNotice('無法載入草稿，使用預設範本');
@@ -136,10 +191,30 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
     setNotice('有尚未儲存的變更');
   };
 
+  const persistCatalog = async () => {
+    await Promise.all([
+      ...draft.services.filter((item) => item.id).map((item) => api.updateService(item.id!, {
+        name: item.name.trim(),
+        description: item.summary.trim() || null,
+        duration_minutes: numberFromLabel(item.duration, 60),
+        price: numberFromLabel(item.price, 0),
+        active: item.visible,
+      })),
+      ...draft.offers.filter((item) => item.id).map((item) => api.updatePromotion(item.id!, {
+        name: item.name.trim(),
+        description: item.summary.trim() || null,
+        calculation_type: item.calculationType || 'fixed_discount',
+        value: item.value || 0,
+        active: item.status === '顯示中',
+      })),
+    ]);
+  };
+
   // 2. 儲存草稿到 MySQL
   const saveDraft = async () => {
     try {
       setNotice('儲存中...');
+      await persistCatalog();
       const res = await api.saveSiteDraft(draft, version);
       setVersion(res.draft_version);
       const timestamp = new Intl.DateTimeFormat('zh-TW', { hour: '2-digit', minute: '2-digit' }).format(new Date());
@@ -171,6 +246,7 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
     try {
       setNotice('發布中...');
       // 為了安全，發布前先自動存一次最新草稿
+      await persistCatalog();
       const draftRes = await api.saveSiteDraft(draft, version);
       const newVersion = draftRes.draft_version;
       
@@ -189,6 +265,84 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
   const updateService = (index: number, patch: Partial<ServiceDraft>) => {
     const services = draft.services.map((service, serviceIndex) => serviceIndex === index ? { ...service, ...patch } : service);
     markChanged({ ...draft, services });
+  };
+
+  const createService = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setCatalogBusy(true);
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    try {
+      const summary = String(data.get('summary') || '').trim();
+      const created = await api.createService({
+        code: String(data.get('code')).trim().toUpperCase(),
+        name: String(data.get('name')).trim(),
+        duration_minutes: Number(data.get('duration')),
+        price: Number(data.get('price')),
+        description: summary || null,
+        can_choose_staff: data.get('canChooseStaff') === 'on',
+      });
+      markChanged({ ...draft, services: [...draft.services, serviceDraftFromRecord(created, { code: created.code, name: created.name, summary, duration: '', price: '', visible: true })] });
+      form.reset();
+      setShowNewService(false);
+      notify(`${created.name} 已新增；儲存／發布後會同步官網內容。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '新增方案失敗');
+    } finally {
+      setCatalogBusy(false);
+    }
+  };
+
+  const deleteService = async (service: ServiceDraft) => {
+    if (!window.confirm(`確定刪除「${service.name}」？\n它會從新預約與官網編輯器移除，但舊訂單仍會保留原方案紀錄。`)) return;
+    setCatalogBusy(true);
+    try {
+      if (service.id) await api.deleteService(service.id);
+      markChanged({ ...draft, services: draft.services.filter((item) => item !== service) });
+      notify(`${service.name} 已從目前方案刪除，歷史訂單不受影響。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '刪除方案失敗');
+    } finally {
+      setCatalogBusy(false);
+    }
+  };
+
+  const createOffer = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setCatalogBusy(true);
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    try {
+      const summary = String(data.get('summary') || '').trim();
+      const created = await api.createPromotion({
+        name: String(data.get('name')).trim(),
+        description: summary || null,
+        calculation_type: String(data.get('calculationType')),
+        value: Number(data.get('value')),
+      });
+      markChanged({ ...draft, offers: [...draft.offers, offerDraftFromRecord(created, { name: created.name, summary, status: '顯示中' })] });
+      form.reset();
+      setShowNewOffer(false);
+      notify(`${created.name} 已新增並設為顯示中。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '新增優惠失敗');
+    } finally {
+      setCatalogBusy(false);
+    }
+  };
+
+  const deleteOffer = async (offer: OfferDraft) => {
+    if (!window.confirm(`確定刪除「${offer.name}」？\n它會停止提供給新預約，舊訂單套用的優惠仍會保留。`)) return;
+    setCatalogBusy(true);
+    try {
+      if (offer.id) await api.deletePromotion(offer.id);
+      markChanged({ ...draft, offers: draft.offers.filter((item) => item !== offer) });
+      notify(`${offer.name} 已刪除，歷史訂單不受影響。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '刪除優惠失敗');
+    } finally {
+      setCatalogBusy(false);
+    }
   };
 
   const upsertStaffProfile = (profile: StaffProfile) => {
@@ -302,10 +456,22 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
           <div className="studio-form-card"><small>BOOKING ENTRY</small><h3>預約入口</h3><Field label="LINE ID" value={draft.booking.lineId} onChange={(lineId) => markChanged({ ...draft, booking: { ...draft.booking, lineId } })} /><Field label="線上預約網址" value={draft.booking.url} onChange={(url) => markChanged({ ...draft, booking: { ...draft.booking, url } })} hint="點擊官網「立即線上預約」將會導向此網址。" /></div>
         </div>}
 
-        {active === 'services' && <div className="studio-service-editor">{draft.services.map((service, index) => <article key={service.code}>
-          <header><i>{service.code}</i><div><small>SERVICE {String(index + 1).padStart(2, '0')}</small><h3>{service.name}</h3></div><label className="studio-switch"><input type="checkbox" checked={service.visible} onChange={(event) => updateService(index, { visible: event.target.checked })} /><span />{service.visible ? '顯示中' : '已隱藏'}</label></header>
-          <div><Field label="方案名稱" value={service.name} onChange={(name) => updateService(index, { name })} /><Field label="列表小字簡介" value={service.summary} onChange={(summary) => updateService(index, { summary })} /><Field label="分鐘數" value={service.duration} onChange={(duration) => updateService(index, { duration })} /><Field label="價格" value={service.price} onChange={(price) => updateService(index, { price })} /></div>
-        </article>)}</div>}
+        {active === 'services' && <div className="studio-catalog-editor">
+          <header className="studio-catalog-toolbar"><div><small>MYSQL SERVICE CATALOG</small><h3>目前方案</h3><p>新增與刪除會同步預約方案。刪除只結束後續使用，舊訂單會保留當時的方案連結。</p></div><button type="button" onClick={() => setShowNewService((current) => !current)}>{showNewService ? '取消新增' : '＋ 新增方案'}</button></header>
+          {showNewService && <form className="studio-new-catalog" onSubmit={createService}>
+            <label><span>方案代碼</span><input name="code" required maxLength={30} placeholder="例如 F" /></label>
+            <label><span>方案名稱</span><input name="name" required /></label>
+            <label><span>分鐘數</span><input name="duration" type="number" min="30" max="480" step="10" defaultValue="60" required /></label>
+            <label><span>價格</span><input name="price" type="number" min="0" step="100" required /></label>
+            <label className="wide"><span>列表小字簡介</span><input name="summary" maxLength={500} /></label>
+            <label className="studio-inline-check"><input name="canChooseStaff" type="checkbox" defaultChecked />可指定師傅</label>
+            <button type="submit" disabled={catalogBusy}>建立方案</button>
+          </form>}
+          <div className="studio-service-editor">{draft.services.map((service, index) => <article key={service.id || service.code}>
+            <header><i>{service.code}</i><div><small>SERVICE {String(index + 1).padStart(2, '0')}</small><h3>{service.name}</h3></div><div className="studio-catalog-actions"><label className="studio-switch"><input type="checkbox" checked={service.visible} onChange={(event) => updateService(index, { visible: event.target.checked })} /><span />{service.visible ? '顯示中' : '已隱藏'}</label><button className="danger" type="button" disabled={catalogBusy} onClick={() => deleteService(service)}>刪除方案</button></div></header>
+            <div><Field label="方案名稱" value={service.name} onChange={(name) => updateService(index, { name })} /><Field label="列表小字簡介" value={service.summary} onChange={(summary) => updateService(index, { summary })} /><Field label="分鐘數" value={service.duration} onChange={(duration) => updateService(index, { duration })} /><Field label="價格" value={service.price} onChange={(price) => updateService(index, { price })} /></div>
+          </article>)}</div>
+        </div>}
 
         {active === 'therapists' && <div className="studio-form-grid">
           <div className="studio-form-card"><small>CATALOG</small><h3>師傅目錄設定</h3><Field label="目錄介紹" value={draft.therapists.intro} onChange={(intro) => markChanged({ ...draft, therapists: { ...draft.therapists, intro } })} multiline /><label className="studio-range"><span>自動輪播速度</span><input type="range" min="24" max="80" value={draft.therapists.carouselSpeed} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, carouselSpeed: Number(event.target.value) } })} /><b>{draft.therapists.carouselSpeed} 秒</b></label><label className="studio-check"><input type="checkbox" checked={draft.therapists.showMeasurements} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, showMeasurements: event.target.checked } })} />公開顯示身高與體重</label></div>
@@ -325,7 +491,17 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
           </section>
         </div>}
 
-        {active === 'offers' && <div className="studio-offer-editor">{draft.offers.map((offer, index) => <article key={`${offer.name}-${index}`}><span>0{index + 1}</span><div><Field label="優惠名稱" value={offer.name} onChange={(name) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, name } : item) })} /><Field label="簡短說明" value={offer.summary} onChange={(summary) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, summary } : item) })} multiline /></div><button type="button" onClick={() => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, status: item.status === '顯示中' ? '草稿' : '顯示中' } : item) })}>{offer.status}</button></article>)}</div>}
+        {active === 'offers' && <div className="studio-catalog-editor">
+          <header className="studio-catalog-toolbar"><div><small>MYSQL PROMOTION CATALOG</small><h3>優惠內容</h3><p>優惠可保留在草稿或設為顯示中；刪除後舊訂單仍會保存原優惠。</p></div><button type="button" onClick={() => setShowNewOffer((current) => !current)}>{showNewOffer ? '取消新增' : '＋ 新增優惠'}</button></header>
+          {showNewOffer && <form className="studio-new-catalog" onSubmit={createOffer}>
+            <label><span>優惠名稱</span><input name="name" required /></label>
+            <label><span>計算方式</span><select name="calculationType" defaultValue="fixed_discount"><option value="fixed_discount">固定折扣</option><option value="percent_discount">百分比折扣</option><option value="fixed_fee">固定加價</option><option value="per_30_minutes">每 30 分鐘</option><option value="per_km">每公里</option></select></label>
+            <label><span>金額／百分比</span><input name="value" type="number" min="0" required /></label>
+            <label className="wide"><span>簡短說明</span><input name="summary" maxLength={500} /></label>
+            <button type="submit" disabled={catalogBusy}>建立優惠</button>
+          </form>}
+          <div className="studio-offer-editor">{draft.offers.map((offer, index) => <article key={offer.id || `${offer.name}-${index}`}><span>0{index + 1}</span><div><Field label="優惠名稱" value={offer.name} onChange={(name) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, name } : item) })} /><Field label="簡短說明" value={offer.summary} onChange={(summary) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, summary } : item) })} multiline /><label className="studio-catalog-field"><span>計算方式</span><select value={offer.calculationType || 'fixed_discount'} onChange={(event) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, calculationType: event.target.value as CalculationType } : item) })}><option value="fixed_discount">固定折扣</option><option value="percent_discount">百分比折扣</option><option value="fixed_fee">固定加價</option><option value="per_30_minutes">每 30 分鐘</option><option value="per_km">每公里</option></select></label><label className="studio-catalog-field"><span>金額／百分比</span><input type="number" min="0" value={offer.value || 0} onChange={(event) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, value: Number(event.target.value) } : item) })} /></label></div><div className="studio-catalog-actions"><button type="button" onClick={() => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, status: item.status === '顯示中' ? '草稿' : '顯示中' } : item) })}>{offer.status}</button><button className="danger" type="button" disabled={catalogBusy} onClick={() => deleteOffer(offer)}>刪除優惠</button></div></article>)}</div>
+        </div>}
 
         {active === 'store' && <div className="studio-form-grid">
           <div className="studio-form-card"><small>STUDIO INFORMATION</small><h3>店鋪資料</h3><Field label="地址" value={draft.store.address} onChange={(address) => markChanged({ ...draft, store: { ...draft.store, address } })} /><Field label="營業時間" value={draft.store.hours} onChange={(hours) => markChanged({ ...draft, store: { ...draft.store, hours } })} /><Field label="付款方式" value={draft.store.payment} onChange={(payment) => markChanged({ ...draft, store: { ...draft.store, payment } })} /></div>

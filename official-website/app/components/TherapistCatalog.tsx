@@ -110,7 +110,7 @@ export default function TherapistCatalog() {
     </section>
 
     <section className="therapist-carousel" aria-label="師傅照片輪播">
-      <header><div><small>PORTRAIT RAIL</small><p>{category === 'all' ? 'ALL THERAPISTS' : categoryMeta[category].english}</p></div><span>AUTOMATIC LOOP · PAUSE ON HOVER</span></header>
+      <header><div><small>PORTRAIT RAIL</small><p>{category === 'all' ? 'ALL THERAPISTS' : categoryMeta[category].english}</p></div><span>CONTINUOUS AUTOMATIC LOOP</span></header>
       <div className="portrait-rail"><div key={category} className="portrait-track" style={{ '--rail-duration': `${Math.max(34, visible.length * 2.8)}s` } as CSSProperties}>{portraitSet()}{portraitSet(true)}</div></div>
     </section>
 
