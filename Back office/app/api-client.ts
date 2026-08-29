@@ -2,6 +2,11 @@ import type { Appointment, AppointmentStatus, Customer, ServicePlan, Shift, Staf
 
 export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com').replace(/\/$/, '');
 
+export const resolveStaffPhotoUrl = (value?: string) => {
+  if (!value) return undefined;
+  return value.startsWith('/') ? `${API_BASE_URL}${value}` : value;
+};
+
 export type AdminIdentity = {
   id: number;
   username: string;
@@ -201,7 +206,7 @@ export const mapStaff = (item: RawStaff): StaffMember => ({
   lineConnected: item.line_connected,
   privateProfile: true,
   returnRuleSetId: item.return_rule_set_id,
-  photoUrl: item.photo_url,
+  photoUrl: resolveStaffPhotoUrl(item.photo_url),
   height: item.height,
   weight: item.weight,
 });
@@ -379,6 +384,14 @@ export class SpaApi {
 
   updateStaff(id: number, payload: Record<string, unknown>) {
     return this.request<RawStaff>(`/api/admin/staff/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
+  uploadStaffPhoto(id: number, dataUrl: string) {
+    return this.request<RawStaff>(`/api/admin/staff/${id}/photo`, { method: 'PUT', body: JSON.stringify({ data_url: dataUrl }) });
+  }
+
+  permanentlyDeleteStaff(id: number) {
+    return this.request<{ ok: boolean; staff_id: number }>(`/api/admin/staff/${id}`, { method: 'DELETE' });
   }
 
   createPromotion(payload: Record<string, unknown>) {

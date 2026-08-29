@@ -1,9 +1,9 @@
 'use client';
 
-import { type CSSProperties, useMemo, useState } from 'react';
+import { type CSSProperties, useEffect, useMemo, useState } from 'react';
 
 type Category = 'straight' | 'community' | 'bisexual';
-type Therapist = { name: string; slug: string; category: Category; height: number; weight: number };
+type Therapist = { id?: number; name: string; slug: string; category: Category; height?: string | number; weight?: string | number; photoUrl?: string };
 
 const categoryMeta: Record<Category, { label: string; english: string; note: string }> = {
   straight: { label: '直男師傅', english: 'STRAIGHT', note: '自然俐落，保留舒服距離的專業互動。' },
@@ -12,6 +12,7 @@ const categoryMeta: Record<Category, { label: string; english: string; note: str
 };
 
 const bookingUrl = 'https://equalspa-admin.pages.dev/booking';
+const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com').replace(/\/$/, '');
 
 const therapists: Therapist[] = [
   { name: 'Eason', slug: 'eason', category: 'straight', height: 180, weight: 72 },
@@ -64,15 +65,38 @@ const therapists: Therapist[] = [
 ];
 
 function imagePath(therapist: Therapist) {
-  return `/images/therapists/${therapist.category}/${therapist.slug}.png`;
+  if (therapist.photoUrl) return therapist.photoUrl.startsWith('/') ? `${apiBaseUrl}${therapist.photoUrl}` : therapist.photoUrl;
+  return therapist.id ? '' : `/images/therapists/${therapist.category}/${therapist.slug}.png`;
 }
 
 export default function TherapistCatalog() {
   const [category, setCategory] = useState<'all' | Category>('all');
-  const visible = useMemo(() => category === 'all' ? therapists : therapists.filter((item) => item.category === category), [category]);
+  const [profiles, setProfiles] = useState<Therapist[]>(therapists);
+  useEffect(() => {
+    fetch(`${apiBaseUrl}/api/public/therapists`)
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('therapist api unavailable')))
+      .then((items: Array<{ id: number; name: string; category?: string; height?: string; weight?: string; photo_url?: string }>) => {
+        const mapped = items.map((item) => ({
+          id: item.id,
+          name: item.name,
+          slug: `staff-${item.id}`,
+          category: item.category === 'straight' ? 'straight' : item.category === 'bisexual' ? 'bisexual' : 'community',
+          height: item.height,
+          weight: item.weight,
+          photoUrl: item.photo_url,
+        } as Therapist));
+        if (mapped.length) setProfiles(mapped);
+      })
+      .catch(() => undefined);
+  }, []);
+  const visible = useMemo(() => category === 'all' ? profiles : profiles.filter((item) => item.category === category), [category, profiles]);
+
+  const portrait = (therapist: Therapist, alt: string) => imagePath(therapist)
+    ? <img src={imagePath(therapist)} alt={alt} loading="lazy" />
+    : <span className="portrait-monogram" aria-label={alt}>{therapist.name.slice(0, 1)}</span>;
 
   const portraitSet = (duplicate = false) => <div className="portrait-set" aria-hidden={duplicate || undefined}>{visible.map((therapist, index) => <article className="portrait-product" key={`${therapist.category}-${therapist.slug}-${duplicate ? 'copy' : 'original'}`}>
-    <div className="portrait-frame"><img src={imagePath(therapist)} alt={duplicate ? '' : `${therapist.name}師傅公開形象照`} loading={duplicate || index >= 5 ? 'lazy' : 'eager'} /></div>
+    <div className="portrait-frame">{portrait(therapist, duplicate ? '' : `${therapist.name}師傅公開形象照`)}</div>
     <span>{String(index + 1).padStart(2, '0')}</span><div><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3></div>
   </article>)}</div>;
 
@@ -93,8 +117,8 @@ export default function TherapistCatalog() {
     <section className="therapist-catalog" aria-live="polite">
       <header><small>CATALOG / {visible.length} PROFILES</small><h2>THERAPIST<br />SELECTION.</h2></header>
       <div className="therapist-product-grid">{visible.map((therapist, index) => <article key={`${therapist.category}-${therapist.slug}`}>
-        <div className="therapist-product-image"><img src={imagePath(therapist)} alt={`${therapist.name}師傅`} loading="lazy"/><span>{String(index + 1).padStart(2, '0')}</span></div>
-        <div className="therapist-product-copy"><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3><dl><div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div><div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div></dl><p>{categoryMeta[therapist.category].note}</p><a href={bookingUrl} target="_blank" rel="noreferrer">詢問班表／指定預約 ↗</a></div>
+        <div className="therapist-product-image">{portrait(therapist, `${therapist.name}師傅`)}<span className="profile-index">{String(index + 1).padStart(2, '0')}</span></div>
+        <div className="therapist-product-copy"><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3>{(therapist.height || therapist.weight) && <dl>{therapist.height && <div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div>}{therapist.weight && <div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div>}</dl>}<p>{categoryMeta[therapist.category].note}</p><a href={bookingUrl} target="_blank" rel="noreferrer">詢問班表／指定預約 ↗</a></div>
       </article>)}</div>
     </section>
   </>;

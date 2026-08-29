@@ -7,6 +7,8 @@ exports, and the staff no-password schedule link.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import csv
 import hashlib
 import io
@@ -24,7 +26,7 @@ from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import Depends, Header, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from pwdlib import PasswordHash
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
@@ -219,6 +221,10 @@ class StaffPatchIn(BaseModel):
     category: Literal["straight", "gay", "bisexual"] | None = None
     return_rule_set_id: int | None = None
     photo_url: str | None = Field(default=None, max_length=1000)
+
+
+class StaffPhotoIn(BaseModel):
+    data_url: str = Field(min_length=32, max_length=4_500_000)
 
 
 class VenueCreateIn(BaseModel):
@@ -490,6 +496,14 @@ def register_admin_api(
         used_at = Column(DateTime, nullable=True)
         created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
 
+    class StaffPhoto(Base):
+        __tablename__ = "staff_photos"
+        id = Column(Integer, primary_key=True)
+        staff_id = Column(Integer, ForeignKey("staffs.id"), unique=True, nullable=False, index=True)
+        mime_type = Column(String(50), nullable=False)
+        data_base64 = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=False)
+        updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
+
     class ReturnRuleSet(Base):
         __tablename__ = "return_rule_sets"
         id = Column(Integer, primary_key=True)
@@ -558,6 +572,7 @@ def register_admin_api(
         "StaffPrivateHealth": StaffPrivateHealth,
         "StaffSession": StaffSession,
         "StaffMagicLink": StaffMagicLink,
+        "StaffPhoto": StaffPhoto,
         "ReturnRuleSet": ReturnRuleSet,
         "ReturnRule": ReturnRule,
         "StaffReturn": StaffReturn,
@@ -1179,6 +1194,33 @@ def register_admin_api(
             "version": item.published_version,
             "published_at": _iso(item.published_at),
         }
+
+    @app.get("/api/public/therapists")
+    def public_therapists(db: Session = Depends(get_db)):
+        items = db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.name).all()
+        return [{
+            "id": item.id,
+            "name": item.name,
+            "category": item.category,
+            "height": item.height,
+            "weight": item.weight,
+            "photo_url": item.photo_url,
+        } for item in items]
+
+    @app.get("/api/public/staff/{staff_id}/photo")
+    def public_staff_photo(staff_id: int, db: Session = Depends(get_db)):
+        photo = db.query(StaffPhoto).filter(StaffPhoto.staff_id == staff_id).first()
+        if not photo:
+            raise HTTPException(status_code=404, detail="找不到師傅照片")
+        try:
+            content = base64.b64decode(photo.data_base64, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise HTTPException(status_code=500, detail="照片資料已損壞") from exc
+        return Response(
+            content=content,
+            media_type=photo.mime_type,
+            headers={"Cache-Control": "public, max-age=3600, stale-while-revalidate=86400"},
+        )
 
     @app.get("/api/public/booking/options")
     def public_booking_options(db: Session = Depends(get_db)):
@@ -1856,6 +1898,9 @@ def register_admin_api(
         line_user_id = payload.line_user_id or f"pending:{secrets.token_hex(16)}"
         if db.query(Staff).filter(Staff.line_user_id == line_user_id).first():
             raise HTTPException(status_code=409, detail="LINE 帳號已存在")
+        photo_url = (payload.photo_url or "").strip()
+        if photo_url and not photo_url.startswith(("https://", "http://")):
+            raise HTTPException(status_code=422, detail="照片網址必須以 https:// 或 http:// 開頭；本機照片請使用上傳功能")
         item = Staff(
             line_user_id=line_user_id,
             name=payload.name,
@@ -1863,7 +1908,7 @@ def register_admin_api(
             category=payload.category,
             employment_status="active",
             return_rule_set_id=payload.return_rule_set_id,
-            photo_url=payload.photo_url,
+            photo_url=photo_url or None,
         )
         db.add(item)
         db.flush()
@@ -1877,6 +1922,11 @@ def register_admin_api(
         if not item:
             raise HTTPException(status_code=404, detail="找不到員工")
         changes = _model_dump_unset(payload)
+        if "photo_url" in changes:
+            photo_url = (changes["photo_url"] or "").strip()
+            if photo_url and not photo_url.startswith(("https://", "http://", "/api/public/staff/")):
+                raise HTTPException(status_code=422, detail="照片網址必須以 https:// 或 http:// 開頭；本機照片請使用上傳功能")
+            changes["photo_url"] = photo_url or None
         if "return_rule_set_id" in changes and changes["return_rule_set_id"] is not None:
             if not db.query(ReturnRuleSet).filter(ReturnRuleSet.id == changes["return_rule_set_id"], ReturnRuleSet.active.is_(True)).first():
                 raise HTTPException(status_code=404, detail="找不到回帳表")
@@ -1884,6 +1934,32 @@ def register_admin_api(
         for field, value in changes.items():
             setattr(item, field, value)
         audit(db, actor, "update", "staff", item.id, before=before, after=staff_dict(item))
+        db.commit()
+        return staff_dict(item)
+
+    @app.put("/api/admin/staff/{staff_id}/photo")
+    def upload_staff_photo(staff_id: int, payload: StaffPhotoIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(Staff).filter(Staff.id == staff_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到員工")
+        matched = re.fullmatch(r"data:(image/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)", payload.data_url)
+        if not matched:
+            raise HTTPException(status_code=422, detail="只接受 JPEG、PNG 或 WebP 圖片")
+        mime_type, encoded = matched.groups()
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise HTTPException(status_code=422, detail="照片內容無法讀取") from exc
+        if not content or len(content) > 3 * 1024 * 1024:
+            raise HTTPException(status_code=422, detail="照片大小必須小於 3 MB")
+        photo = db.query(StaffPhoto).filter(StaffPhoto.staff_id == staff_id).first()
+        if photo:
+            photo.mime_type = mime_type
+            photo.data_base64 = encoded
+        else:
+            db.add(StaffPhoto(staff_id=staff_id, mime_type=mime_type, data_base64=encoded))
+        item.photo_url = f"/api/public/staff/{staff_id}/photo"
+        audit(db, actor, "upload_photo", "staff", staff_id, after={"mime_type": mime_type, "bytes": len(content)})
         db.commit()
         return staff_dict(item)
 
@@ -1897,6 +1973,32 @@ def register_admin_api(
         audit(db, actor, "status_change", "staff", item.id, reason=payload.reason, before=before, after=staff_dict(item))
         db.commit()
         return staff_dict(item)
+
+    @app.delete("/api/admin/staff/{staff_id}")
+    def permanently_delete_staff(staff_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin"))):
+        item = db.query(Staff).filter(Staff.id == staff_id).with_for_update().first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到員工")
+        history = {
+            "預約": db.query(Appointment).filter(Appointment.staff_id == staff_id).count(),
+            "排班": db.query(Shift).filter(Shift.staff_id == staff_id).count(),
+            "回帳": db.query(StaffReturn).filter(StaffReturn.staff_id == staff_id).count(),
+            "代收付款": db.query(Payment).filter(Payment.received_by_staff_id == staff_id).count(),
+        }
+        used = {label: count for label, count in history.items() if count}
+        if used:
+            summary = "、".join(f"{label} {count} 筆" for label, count in used.items())
+            raise HTTPException(status_code=409, detail=f"這位師傅已有歷史紀錄（{summary}），為保留帳務與稽核資料，只能設為暫時退役")
+        before = staff_dict(item)
+        db.query(StaffScheduleToken).filter(StaffScheduleToken.staff_id == staff_id).delete(synchronize_session=False)
+        db.query(StaffPrivateHealth).filter(StaffPrivateHealth.staff_id == staff_id).delete(synchronize_session=False)
+        db.query(StaffSession).filter(StaffSession.staff_id == staff_id).delete(synchronize_session=False)
+        db.query(StaffMagicLink).filter(StaffMagicLink.staff_id == staff_id).delete(synchronize_session=False)
+        db.query(StaffPhoto).filter(StaffPhoto.staff_id == staff_id).delete(synchronize_session=False)
+        db.delete(item)
+        audit(db, actor, "permanent_delete", "staff", staff_id, reason="admin permanent delete", before=before)
+        db.commit()
+        return {"ok": True, "staff_id": staff_id}
 
     @app.post("/api/admin/staff/{staff_id}/schedule-link")
     def rotate_staff_schedule_link(staff_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):

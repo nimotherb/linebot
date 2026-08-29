@@ -1,5 +1,6 @@
 import os
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,7 @@ os.environ["ADMIN_INITIAL_PIN"] = "123456"
 os.environ["MANAGER_INITIAL_PIN"] = "654321"
 os.environ["CUSTOMER_SERIAL_START"] = "4800"
 
-from main import Base, SessionLocal, Staff, app, build_staff_week_appointments, engine  # noqa: E402
+from main import Base, SessionLocal, Staff, app, build_staff_week_appointments, engine, now_taipei_naive  # noqa: E402
 from identifiers import customer_serial  # noqa: E402
 
 
@@ -44,11 +45,63 @@ def test_login_is_required_and_bootstrap_seeds_two_rooms(client):
     assert customer_serial(1) == "VIP-4800"
 
 
+def test_staff_photo_upload_and_safe_permanent_delete(client):
+    admin_headers = login(client)
+    manager_headers = login(client, "jerry", "654321")
+    created = client.post(
+        "/api/admin/staff",
+        headers=admin_headers,
+        json={"name": "待刪除師傅", "category": "gay", "photo_url": "https://example.com/portrait.jpg"},
+    )
+    assert created.status_code == 201, created.text
+    staff_id = created.json()["id"]
+
+    png_data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZfN0AAAAASUVORK5CYII="
+    uploaded = client.put(
+        f"/api/admin/staff/{staff_id}/photo",
+        headers=admin_headers,
+        json={"data_url": f"data:image/png;base64,{png_data}"},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    assert uploaded.json()["photo_url"] == f"/api/public/staff/{staff_id}/photo"
+    public_photo = client.get(uploaded.json()["photo_url"])
+    assert public_photo.status_code == 200
+    assert public_photo.headers["content-type"] == "image/png"
+
+    assert client.delete(f"/api/admin/staff/{staff_id}", headers=manager_headers).status_code == 403
+    deleted = client.delete(f"/api/admin/staff/{staff_id}", headers=admin_headers)
+    assert deleted.status_code == 200, deleted.text
+    assert client.get(uploaded.json()["photo_url"]).status_code == 404
+
+    used = client.post(
+        "/api/admin/staff",
+        headers=admin_headers,
+        json={"name": "保留歷史師傅", "category": "straight"},
+    )
+    assert used.status_code == 201, used.text
+    shift = client.post(
+        "/api/admin/shifts",
+        headers=admin_headers,
+        json={
+            "staff_id": used.json()["id"],
+            "start_time": "2099-01-01T16:00:00",
+            "end_time": "2099-01-01T18:00:00",
+            "source": "admin",
+        },
+    )
+    assert shift.status_code == 201, shift.text
+    blocked = client.delete(f"/api/admin/staff/{used.json()['id']}", headers=admin_headers)
+    assert blocked.status_code == 409
+    assert "只能設為暫時退役" in blocked.json()["detail"]
+
+
 def test_appointment_end_and_staff_room_conflicts(client):
     headers = login(client)
     bootstrap = client.get("/api/admin/bootstrap", headers=headers).json()
     ninety_minute_plan = next(item for item in bootstrap["services"] if item["duration_minutes"] == 90)
     room = bootstrap["rooms"][0]
+    start_at = (now_taipei_naive() + timedelta(days=1)).replace(hour=16, minute=0, second=0, microsecond=0)
+    overlap_at = start_at + timedelta(hours=1)
 
     staff_response = client.post(
         "/api/admin/staff",
@@ -62,14 +115,14 @@ def test_appointment_end_and_staff_room_conflicts(client):
         "customer_name": "測試客戶",
         "phone": "0912345678",
         "service_plan_id": ninety_minute_plan["id"],
-        "start_time": "2026-08-24T16:00:00",
+        "start_time": start_at.isoformat(timespec="seconds"),
         "staff_id": staff["id"],
         "room_id": room["id"],
         "location_type": "onsite",
     }
     first = client.post("/api/admin/appointments", headers=headers, json=payload)
     assert first.status_code == 201, first.text
-    assert first.json()["end_time"] == "2026-08-24T17:30"
+    assert first.json()["end_time"] == (start_at + timedelta(minutes=90)).isoformat(timespec="minutes")
     assert first.json()["customer_serial"] == "VIP-4800"
 
     with SessionLocal() as db:
@@ -80,7 +133,7 @@ def test_appointment_end_and_staff_room_conflicts(client):
     staff_conflict = client.post(
         "/api/admin/appointments",
         headers=headers,
-        json={**payload, "phone": "0922222222", "start_time": "2026-08-24T17:00:00", "room_id": bootstrap["rooms"][1]["id"]},
+        json={**payload, "phone": "0922222222", "start_time": overlap_at.isoformat(timespec="seconds"), "room_id": bootstrap["rooms"][1]["id"]},
     )
     assert staff_conflict.status_code == 409
     assert "師傅" in staff_conflict.json()["detail"]
@@ -88,7 +141,7 @@ def test_appointment_end_and_staff_room_conflicts(client):
     room_conflict = client.post(
         "/api/admin/appointments",
         headers=headers,
-        json={**payload, "phone": "0933333333", "start_time": "2026-08-24T17:00:00", "staff_id": None},
+        json={**payload, "phone": "0933333333", "start_time": overlap_at.isoformat(timespec="seconds"), "staff_id": None},
     )
     assert room_conflict.status_code == 409
     assert "房間" in room_conflict.json()["detail"]
@@ -190,7 +243,7 @@ def test_customer_name_serial_and_multiple_phone_ids(client):
             "customer_name": "多手機客戶",
             "phone": "0966000001",
             "service_plan_id": plan["id"],
-            "start_time": "2026-08-25T19:00:00",
+            "start_time": "2099-08-25T19:00:00",
             "room_id": room["id"],
             "location_type": "onsite",
         },
@@ -228,8 +281,8 @@ def test_public_booking_checks_availability_and_is_idempotent(client):
         headers=headers,
         json={
             "staff_id": staff["id"],
-            "start_time": "2026-08-27T18:00:00",
-            "end_time": "2026-08-27T23:00:00",
+                "start_time": "2099-08-27T18:00:00",
+                "end_time": "2099-08-27T23:00:00",
             "source": "admin",
         },
     )
@@ -242,7 +295,7 @@ def test_public_booking_checks_availability_and_is_idempotent(client):
 
     availability = client.get(
         "/api/public/booking/availability",
-        params={"service_plan_id": plan["id"], "start_time": "2026-08-27T19:00:00"},
+        params={"service_plan_id": plan["id"], "start_time": "2099-08-27T19:00:00"},
     )
     assert availability.status_code == 200, availability.text
     assert [item["id"] for item in availability.json()["staff"]] == [staff["id"]]
@@ -251,7 +304,7 @@ def test_public_booking_checks_availability_and_is_idempotent(client):
         "customer_name": "網頁預約客戶",
         "phone": "0977000002",
         "service_plan_id": plan["id"],
-        "start_time": "2026-08-27T19:00:00",
+        "start_time": "2099-08-27T19:00:00",
         "staff_id": staff["id"],
         "idempotency_key": "booking-test-key-000001",
         "notes": "請以 LINE 聯絡",
