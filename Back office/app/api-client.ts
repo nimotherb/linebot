@@ -114,6 +114,7 @@ export type BootstrapData = {
   user: AdminIdentity | null;
   staff_user?: StaffIdentity;
   appointments: RawAppointment[];
+  booking_requests?: RawBookingRequest[];
   services: RawService[];
   staff: RawStaff[];
   shifts: RawShift[];
@@ -144,6 +145,7 @@ export type ReturnRuleSetView = {
 export type PublicBookingOptions = {
   services: RawService[];
   promotions: BootstrapData['promotions'];
+  staff: RawStaff[];
   minimum_lead_minutes: number;
   support_url: string;
   liff_id?: string;
@@ -154,12 +156,41 @@ export type PublicBookingAvailability = {
   start_time: string;
   end_time: string;
   can_choose_staff: boolean;
+  request_only?: boolean;
+  available_for_instant_booking?: boolean;
   staff: Array<{ id: number; name: string; category?: RawStaff['category'] }>;
+};
+
+export type RawBookingRequest = {
+  id: number;
+  request_id: string;
+  customer_name: string;
+  phone: string;
+  staff_id?: number;
+  staff_name: string;
+  service_plan_id: number;
+  service_name: string;
+  promotion_id?: number;
+  promotion_name?: string;
+  start_time: string;
+  end_time: string;
+  status: 'pending' | 'confirmed' | 'cancelled';
+  status_label: string;
+  source: string;
+  notes?: string;
+  appointment_id?: number;
+  review_note?: string;
+  created_at: string;
 };
 
 export type PublicBookingResult = {
   duplicate: boolean;
   appointment: RawAppointment;
+};
+
+export type PublicBookingRequestResult = {
+  duplicate: boolean;
+  booking_request: RawBookingRequest;
 };
 
 const splitDateTime = (value: string) => {
@@ -349,13 +380,21 @@ export class SpaApi {
     return this.request<PublicBookingOptions>('/api/public/booking/options');
   }
 
-  publicBookingAvailability(servicePlanId: number, startTime: string) {
+  publicBookingAvailability(servicePlanId: number, startTime: string, requestedStaffId?: number, requestOnly = false) {
     const query = new URLSearchParams({ service_plan_id: String(servicePlanId), start_time: startTime });
+    if (requestedStaffId) query.set('requested_staff_id', String(requestedStaffId));
+    if (requestOnly) query.set('request_only', 'true');
     return this.request<PublicBookingAvailability>(`/api/public/booking/availability?${query}`);
   }
 
   createPublicBooking(payload: Record<string, unknown>) {
     return this.request<PublicBookingResult>('/api/public/booking/appointments', {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+  }
+
+  createPublicBookingRequest(payload: Record<string, unknown>) {
+    return this.request<PublicBookingRequestResult>('/api/public/booking/requests', {
       method: 'POST', body: JSON.stringify(payload),
     });
   }
@@ -422,6 +461,22 @@ export class SpaApi {
   deleteStaff(id: number, reason: string) {
     const query = new URLSearchParams({ reason });
     return this.request<{ ok: boolean; deleted_staff_id: number; deleted_staff_name: string }>(`/api/admin/staff/${id}?${query}`, { method: 'DELETE' });
+  }
+
+  unlinkStaffLine(id: number) {
+    return this.request<RawStaff>(`/api/admin/staff/${id}/line-link`, { method: 'DELETE' });
+  }
+
+  updateBookingRequest(id: number, payload: Record<string, unknown>) {
+    return this.request<RawBookingRequest>(`/api/admin/booking-requests/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
+  confirmBookingRequest(id: number) {
+    return this.request<{ booking_request: RawBookingRequest; appointment: RawAppointment }>(`/api/admin/booking-requests/${id}/confirm`, { method: 'POST' });
+  }
+
+  cancelBookingRequest(id: number, reviewNote = '') {
+    return this.request<RawBookingRequest>(`/api/admin/booking-requests/${id}/cancel`, { method: 'POST', body: JSON.stringify({ review_note: reviewNote || null }) });
   }
 
   createPromotion(payload: Record<string, unknown>) {

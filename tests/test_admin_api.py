@@ -146,7 +146,7 @@ def test_appointment_end_and_staff_room_conflicts(client):
     assert "房間" in room_conflict.json()["detail"]
 
 
-def test_only_admin_can_create_accounts(client):
+def test_manager_can_only_create_clerk_accounts(client):
     manager_headers = login(client, "jerry", "654321")
     denied_manager = client.post(
         "/api/admin/users",
@@ -155,27 +155,79 @@ def test_only_admin_can_create_accounts(client):
     )
     assert denied_manager.status_code == 403
 
-    denied_clerk = client.post(
+    allowed_clerk = client.post(
         "/api/admin/users",
         headers=manager_headers,
         json={"username": "frontdesk", "display_name": "櫃台", "pin": "112233", "role": "clerk"},
     )
-    assert denied_clerk.status_code == 403
-
-    admin_headers = login(client)
-    allowed = client.post(
-        "/api/admin/users",
-        headers=admin_headers,
-        json={"username": "frontdesk", "display_name": "櫃台", "pin": "112233", "role": "clerk"},
-    )
-    assert allowed.status_code == 201
-    clerk_id = allowed.json()["id"]
+    assert allowed_clerk.status_code == 201
+    clerk_id = allowed_clerk.json()["id"]
     removed = client.delete(f"/api/admin/users/{clerk_id}", headers=manager_headers)
     assert removed.status_code == 200
     assert removed.json()["is_active"] is False
 
     admin_user = next(item for item in client.get("/api/admin/users", headers=manager_headers).json() if item["username"] == "admin")
     assert client.delete(f"/api/admin/users/{admin_user['id']}", headers=manager_headers).status_code == 403
+
+
+def test_booking_request_waits_for_review_and_can_be_confirmed_without_shift(client):
+    headers = login(client)
+    options = client.get("/api/public/booking/options").json()
+    plan = next(item for item in options["services"] if item["can_choose_staff"])
+    staff = options["staff"][0]
+    start_at = (now_taipei_naive() + timedelta(days=4)).replace(hour=19, minute=0, second=0, microsecond=0)
+    availability = client.get("/api/public/booking/availability", params={
+        "service_plan_id": plan["id"],
+        "start_time": start_at.isoformat(timespec="seconds"),
+        "requested_staff_id": staff["id"],
+        "request_only": "true",
+    })
+    assert availability.status_code == 200, availability.text
+    assert availability.json()["request_only"] is True
+    assert availability.json()["staff"][0]["id"] == staff["id"]
+    before = len(client.get("/api/admin/appointments", headers=headers).json())
+    created = client.post("/api/public/booking/requests", json={
+        "customer_name": "通知測試客戶",
+        "phone": "0966666666",
+        "service_plan_id": plan["id"],
+        "start_time": start_at.isoformat(timespec="seconds"),
+        "staff_id": staff["id"],
+        "promotion_id": None,
+        "notes": "官網指定師傅",
+        "id_token": None,
+        "idempotency_key": "booking-request-test-0001",
+        "source": "official_website",
+        "website": "",
+    })
+    assert created.status_code == 201, created.text
+    request_row = created.json()["booking_request"]
+    assert request_row["status"] == "pending"
+    assert request_row["staff_id"] == staff["id"]
+    assert len(client.get("/api/admin/appointments", headers=headers).json()) == before
+
+    confirmed = client.post(f"/api/admin/booking-requests/{request_row['id']}/confirm", headers=headers)
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["booking_request"]["status"] == "confirmed"
+    assert confirmed.json()["appointment"]["staff_id"] == staff["id"]
+    assert len(client.get("/api/admin/appointments", headers=headers).json()) == before + 1
+
+
+def test_manager_can_unlink_staff_line_without_deleting_history(client):
+    admin_headers = login(client)
+    manager_headers = login(client, "jerry", "654321")
+    created = client.post("/api/admin/staff", headers=admin_headers, json={
+        "name": "LINE 解綁測試師傅",
+        "category": "gay",
+        "line_user_id": "U-test-staff-line-binding",
+    })
+    assert created.status_code == 201, created.text
+    assert created.json()["line_connected"] is True
+    unlinked = client.delete(f"/api/admin/staff/{created.json()['id']}/line-link", headers=manager_headers)
+    assert unlinked.status_code == 200, unlinked.text
+    assert unlinked.json()["line_connected"] is False
+    with SessionLocal() as db:
+        RevokedStaffLine = app.state.admin_models["RevokedStaffLine"]
+        assert db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == "U-test-staff-line-binding").count() == 1
 
 
 def test_public_bootstrap_is_read_only_and_redacts_sensitive_fields(client):

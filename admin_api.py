@@ -200,7 +200,19 @@ class PublicBookingCreateIn(BaseModel):
     notes: str | None = Field(default=None, max_length=1000)
     id_token: str | None = Field(default=None, max_length=4096)
     idempotency_key: str = Field(min_length=16, max_length=80)
+    source: Literal["booking_web", "official_website", "line_all_staff"] = "booking_web"
     website: str = Field(default="", max_length=0)
+
+
+class BookingRequestPatchIn(BaseModel):
+    staff_id: int | None = None
+    service_plan_id: int | None = None
+    promotion_id: int | None = None
+    start_time: datetime | None = None
+    customer_name: str | None = Field(default=None, min_length=1, max_length=120)
+    phone: str | None = Field(default=None, min_length=8, max_length=30)
+    notes: str | None = Field(default=None, max_length=1000)
+    review_note: str | None = Field(default=None, max_length=500)
 
 
 class StaffAppointmentCreateIn(AppointmentCreateIn):
@@ -346,6 +358,7 @@ def register_admin_api(
     Staff,
     Appointment,
     appointment_notifier=None,
+    booking_request_notifier=None,
 ) -> None:
     """Register models, startup seeding, and all API endpoints."""
 
@@ -528,6 +541,14 @@ def register_admin_api(
         reason = Column(String(500), nullable=True)
         deleted_at = Column(DateTime, nullable=False, default=now_taipei_naive)
 
+    class RevokedStaffLine(Base):
+        __tablename__ = "revoked_staff_lines"
+        id = Column(Integer, primary_key=True)
+        line_user_id = Column(String(255), unique=True, nullable=False, index=True)
+        staff_name = Column(String(255), nullable=False)
+        revoked_by_user_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+        revoked_at = Column(DateTime, nullable=False, default=now_taipei_naive)
+
     class ReturnRuleSet(Base):
         __tablename__ = "return_rule_sets"
         id = Column(Integer, primary_key=True)
@@ -568,6 +589,26 @@ def register_admin_api(
         source = Column(String(30), nullable=False, default="web")
         created_at = Column(DateTime, nullable=False, default=now_taipei_naive, index=True)
 
+    class BookingRequest(Base):
+        __tablename__ = "booking_requests"
+        id = Column(Integer, primary_key=True)
+        idempotency_key = Column(String(80), unique=True, nullable=False, index=True)
+        user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+        requested_staff_id = Column(Integer, ForeignKey("staffs.id"), nullable=True, index=True)
+        service_plan_id = Column(Integer, ForeignKey("service_plans.id"), nullable=False)
+        promotion_id = Column(Integer, ForeignKey("promotions.id"), nullable=True)
+        start_time = Column(DateTime, nullable=False, index=True)
+        end_time = Column(DateTime, nullable=False)
+        contact_phone = Column(String(20), nullable=False)
+        notes = Column(Text, nullable=True)
+        source = Column(String(30), nullable=False, default="booking_web")
+        status = Column(String(30), nullable=False, default="pending", index=True)
+        appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=True, index=True)
+        reviewed_by_user_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+        review_note = Column(String(500), nullable=True)
+        created_at = Column(DateTime, nullable=False, default=now_taipei_naive, index=True)
+        reviewed_at = Column(DateTime, nullable=True)
+
     class SiteContent(Base):
         __tablename__ = "site_contents"
         id = Column(Integer, primary_key=True)
@@ -598,10 +639,12 @@ def register_admin_api(
         "StaffMagicLink": StaffMagicLink,
         "StaffPhoto": StaffPhoto,
         "DeletedStaffIdentity": DeletedStaffIdentity,
+        "RevokedStaffLine": RevokedStaffLine,
         "ReturnRuleSet": ReturnRuleSet,
         "ReturnRule": ReturnRule,
         "StaffReturn": StaffReturn,
         "PublicBookingRequest": PublicBookingRequest,
+        "BookingRequest": BookingRequest,
         "SiteContent": SiteContent,
     }
 
@@ -812,6 +855,8 @@ def register_admin_api(
             ))
 
         before = staff_dict(item)
+        if item.line_user_id and not item.line_user_id.startswith(("pending:", "seeded:")) and not db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == item.line_user_id).first():
+            db.add(RevokedStaffLine(line_user_id=item.line_user_id, staff_name=item.name, revoked_by_user_id=actor_id))
         for model in (StaffScheduleToken, StaffPrivateHealth, StaffSession, StaffMagicLink, StaffPhoto):
             db.query(model).filter(model.staff_id == staff_id).delete(synchronize_session=False)
         deleted_name = item.name
@@ -821,6 +866,24 @@ def register_admin_api(
         return {"ok": True, "deleted_staff_id": staff_id, "deleted_staff_name": deleted_name}
 
     app.state.permanently_delete_staff = permanently_delete_staff
+
+    def unlink_staff_line(staff_id: int, db: Session, *, actor_id: int | None = None):
+        item = db.query(Staff).filter(Staff.id == staff_id).with_for_update().first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到員工")
+        actor = db.query(AdminUser).filter(AdminUser.id == actor_id).first() if actor_id else None
+        before = staff_dict(item)
+        previous_line_user_id = item.line_user_id
+        if previous_line_user_id and not previous_line_user_id.startswith(("pending:", "seeded:")) and not db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == previous_line_user_id).first():
+            db.add(RevokedStaffLine(line_user_id=previous_line_user_id, staff_name=item.name, revoked_by_user_id=actor_id))
+        item.line_user_id = f"pending:{secrets.token_hex(16)}"
+        db.query(StaffSession).filter(StaffSession.staff_id == staff_id).delete(synchronize_session=False)
+        db.query(StaffMagicLink).filter(StaffMagicLink.staff_id == staff_id).delete(synchronize_session=False)
+        audit(db, actor, "line_unlink", "staff", staff_id, before=before, after={"line_connected": False})
+        db.commit()
+        return item
+
+    app.state.unlink_staff_line = unlink_staff_line
 
     def decode_site_content(value: str | None) -> dict[str, Any]:
         if not value:
@@ -1123,6 +1186,38 @@ def register_admin_api(
             "last_visit": _iso(max((appointment.start_time for appointment in visits), default=None)),
         }
 
+    def booking_request_dict(db: Session, item) -> dict[str, Any]:
+        customer = db.query(User).filter(User.id == item.user_id).first()
+        staff_obj = db.query(Staff).filter(Staff.id == item.requested_staff_id).first() if item.requested_staff_id else None
+        plan = db.query(ServicePlan).filter(ServicePlan.id == item.service_plan_id).first()
+        promotion = db.query(Promotion).filter(Promotion.id == item.promotion_id).first() if item.promotion_id else None
+        reviewer = db.query(AdminUser).filter(AdminUser.id == item.reviewed_by_user_id).first() if item.reviewed_by_user_id else None
+        return {
+            "id": item.id,
+            "request_id": f"BR-{item.start_time.strftime('%m%d')}-{item.id:03d}",
+            "customer_id": item.user_id,
+            "customer_serial": customer_serial(item.user_id),
+            "customer_name": getattr(customer, "display_name", None) or "未命名客戶",
+            "phone": item.contact_phone,
+            "staff_id": item.requested_staff_id,
+            "staff_name": staff_obj.name if staff_obj else "未指定",
+            "service_plan_id": item.service_plan_id,
+            "service_name": plan.name if plan else "未知方案",
+            "promotion_id": item.promotion_id,
+            "promotion_name": promotion.name if promotion else None,
+            "start_time": _iso(item.start_time),
+            "end_time": _iso(item.end_time),
+            "status": item.status,
+            "status_label": {"pending": "待客服確認", "confirmed": "已轉正式訂單", "cancelled": "已取消"}.get(item.status, item.status),
+            "source": item.source,
+            "notes": item.notes,
+            "appointment_id": item.appointment_id,
+            "review_note": item.review_note,
+            "reviewed_by": reviewer.display_name if reviewer else None,
+            "created_at": _iso(item.created_at),
+            "reviewed_at": _iso(item.reviewed_at),
+        }
+
     def staff_appointment_conflict(db: Session, staff_id: int, start: datetime, end: datetime, exclude_id: int | None = None):
         query = db.query(Appointment).filter(
             Appointment.staff_id == staff_id,
@@ -1155,6 +1250,159 @@ def register_admin_api(
         if exclude_id:
             query = query.filter(Shift.id != exclude_id)
         return query.first()
+
+    def create_booking_request_record(
+        db: Session,
+        *,
+        customer,
+        contact_phone: str,
+        service_plan_id: int,
+        start_time: datetime,
+        staff_id: int | None,
+        promotion_id: int | None,
+        notes: str | None,
+        source: str,
+        idempotency_key: str,
+    ):
+        existing = db.query(BookingRequest).filter(BookingRequest.idempotency_key == idempotency_key).first()
+        if existing:
+            return existing, True
+        plan = db.query(ServicePlan).filter(ServicePlan.id == service_plan_id, ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).first()
+        if not plan:
+            raise HTTPException(status_code=404, detail="找不到啟用中的服務方案")
+        promotion = None
+        if promotion_id:
+            promotion = db.query(Promotion).filter(Promotion.id == promotion_id, Promotion.active.is_(True), Promotion.deleted_at.is_(None)).first()
+            if not promotion or promotion_discount(promotion, plan.price) <= 0:
+                raise HTTPException(status_code=404, detail="這個優惠目前無法使用")
+        staff_obj = None
+        if staff_id:
+            staff_obj = db.query(Staff).filter(Staff.id == staff_id, Staff.employment_status == "active").first()
+            if not staff_obj:
+                raise HTTPException(status_code=404, detail="找不到可提出預約通知的師傅")
+        start_dt = parse_local_datetime(start_time)
+        try:
+            validate_booking_start(start_dt)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        item = BookingRequest(
+            idempotency_key=idempotency_key,
+            user_id=customer.id,
+            requested_staff_id=staff_obj.id if staff_obj else None,
+            service_plan_id=plan.id,
+            promotion_id=promotion.id if promotion else None,
+            start_time=start_dt,
+            end_time=appointment_end(start_dt, plan.duration_minutes),
+            contact_phone=contact_phone,
+            notes=(notes or "").strip() or None,
+            source=source,
+            status="pending",
+        )
+        db.add(item)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            duplicate = db.query(BookingRequest).filter(BookingRequest.idempotency_key == idempotency_key).first()
+            if duplicate:
+                return duplicate, True
+            raise HTTPException(status_code=409, detail="預約通知正在處理中，請勿重複送出")
+        audit(db, None, "create_booking_request", "booking_request", item.id, reason=source, after=booking_request_dict(db, item))
+        db.commit()
+        db.refresh(item)
+        if booking_request_notifier:
+            try:
+                booking_request_notifier(item, db, origin=source)
+            except Exception:
+                logger.exception("Unable to push booking request notification booking_request_id=%s", item.id)
+        return item, False
+
+    def confirm_booking_request_record(request_id: int, db: Session, actor=None):
+        item = db.query(BookingRequest).filter(BookingRequest.id == request_id).with_for_update().first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到預約通知")
+        if item.status == "confirmed" and item.appointment_id:
+            appointment = db.query(Appointment).filter(Appointment.id == item.appointment_id).first()
+            return item, appointment, True
+        if item.status != "pending":
+            raise HTTPException(status_code=409, detail="這筆預約通知已處理")
+        if item.start_time <= now_taipei_naive():
+            raise HTTPException(status_code=422, detail="預約時間已過，請先修改時間")
+        plan = db.query(ServicePlan).filter(ServicePlan.id == item.service_plan_id, ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).first()
+        if not plan:
+            raise HTTPException(status_code=422, detail="原服務方案已停用，請先修改預約通知")
+        staff_obj = None
+        if item.requested_staff_id:
+            staff_obj = db.query(Staff).filter(Staff.id == item.requested_staff_id, Staff.employment_status == "active").first()
+            if not staff_obj:
+                raise HTTPException(status_code=422, detail="原指定師傅已停用，請先修改預約通知")
+            conflict = staff_appointment_conflict(db, staff_obj.id, item.start_time, item.end_time)
+            if conflict:
+                raise HTTPException(status_code=409, detail=f"指定師傅與訂單 AP-{conflict.id} 時間重疊，請先修改")
+        customer_conflict = db.query(Appointment).filter(
+            Appointment.user_id == item.user_id,
+            Appointment.start_time == item.start_time,
+            Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES),
+        ).first()
+        if customer_conflict:
+            raise HTTPException(status_code=409, detail=f"客戶同時段已有訂單 AP-{customer_conflict.id}")
+        promotion = db.query(Promotion).filter(Promotion.id == item.promotion_id).first() if item.promotion_id else None
+        discount = promotion_discount(promotion, plan.price)
+        appointment = Appointment(
+            user_id=item.user_id,
+            staff_id=item.requested_staff_id,
+            duration=plan.duration_minutes,
+            plan_name=f"{plan.code}-{plan.name}",
+            start_time=item.start_time,
+            end_time=item.end_time,
+            status="confirmed",
+        )
+        db.add(appointment)
+        db.flush()
+        db.add(AppointmentDetail(
+            appointment_id=appointment.id,
+            service_plan_id=plan.id,
+            promotion_id=promotion.id if promotion else None,
+            contact_phone=item.contact_phone,
+            base_price=plan.price,
+            discount_amount=discount,
+            total_amount=max(0, plan.price - discount),
+            location_type="external" if plan.location_type == "external" else "pending",
+            notes=f"由預約通知 {booking_request_dict(db, item)['request_id']} 確認成立" + (f"\n客戶備註：{item.notes}" if item.notes else ""),
+        ))
+        item.status = "confirmed"
+        item.appointment_id = appointment.id
+        item.reviewed_by_user_id = getattr(actor, "id", None)
+        item.reviewed_at = now_taipei_naive()
+        audit(db, actor, "confirm", "booking_request", item.id, after={"appointment_id": appointment.id})
+        db.commit()
+        db.refresh(appointment)
+        if appointment_notifier:
+            try:
+                appointment_notifier(appointment, db, origin="客服確認預約通知")
+            except Exception:
+                logger.exception("Unable to push confirmed booking request appointment_id=%s", appointment.id)
+        return item, appointment, False
+
+    def cancel_booking_request_record(request_id: int, db: Session, actor=None, review_note: str | None = None):
+        item = db.query(BookingRequest).filter(BookingRequest.id == request_id).with_for_update().first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到預約通知")
+        if item.status == "confirmed":
+            raise HTTPException(status_code=409, detail="已成立正式訂單，請改到訂單管理取消")
+        if item.status == "cancelled":
+            return item
+        item.status = "cancelled"
+        item.review_note = (review_note or "").strip() or None
+        item.reviewed_by_user_id = getattr(actor, "id", None)
+        item.reviewed_at = now_taipei_naive()
+        audit(db, actor, "cancel", "booking_request", item.id, reason=item.review_note)
+        db.commit()
+        return item
+
+    app.state.create_booking_request_record = create_booking_request_record
+    app.state.confirm_booking_request_record = confirm_booking_request_record
+    app.state.cancel_booking_request_record = cancel_booking_request_record
 
     def require_fernet():
         key = os.getenv("STAFF_HEALTH_ENCRYPTION_KEY")
@@ -1308,6 +1556,16 @@ def register_admin_api(
         return {
             "services": [service_dict(item) for item in services],
             "promotions": [promotion_dict(item) for item in promotions],
+            "staff": [{
+                "id": item.id,
+                "name": item.name,
+                "category": item.category,
+                "employment_status": item.employment_status,
+                "line_connected": False,
+                "height": item.height,
+                "weight": item.weight,
+                "photo_url": item.photo_url,
+            } for item in db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.name).all()],
             "minimum_lead_minutes": 90,
             "support_url": os.getenv("CUSTOMER_SERVICE_URL", "https://lin.ee/vOq3Xvt"),
             "liff_id": liff_id or None,
@@ -1315,7 +1573,13 @@ def register_admin_api(
         }
 
     @app.get("/api/public/booking/availability")
-    def public_booking_availability(service_plan_id: int, start_time: datetime, db: Session = Depends(get_db)):
+    def public_booking_availability(
+        service_plan_id: int,
+        start_time: datetime,
+        requested_staff_id: int | None = None,
+        request_only: bool = False,
+        db: Session = Depends(get_db),
+    ):
         plan = db.query(ServicePlan).filter(ServicePlan.id == service_plan_id, ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).first()
         if not plan:
             raise HTTPException(status_code=404, detail="找不到啟用中的服務方案")
@@ -1326,6 +1590,19 @@ def register_admin_api(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         end_dt = appointment_end(start_dt, plan.duration_minutes)
         staff_items = available_staff(db, start_dt, end_dt)
+        if request_only and requested_staff_id:
+            requested_staff = db.query(Staff).filter(Staff.id == requested_staff_id, Staff.employment_status == "active").first()
+            if not requested_staff:
+                raise HTTPException(status_code=404, detail="指定師傅目前無法提出預約通知")
+            available_ids = {item.id for item in staff_items}
+            return {
+                "start_time": _iso(start_dt),
+                "end_time": _iso(end_dt),
+                "can_choose_staff": True,
+                "request_only": True,
+                "available_for_instant_booking": requested_staff.id in available_ids and (plan.location_type != "onsite" or room_capacity_available(db, start_dt, end_dt)),
+                "staff": [{"id": requested_staff.id, "name": requested_staff.name, "category": requested_staff.category}],
+            }
         if not staff_items:
             raise HTTPException(status_code=409, detail="這個時段目前沒有可預約師傅，請改選其他時間")
         if plan.location_type == "onsite" and not room_capacity_available(db, start_dt, end_dt):
@@ -1336,6 +1613,25 @@ def register_admin_api(
             "can_choose_staff": plan.can_choose_staff,
             "staff": [{"id": item.id, "name": item.name, "category": item.category} for item in staff_items],
         }
+
+    @app.post("/api/public/booking/requests", status_code=201)
+    def create_public_booking_request(payload: PublicBookingCreateIn, request: Request, db: Session = Depends(get_db)):
+        _enforce_public_booking_rate(request, payload.phone)
+        customer, contact_phone, identity_source = resolve_public_customer(db, payload)
+        source = payload.source if payload.source != "booking_web" else ("booking_web_liff" if identity_source == "liff" else "booking_web")
+        item, duplicate = create_booking_request_record(
+            db,
+            customer=customer,
+            contact_phone=contact_phone,
+            service_plan_id=payload.service_plan_id,
+            start_time=payload.start_time,
+            staff_id=payload.staff_id,
+            promotion_id=payload.promotion_id,
+            notes=payload.notes,
+            source=source,
+            idempotency_key=payload.idempotency_key,
+        )
+        return {"duplicate": duplicate, "booking_request": booking_request_dict(db, item)}
 
     @app.post("/api/staff/auth/login")
     def staff_login(payload: StaffLoginIn, db: Session = Depends(get_db)):
@@ -1468,6 +1764,7 @@ def register_admin_api(
         return {
             "user": serialize_admin(user),
             "appointments": [appointment_dict(db, item) for item in appointments],
+            "booking_requests": [booking_request_dict(db, item) for item in db.query(BookingRequest).order_by(BookingRequest.created_at.desc()).limit(500).all()],
             "staff": [staff_dict(item) for item in db.query(Staff).order_by(Staff.name).all()],
             "shifts": [shift_dict(item) | {"staff_name": db.query(Staff).filter(Staff.id == item.staff_id).first().name} for item in shift_rows],
             "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()],
@@ -1487,6 +1784,64 @@ def register_admin_api(
                 "created_at": _iso(item.created_at),
             } for item in audit_rows],
         }
+
+    @app.get("/api/admin/booking-requests")
+    def list_booking_requests(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
+        return [booking_request_dict(db, item) for item in db.query(BookingRequest).order_by(BookingRequest.created_at.desc()).limit(1000).all()]
+
+    @app.patch("/api/admin/booking-requests/{request_id}")
+    def update_booking_request(request_id: int, payload: BookingRequestPatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
+        item = db.query(BookingRequest).filter(BookingRequest.id == request_id).with_for_update().first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到預約通知")
+        if item.status != "pending":
+            raise HTTPException(status_code=409, detail="只有待確認通知可以修改")
+        before = booking_request_dict(db, item)
+        changes = _model_dump_unset(payload)
+        if "customer_name" in changes and changes["customer_name"]:
+            customer = db.query(User).filter(User.id == item.user_id).first()
+            customer.display_name = changes.pop("customer_name").strip()
+        if "phone" in changes and changes["phone"]:
+            customer = db.query(User).filter(User.id == item.user_id).first()
+            item.contact_phone = attach_customer_phone(db, customer, changes.pop("phone"))
+        if "staff_id" in changes:
+            staff_id = changes.pop("staff_id")
+            if staff_id and not db.query(Staff).filter(Staff.id == staff_id, Staff.employment_status == "active").first():
+                raise HTTPException(status_code=404, detail="找不到啟用中的師傅")
+            item.requested_staff_id = staff_id
+        if "service_plan_id" in changes and changes["service_plan_id"] is not None:
+            plan = db.query(ServicePlan).filter(ServicePlan.id == changes.pop("service_plan_id"), ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).first()
+            if not plan:
+                raise HTTPException(status_code=404, detail="找不到啟用中的服務方案")
+            item.service_plan_id = plan.id
+        if "promotion_id" in changes:
+            promotion_id = changes.pop("promotion_id")
+            if promotion_id and not db.query(Promotion).filter(Promotion.id == promotion_id, Promotion.active.is_(True), Promotion.deleted_at.is_(None)).first():
+                raise HTTPException(status_code=404, detail="找不到啟用中的優惠")
+            item.promotion_id = promotion_id
+        if "start_time" in changes and changes["start_time"] is not None:
+            item.start_time = parse_local_datetime(changes.pop("start_time"))
+            if item.start_time <= now_taipei_naive():
+                raise HTTPException(status_code=422, detail="預約時間必須晚於現在")
+        if "notes" in changes:
+            item.notes = changes.pop("notes")
+        if "review_note" in changes:
+            item.review_note = changes.pop("review_note")
+        plan = db.query(ServicePlan).filter(ServicePlan.id == item.service_plan_id).first()
+        item.end_time = appointment_end(item.start_time, plan.duration_minutes)
+        audit(db, actor, "update", "booking_request", item.id, before=before, after=booking_request_dict(db, item))
+        db.commit()
+        return booking_request_dict(db, item)
+
+    @app.post("/api/admin/booking-requests/{request_id}/confirm")
+    def confirm_booking_request(request_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
+        item, appointment, duplicate = confirm_booking_request_record(request_id, db, actor)
+        return {"duplicate": duplicate, "booking_request": booking_request_dict(db, item), "appointment": appointment_dict(db, appointment)}
+
+    @app.post("/api/admin/booking-requests/{request_id}/cancel")
+    def cancel_booking_request(request_id: int, payload: BookingRequestPatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
+        item = cancel_booking_request_record(request_id, db, actor, payload.review_note)
+        return booking_request_dict(db, item)
 
     @app.get("/api/admin/appointments")
     def list_appointments(
@@ -2037,6 +2392,7 @@ def register_admin_api(
         line_user_id = payload.line_user_id or f"pending:{secrets.token_hex(16)}"
         if db.query(Staff).filter(Staff.line_user_id == line_user_id).first():
             raise HTTPException(status_code=409, detail="LINE 帳號已存在")
+        db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == line_user_id).delete(synchronize_session=False)
         photo_url = (payload.photo_url or "").strip()
         if photo_url and not photo_url.startswith(("https://", "http://")):
             raise HTTPException(status_code=422, detail="照片網址必須以 https:// 或 http:// 開頭；本機照片請使用上傳功能")
@@ -2111,6 +2467,11 @@ def register_admin_api(
         item.employment_status = payload.employment_status
         audit(db, actor, "status_change", "staff", item.id, reason=payload.reason, before=before, after=staff_dict(item))
         db.commit()
+        return staff_dict(item)
+
+    @app.delete("/api/admin/staff/{staff_id}/line-link")
+    def unlink_staff_line_endpoint(staff_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = unlink_staff_line(staff_id, db, actor_id=actor.id)
         return staff_dict(item)
 
     @app.delete("/api/admin/staff/{staff_id}")
@@ -2260,7 +2621,9 @@ def register_admin_api(
         return [serialize_admin(item) for item in db.query(AdminUser).order_by(AdminUser.id).all()]
 
     @app.post("/api/admin/users", status_code=201)
-    def create_admin_user(payload: AdminUserCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin"))):
+    def create_admin_user(payload: AdminUserCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        if actor.role == "manager" and payload.role != "clerk":
+            raise HTTPException(status_code=403, detail="店長只能新增客服帳號")
         if db.query(AdminUser).filter(AdminUser.username == payload.username.lower()).first():
             raise HTTPException(status_code=409, detail="登入帳號已存在")
         item = AdminUser(username=payload.username.lower(), display_name=payload.display_name, role=payload.role, pin_hash=password_hash.hash(payload.pin))
