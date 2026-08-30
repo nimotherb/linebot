@@ -76,6 +76,12 @@ function imagePath(therapist: Therapist) {
   return therapist.id ? '' : `/images/therapists/${therapist.category}/${therapist.slug}.png`;
 }
 
+function therapistBookingUrl(baseUrl: string, therapist: Therapist) {
+  const query = new URLSearchParams({ source: 'official', staff_name: therapist.name });
+  if (therapist.id) query.set('staff_id', String(therapist.id));
+  return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}${query.toString()}`;
+}
+
 export default function TherapistCatalog() {
   const [category, setCategory] = useState<'all' | Category>('all');
   const [profiles, setProfiles] = useState<Therapist[]>(therapists);
@@ -133,7 +139,7 @@ export default function TherapistCatalog() {
       <header><small>CATALOG / {visible.length} PROFILES</small><h2>THERAPIST<br />SELECTION.</h2></header>
       <div className="therapist-product-grid">{visible.map((therapist, index) => <article key={`${therapist.category}-${therapist.slug}`}>
         <div className="therapist-product-image">{portrait(therapist, `${therapist.name}師傅`)}<span className="profile-index">{String(index + 1).padStart(2, '0')}</span></div>
-        <div className="therapist-product-copy"><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3>{therapistSettings?.showMeasurements !== false && (therapist.height || therapist.weight) && <dl>{therapist.height && <div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div>}{therapist.weight && <div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div>}</dl>}<p>{categoryNotes[therapist.category]}</p><a href={bookingUrl} target="_blank" rel="noreferrer">詢問班表／指定預約 ↗</a></div>
+        <div className="therapist-product-copy"><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3>{therapistSettings?.showMeasurements !== false && (therapist.height || therapist.weight) && <dl>{therapist.height && <div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div>}{therapist.weight && <div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div>}</dl>}<p>{categoryNotes[therapist.category]}</p><a href={therapistBookingUrl(bookingUrl, therapist)} target="_blank" rel="noreferrer">指定 {therapist.name}／送出預約通知 ↗</a></div>
       </article>)}</div>
     </section>
   </>;

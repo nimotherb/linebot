@@ -6,6 +6,7 @@ import os
 import logging
 import secrets
 import threading
+import hashlib
 from datetime import datetime, date, timedelta
 import re
 from urllib.parse import parse_qs
@@ -349,6 +350,63 @@ def build_booking_preview_flex(*, staff, plan_key: str, promotion, selected_dt: 
         },
     )
 
+
+def build_booking_request_preview_flex(*, staff, plan_key: str, promotion, selected_dt: str):
+    plan = PLANS_INFO.get(plan_key, {"name": "未知方案", "duration": 60, "price": 0})
+    base_price = plan["price"]
+    discount = 0
+    if promotion:
+        if promotion.calculation_type == "fixed_discount":
+            discount = min(base_price, promotion.value)
+        elif promotion.calculation_type == "percent_discount":
+            discount = min(base_price, round(base_price * promotion.value / 100))
+    promotion_value = promotion.id if promotion else 0
+    rows = [
+        ("時間", parse_local_datetime(selected_dt).strftime("%m月%d日 %H:%M")),
+        ("方案", f"{plan['name']}・{plan['duration']} 分"),
+        ("指定師傅", staff.name),
+        ("優惠", promotion.name if promotion else "不使用優惠"),
+        ("預估金額", f"NT$ {max(0, base_price - discount)}"),
+    ]
+    confirm_data = f"action=confirm_booking_request_customer&staff_id={staff.id}&plan={plan_key}&promotion_id={promotion_value}&datetime={selected_dt}"
+    return FlexSendMessage(
+        alt_text="請確認預約通知內容",
+        contents={
+            "type": "bubble",
+            "header": {"type": "box", "layout": "vertical", "backgroundColor": "#92400E", "contents": [
+                {"type": "text", "text": "送出預約通知", "weight": "bold", "size": "xl", "color": "#FFFFFF"},
+                {"type": "text", "text": "送出後仍需客服確認，尚未成立正式訂單", "size": "sm", "color": "#FEF3C7", "wrap": True, "margin": "sm"},
+            ]},
+            "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
+                *[{"type": "box", "layout": "horizontal", "contents": [
+                    {"type": "text", "text": label, "size": "sm", "color": "#777777", "flex": 2},
+                    {"type": "text", "text": value, "size": "sm", "color": "#222222", "weight": "bold", "align": "end", "wrap": True, "flex": 5},
+                ]} for label, value in rows],
+            ]},
+            "footer": {"type": "box", "layout": "vertical", "contents": [
+                {"type": "button", "style": "primary", "color": "#D97706", "action": {"type": "postback", "label": "確認送出通知", "data": confirm_data}},
+            ]},
+        },
+    )
+
+
+def build_no_scheduled_staff_flex(*, plan: str, promotion_id: str, selected_dt: str):
+    return FlexSendMessage(
+        alt_text="此時段沒有已排班師傅",
+        contents={
+            "type": "bubble",
+            "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
+                {"type": "text", "text": "此時段沒有已排班師傅", "weight": "bold", "size": "xl", "wrap": True},
+                {"type": "text", "text": "您可以改選時間、聯絡真人客服，或查看全部師傅並送出待客服確認的預約通知。", "size": "sm", "color": "#6B7280", "wrap": True},
+            ]},
+            "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "datetimepicker", "label": "改時間", "data": "action=select_date", "mode": "datetime"}},
+                {"type": "button", "style": "secondary", "action": {"type": "uri", "label": "真人客服", "uri": SUPPORT_URL}},
+                {"type": "button", "style": "primary", "color": "#D97706", "action": {"type": "postback", "label": "查看全部師傅", "data": f"action=select_all_staff&plan={plan}&promotion_id={promotion_id}&datetime={selected_dt}&offset=0"}},
+            ]},
+        },
+    )
+
 # --- 共用：手機號碼確認 Flex ---
 def build_phone_confirm_flex(phone_num, action_prefix):
     return FlexSendMessage(
@@ -525,6 +583,56 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
     }
     return bubble
 
+
+def build_booking_request_bubble(booking_request, db: Session, *, customer_copy: bool = False):
+    models = getattr(app.state, "admin_models", {})
+    ServicePlan = models.get("ServicePlan")
+    Promotion = models.get("Promotion")
+    customer = db.query(User).filter(User.id == booking_request.user_id).first()
+    staff = db.query(Staff).filter(Staff.id == booking_request.requested_staff_id).first() if booking_request.requested_staff_id else None
+    plan = db.query(ServicePlan).filter(ServicePlan.id == booking_request.service_plan_id).first() if ServicePlan else None
+    promotion = db.query(Promotion).filter(Promotion.id == booking_request.promotion_id).first() if Promotion and booking_request.promotion_id else None
+    request_id = f"BR-{booking_request.start_time.strftime('%m%d')}-{booking_request.id:03d}"
+    rows = [
+        ("通知編號", request_id),
+        ("時間", booking_request.start_time.strftime("%m月%d日 %H:%M")),
+        ("方案", plan.name if plan else "未知方案"),
+        ("指定師傅", staff.name if staff else "未指定"),
+        ("優惠", promotion.name if promotion else "無"),
+    ]
+    if not customer_copy:
+        rows.extend([
+            ("客戶", getattr(customer, "display_name", None) or "未命名客戶"),
+            ("手機", booking_request.contact_phone),
+            ("來源", booking_request.source),
+        ])
+    bubble = {
+        "type": "bubble",
+        "header": {"type": "box", "layout": "vertical", "backgroundColor": "#92400E" if not customer_copy else "#123F37", "contents": [
+            {"type": "text", "text": "待客服審核的預約通知" if not customer_copy else "預約通知已送出", "weight": "bold", "size": "xl", "color": "#FFFFFF", "wrap": True},
+            {"type": "text", "text": "尚未成立正式訂單", "size": "sm", "color": "#FEF3C7" if not customer_copy else "#D1FAE5", "margin": "sm"},
+        ]},
+        "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
+            *[{"type": "box", "layout": "horizontal", "contents": [
+                {"type": "text", "text": label, "size": "sm", "color": "#6B7280", "flex": 2},
+                {"type": "text", "text": value, "size": "sm", "color": "#111827", "weight": "bold", "align": "end", "wrap": True, "flex": 5},
+            ]} for label, value in rows],
+            *([{"type": "text", "text": booking_request.notes, "size": "sm", "color": "#6B7280", "wrap": True, "margin": "md"}] if booking_request.notes else []),
+        ]},
+    }
+    if customer_copy:
+        bubble["footer"] = {"type": "box", "layout": "vertical", "contents": [
+            {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "uri", "label": "聯絡真人客服", "uri": SUPPORT_URL}},
+        ]}
+    else:
+        dashboard_url = os.getenv("ADMIN_DASHBOARD_URL", "https://equalspa-admin.pages.dev/").rstrip("/")
+        bubble["footer"] = {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+            {"type": "button", "style": "primary", "color": "#059669", "action": {"type": "postback", "label": "確認並成立訂單", "data": f"action=confirm_booking_request&request_id={booking_request.id}"}},
+            {"type": "button", "style": "secondary", "action": {"type": "uri", "label": "修改通知", "uri": f"{dashboard_url}/?booking_request={booking_request.id}"}},
+            {"type": "button", "style": "primary", "color": "#DC2626", "action": {"type": "postback", "label": "取消通知", "data": f"action=cancel_booking_request&request_id={booking_request.id}"}},
+        ]}
+    return bubble
+
 def build_staff_bubble(staff):
     profile = []
     if staff.height:
@@ -542,6 +650,7 @@ def build_staff_bubble(staff):
             "contents": [
                 {"type": "text", "text": staff.name, "wrap": True, "weight": "bold", "size": "xxl"},
                 {"type": "text", "text": "在職" if staff.employment_status == "active" else "暫時退役", "size": "sm", "color": "#059669" if staff.employment_status == "active" else "#9CA3AF"},
+                {"type": "text", "text": "LINE 已連結" if staff.line_user_id and not staff.line_user_id.startswith(("pending:", "seeded:")) else "LINE 未連結", "size": "xs", "color": "#2563EB" if staff.line_user_id and not staff.line_user_id.startswith(("pending:", "seeded:")) else "#9CA3AF"},
                 {
                     "type": "box", "layout": "baseline",
                     "contents": [
@@ -554,6 +663,7 @@ def build_staff_bubble(staff):
             "type": "box", "layout": "vertical", "spacing": "sm",
             "contents": [
                 {"type": "button", "style": "primary", "color": "#6B7280", "action": {"type": "postback", "label": "恢復在職" if staff.employment_status == "retired" else "暫時退役", "data": f"action=toggle_staff&staff_id={staff.id}"}},
+                *([{"type": "button", "style": "secondary", "action": {"type": "postback", "label": "解除 LINE 連結", "data": f"action=request_unlink_staff&staff_id={staff.id}"}}] if staff.line_user_id and not staff.line_user_id.startswith(("pending:", "seeded:")) else []),
                 {"type": "button", "style": "primary", "color": "#e11d48", "action": {"type": "postback", "label": "永久刪除", "data": f"action=request_permanent_delete_staff&staff_id={staff.id}"}}
             ]
         }
@@ -583,6 +693,26 @@ def build_permanent_delete_staff_confirmation(staff):
             ]},
             "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
                 {"type": "button", "style": "primary", "color": "#DC2626", "action": {"type": "postback", "label": "確認永久刪除", "data": f"action=confirm_permanent_delete_staff&staff_id={staff.id}"}},
+                {"type": "button", "style": "secondary", "action": {"type": "postback", "label": "取消", "data": "action=admin_staff&offset=0"}},
+            ]},
+        },
+    )
+
+
+def build_unlink_staff_confirmation(staff):
+    return FlexSendMessage(
+        alt_text=f"確認解除 {staff.name} 的 LINE 連結",
+        contents={
+            "type": "bubble",
+            "header": {"type": "box", "layout": "vertical", "backgroundColor": "#92400E", "contents": [
+                {"type": "text", "text": "解除師傅 LINE 連結", "weight": "bold", "size": "xl", "color": "#FFFFFF"},
+            ]},
+            "body": {"type": "box", "layout": "vertical", "contents": [
+                {"type": "text", "text": f"確定解除「{staff.name}」目前的 LINE 連結？", "weight": "bold", "wrap": True},
+                {"type": "text", "text": "既有訂單與班表會保留；原本的師傅 LINE 將立即失去登入與操作權限。", "size": "sm", "color": "#6B7280", "wrap": True, "margin": "md"},
+            ]},
+            "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                {"type": "button", "style": "primary", "color": "#D97706", "action": {"type": "postback", "label": "確認解除連結", "data": f"action=confirm_unlink_staff&staff_id={staff.id}"}},
                 {"type": "button", "style": "secondary", "action": {"type": "postback", "label": "取消", "data": "action=admin_staff&offset=0"}},
             ]},
         },
@@ -643,7 +773,14 @@ def build_staff_week_appointments(staff, db: Session):
 
 def handle_root_action(data, user_id, db, is_staff_side=False):
     """處理管理員（root）相關的 Postback 動作"""
-    if not any(action in data for action in ("action=admin_", "action=delete_staff", "action=toggle_staff", "action=request_permanent_delete_staff", "action=confirm_permanent_delete_staff")):
+    action_name = parse_qs(data).get("action", [""])[0]
+    root_actions = {
+        "admin_logout", "admin_view", "admin_staff", "delete_staff", "toggle_staff",
+        "request_permanent_delete_staff", "confirm_permanent_delete_staff",
+        "request_unlink_staff", "confirm_unlink_staff",
+        "confirm_booking_request", "cancel_booking_request",
+    }
+    if action_name not in root_actions:
         return None
     if not is_line_manager(user_id, db):
         return TextSendMessage(text="此功能只開放管理帳號使用。")
@@ -653,6 +790,37 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         if unbind:
             unbind(user_id, db)
         return TextSendMessage(text="管理員帳戶已從這個 LINE 登出。")
+
+    if "action=confirm_booking_request" in data:
+        qs = parse_qs(data)
+        request_id = qs.get("request_id", [None])[0]
+        confirmer = getattr(getattr(app, "state", None), "confirm_booking_request_record", None)
+        identity_getter = getattr(getattr(app, "state", None), "line_admin_identity", None)
+        if not request_id or not confirmer:
+            return TextSendMessage(text="確認功能目前無法使用，請改從後台操作。")
+        identity = identity_getter(user_id, db) if identity_getter else None
+        actor = type("LineAdminActor", (), {"id": identity.get("id") if identity else None})()
+        try:
+            _request, appointment, duplicate = confirmer(int(request_id), db, actor)
+            prefix = "這筆通知先前已成立" if duplicate else "預約通知已確認並成立正式訂單"
+            return FlexSendMessage(alt_text=prefix, contents=build_appointment_bubble(appointment, db=db, show_return=True))
+        except Exception as exc:
+            return TextSendMessage(text=getattr(exc, "detail", "確認預約通知失敗，請改從後台查看。"))
+
+    if "action=cancel_booking_request" in data:
+        qs = parse_qs(data)
+        request_id = qs.get("request_id", [None])[0]
+        canceller = getattr(getattr(app, "state", None), "cancel_booking_request_record", None)
+        identity_getter = getattr(getattr(app, "state", None), "line_admin_identity", None)
+        if not request_id or not canceller:
+            return TextSendMessage(text="取消功能目前無法使用，請改從後台操作。")
+        identity = identity_getter(user_id, db) if identity_getter else None
+        actor = type("LineAdminActor", (), {"id": identity.get("id") if identity else None})()
+        try:
+            item = canceller(int(request_id), db, actor, "LINE Bot 管理員取消")
+            return TextSendMessage(text=f"已取消預約通知 BR-{item.start_time.strftime('%m%d')}-{item.id:03d}。")
+        except Exception as exc:
+            return TextSendMessage(text=getattr(exc, "detail", "取消預約通知失敗，請改從後台查看。"))
     
     if "action=admin_view" in data:
         today = date.today()
@@ -694,6 +862,26 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         staff_id = qs.get("staff_id", [None])[0]
         staff = db.query(Staff).filter(Staff.id == int(staff_id)).first() if staff_id else None
         return build_permanent_delete_staff_confirmation(staff) if staff else TextSendMessage(text="查無師傅資料")
+
+    elif "action=request_unlink_staff" in data:
+        qs = parse_qs(data)
+        staff_id = qs.get("staff_id", [None])[0]
+        staff = db.query(Staff).filter(Staff.id == int(staff_id)).first() if staff_id else None
+        return build_unlink_staff_confirmation(staff) if staff else TextSendMessage(text="查無師傅資料")
+
+    elif "action=confirm_unlink_staff" in data:
+        qs = parse_qs(data)
+        staff_id = qs.get("staff_id", [None])[0]
+        unlinker = getattr(getattr(app, "state", None), "unlink_staff_line", None)
+        identity_getter = getattr(getattr(app, "state", None), "line_admin_identity", None)
+        if not staff_id or not unlinker:
+            return TextSendMessage(text="解除 LINE 連結功能目前無法使用，請改從後台操作。")
+        identity = identity_getter(user_id, db) if identity_getter else None
+        try:
+            staff = unlinker(int(staff_id), db, actor_id=identity.get("id") if identity else None)
+            return TextSendMessage(text=f"已解除 {staff.name} 的 LINE 連結；既有訂單與班表不受影響。")
+        except Exception as exc:
+            return TextSendMessage(text=getattr(exc, "detail", "解除 LINE 連結失敗。"))
 
     elif "action=confirm_permanent_delete_staff" in data:
         qs = parse_qs(data)
@@ -931,8 +1119,8 @@ if handler_customer:
                 active_staff = eligible_staff[offset:offset + 10]
 
                 if not active_staff:
-                    message = f"目前此時段沒有可安排的師傅，請改選時間或聯絡真人客服：{SUPPORT_URL}" if offset == 0 else "沒有更多師傅囉！"
-                    reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text=message), db=db, context="選擇師傅無可用班表")
+                    message = build_no_scheduled_staff_flex(plan=plan, promotion_id=promotion_id, selected_dt=selected_dt) if offset == 0 else TextSendMessage(text="沒有更多師傅囉！")
+                    reply_with_fallback(bot_customer_api, event.reply_token, message, db=db, context="選擇師傅無可用班表")
                     return
 
                 # 判斷是否滿 10 個（代表還有下一頁）
@@ -990,6 +1178,112 @@ if handler_customer:
                     })
 
                 reply_with_fallback(bot_customer_api, event.reply_token, FlexSendMessage(alt_text="請選擇師傅", contents={"type": "carousel", "contents": bubbles}), db=db, context="選擇師傅 Flex")
+
+            elif "action=select_all_staff" in data:
+                qs = parse_qs(data)
+                plan = qs.get("plan", [None])[0]
+                promotion_id = qs.get("promotion_id", ["0"])[0]
+                selected_dt = qs.get("datetime", [None])[0]
+                offset = max(0, int(qs.get("offset", ["0"])[0] or 0))
+                try:
+                    validate_booking_start(selected_dt)
+                except ValueError as exc:
+                    reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text=f"{exc}。請重新選擇預約時間。"), db=db, context="查看全部師傅提前時間不足")
+                    return
+                all_staff = db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.id).offset(offset).limit(10).all()
+                if not all_staff:
+                    reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text="沒有更多師傅囉！"), db=db, context="查看全部師傅末頁")
+                    return
+                has_more = len(all_staff) == 10
+                display_staff = all_staff[:9]
+                bubbles = []
+                for staff_obj in display_staff:
+                    info = " ".join(filter(None, [
+                        f"身高:{staff_obj.height}" if staff_obj.height else None,
+                        f"體重:{staff_obj.weight}" if staff_obj.weight else None,
+                        f"角色:{valid_staff_role(staff_obj.role)}" if valid_staff_role(staff_obj.role) else None,
+                    ])) or "基本資料更新中"
+                    bubble = {
+                        "type": "bubble",
+                        "body": {"type": "box", "layout": "vertical", "backgroundColor": "#000000", "contents": [
+                            {"type": "text", "text": staff_obj.name, "weight": "bold", "size": "xxl", "color": "#C0CAF5"},
+                            {"type": "text", "text": info, "size": "sm", "color": "#9ECE6A", "margin": "md", "wrap": True},
+                            {"type": "text", "text": "未確認有排班；送出後由客服回覆", "size": "xs", "color": "#FBBF24", "margin": "md", "wrap": True},
+                        ]},
+                        "footer": {"type": "box", "layout": "vertical", "backgroundColor": "#111111", "contents": [
+                            {"type": "button", "style": "primary", "color": "#D97706", "action": {"type": "postback", "label": "選擇並通知客服", "data": f"action=preview_booking_request&staff_id={staff_obj.id}&plan={plan}&promotion_id={promotion_id}&datetime={selected_dt}"}},
+                        ]},
+                    }
+                    if staff_obj.photo_url:
+                        bubble["hero"] = {"type": "image", "size": "full", "aspectRatio": "4:5", "aspectMode": "cover", "url": staff_obj.photo_url}
+                    bubbles.append(bubble)
+                if has_more:
+                    bubbles.append({
+                        "type": "bubble",
+                        "body": {"type": "box", "layout": "vertical", "paddingAll": "30px", "contents": [
+                            {"type": "text", "text": "看更多師傅", "weight": "bold", "size": "xl", "align": "center"},
+                        ]},
+                        "footer": {"type": "box", "layout": "vertical", "contents": [
+                            {"type": "button", "style": "primary", "action": {"type": "postback", "label": "下一頁", "data": f"action=select_all_staff&plan={plan}&promotion_id={promotion_id}&datetime={selected_dt}&offset={offset + 9}"}},
+                        ]},
+                    })
+                reply_with_fallback(bot_customer_api, event.reply_token, FlexSendMessage(alt_text="查看全部師傅", contents={"type": "carousel", "contents": bubbles}), db=db, context="查看全部師傅 Flex")
+
+            elif "action=preview_booking_request" in data:
+                qs = parse_qs(data)
+                staff_id = int(qs.get("staff_id", ["0"])[0] or 0)
+                plan_key = qs.get("plan", [None])[0]
+                promotion_id = int(qs.get("promotion_id", ["0"])[0] or 0)
+                selected_dt = qs.get("datetime", [None])[0]
+                staff_obj = db.query(Staff).filter(Staff.id == staff_id, Staff.employment_status == "active").first()
+                if not staff_obj:
+                    reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text="這位師傅目前無法提出預約通知，請重新選擇。"), db=db, context="預約通知師傅已不可用")
+                    return
+                try:
+                    validate_booking_start(selected_dt)
+                except ValueError as exc:
+                    reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text=f"{exc}。請重新選擇預約時間。"), db=db, context="預約通知提前時間不足")
+                    return
+                Promotion = getattr(app.state, "admin_models", {}).get("Promotion")
+                promotion = db.query(Promotion).filter(Promotion.id == promotion_id, Promotion.active.is_(True)).first() if Promotion and promotion_id else None
+                reply_with_fallback(bot_customer_api, event.reply_token, build_booking_request_preview_flex(staff=staff_obj, plan_key=plan_key, promotion=promotion, selected_dt=selected_dt), db=db, context="預約通知確認 Flex")
+
+            elif "action=confirm_booking_request_customer" in data:
+                qs = parse_qs(data)
+                staff_id = int(qs.get("staff_id", ["0"])[0] or 0)
+                plan_key = qs.get("plan", [None])[0]
+                promotion_id = int(qs.get("promotion_id", ["0"])[0] or 0)
+                selected_dt = qs.get("datetime", [None])[0]
+                user = db.query(User).filter(User.line_user_id == user_id).with_for_update().first()
+                creator = getattr(getattr(app, "state", None), "create_booking_request_record", None)
+                models = getattr(app.state, "admin_models", {})
+                ServicePlan = models.get("ServicePlan")
+                if not user or not user.phone or not creator or not ServicePlan:
+                    reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text="目前無法送出預約通知，請聯絡真人客服。"), db=db, context="預約通知建立條件不足")
+                    return
+                service_code = "OUT" if plan_key == "Out" else plan_key
+                plan_obj = db.query(ServicePlan).filter(ServicePlan.code == service_code, ServicePlan.active.is_(True)).first()
+                if not plan_obj:
+                    reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text="這個方案目前無法使用，請重新選擇。"), db=db, context="預約通知方案不存在")
+                    return
+                raw_key = f"line-request:{user.id}:{staff_id}:{service_code}:{promotion_id}:{selected_dt}"
+                idempotency_key = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+                try:
+                    item, _duplicate = creator(
+                        db,
+                        customer=user,
+                        contact_phone=user.phone,
+                        service_plan_id=plan_obj.id,
+                        start_time=parse_local_datetime(selected_dt),
+                        staff_id=staff_id,
+                        promotion_id=promotion_id or None,
+                        notes="客戶從 LINE 的「查看全部師傅」送出",
+                        source="line_all_staff",
+                        idempotency_key=idempotency_key,
+                    )
+                    reply_with_fallback(bot_customer_api, event.reply_token, FlexSendMessage(alt_text="預約通知已送出", contents=build_booking_request_bubble(item, db, customer_copy=True)), db=db, context="預約通知客戶收據")
+                except Exception as exc:
+                    reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text=getattr(exc, "detail", "預約通知送出失敗，請聯絡真人客服。")), db=db, context="預約通知建立失敗")
 
             elif "action=preview_booking" in data:
                 qs = parse_qs(data)
@@ -1147,6 +1441,11 @@ if handler_staff:
                     return
                 staff = db.query(Staff).filter(Staff.line_user_id == user_id).first()
                 if not staff:
+                    RevokedStaffLine = getattr(app.state, "admin_models", {}).get("RevokedStaffLine")
+                    revoked = db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == user_id).first() if RevokedStaffLine else None
+                    if revoked:
+                        bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="這個 LINE 的師傅連結已由管理端解除。如需重新連結，請聯絡店長或 Admin。"))
+                        return
                     staff = Staff(line_user_id=user_id, name="新進員工")
                     db.add(staff)
                     db.commit()
@@ -1279,6 +1578,25 @@ def notify_appointment_parties(appointment, db: Session, *, origin: str = "後�
             bot_staff_api.push_message(line_user_id, service_message)
         except Exception:
             logging.exception("派單推送失敗 recipient=%s appointment_id=%s", label, appointment.id)
+
+
+def notify_booking_request_parties(booking_request, db: Session, *, origin: str = "booking_web") -> None:
+    """Booking requests are review notifications; only bound management accounts receive them."""
+    if not bot_staff_api:
+        logging.warning("略過預約通知推送：LINE_TOKEN_STAFF 未設定 booking_request_id=%s", booking_request.id)
+        return
+    AdminUser = getattr(app.state, "admin_models", {}).get("AdminUser")
+    if not AdminUser:
+        return
+    message = FlexSendMessage(
+        alt_text="待客服審核的預約通知",
+        contents=build_booking_request_bubble(booking_request, db),
+    )
+    for account in db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.line_user_id.isnot(None)).all():
+        try:
+            bot_staff_api.push_message(account.line_user_id, message)
+        except Exception:
+            logging.exception("預約通知推送失敗 admin_user_id=%s booking_request_id=%s", account.id, booking_request.id)
 
 app = FastAPI(title="SPA 智能客服與預約系統")
 
@@ -1421,4 +1739,5 @@ register_admin_api(
     Staff=Staff,
     Appointment=Appointment,
     appointment_notifier=notify_appointment_parties,
+    booking_request_notifier=notify_booking_request_parties,
 )

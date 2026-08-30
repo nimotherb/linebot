@@ -64,12 +64,28 @@ export default function BookingPage() {
   const [identityMode, setIdentityMode] = useState<IdentityMode>('loading');
   const [identityMessage, setIdentityMessage] = useState('正在確認開啟方式');
   const [insideLine, setInsideLine] = useState(false);
+  const [requestOnly, setRequestOnly] = useState(false);
+  const [lockedStaffName, setLockedStaffName] = useState('');
 
   useEffect(() => {
     api.publicBookingOptions()
       .then((data) => {
         setOptions(data);
         setServiceId(String(data.services[0]?.id || ''));
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('source') === 'official') {
+          const requestedId = params.get('staff_id');
+          const requestedName = params.get('staff_name') || '';
+          const locked = data.staff.find((item) => String(item.id) === requestedId)
+            || data.staff.find((item) => item.name.trim().toLocaleLowerCase() === requestedName.trim().toLocaleLowerCase());
+          if (locked) {
+            setRequestOnly(true);
+            setStaffId(String(locked.id));
+            setLockedStaffName(locked.name);
+          } else {
+            setError(`找不到「${requestedName || '指定師傅'}」的最新資料，請回官網重新選擇或聯絡真人客服`);
+          }
+        }
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : '目前無法讀取預約方案'))
       .finally(() => setLoading(false));
@@ -110,21 +126,24 @@ export default function BookingPage() {
 
   useEffect(() => {
     if (!serviceId || !startTime) return;
+    let active = true;
     setChecking(true);
     setError('');
     setAvailability(null);
-    api.publicBookingAvailability(Number(serviceId), startTime)
+    api.publicBookingAvailability(Number(serviceId), startTime, requestOnly && staffId ? Number(staffId) : undefined, requestOnly)
       .then((data) => {
+        if (!active) return;
         setAvailability(data);
-        setStaffId((current) => data.staff.some((item) => String(item.id) === current) ? current : '');
+        if (!requestOnly) setStaffId((current) => data.staff.some((item) => String(item.id) === current) ? current : '');
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : '目前無法確認這個時段'))
-      .finally(() => setChecking(false));
-  }, [api, serviceId, startTime]);
+      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : '目前無法確認這個時段'); })
+      .finally(() => { if (active) setChecking(false); });
+    return () => { active = false; };
+  }, [api, serviceId, startTime, requestOnly, staffId]);
 
   const service = options?.services.find((item) => String(item.id) === serviceId);
   const promotion = options?.promotions.find((item) => String(item.id) === promotionId);
-  const staff = availability?.staff.find((item) => String(item.id) === staffId);
+  const staff = (requestOnly ? options?.staff : availability?.staff)?.find((item) => String(item.id) === staffId);
   const discount = !promotion || !service ? 0 : promotion.calculation_type === 'fixed_discount'
     ? Math.min(service.price, promotion.value)
     : promotion.calculation_type === 'percent_discount'
@@ -148,13 +167,19 @@ export default function BookingPage() {
     setSubmitting(true);
     setError('');
     try {
-      const result = await api.createPublicBooking({
+      const payload = {
         customer_name: name.trim(), phone, service_plan_id: service.id, start_time: startTime,
         staff_id: staff ? staff.id : null, promotion_id: promotion ? promotion.id : null,
         notes: notes.trim() || null, idempotency_key: idempotencyKey, website: '',
-        id_token: idToken || null,
-      });
-      setOrderId(result.appointment.order_id);
+        id_token: idToken || null, source: requestOnly ? 'official_website' : 'booking_web',
+      };
+      if (requestOnly) {
+        const result = await api.createPublicBookingRequest(payload);
+        setOrderId(result.booking_request.request_id);
+      } else {
+        const result = await api.createPublicBooking(payload);
+        setOrderId(result.appointment.order_id);
+      }
       setStage('success');
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (reason) {
@@ -176,8 +201,8 @@ export default function BookingPage() {
 
       <section className={styles.hero}>
         <p>RESERVATION</p>
-        <h1>{stage === 'success' ? '預約已送出' : stage === 'review' ? '最後確認一次' : '選一段留給自己的時間'}</h1>
-        <span>{stage === 'details' ? '所有預約須至少提前 90 分鐘，送出後客服會收到通知。' : stage === 'review' ? '目前尚未建立訂單，按下確認後才會正式送出。' : '客服與指定師傅已收到這筆預約。'}</span>
+        <h1>{stage === 'success' ? (requestOnly ? '預約通知已送出' : '預約已送出') : stage === 'review' ? '最後確認一次' : '選一段留給自己的時間'}</h1>
+        <span>{stage === 'details' ? (requestOnly ? `已鎖定 ${lockedStaffName}；不受班表限制，送出後由客服人工確認。` : '所有預約須至少提前 90 分鐘，送出後客服會收到通知。') : stage === 'review' ? (requestOnly ? '這只是預約通知；必須由客服確認後才會成立正式訂單。' : '目前尚未建立訂單，按下確認後才會正式送出。') : (requestOnly ? '客服已收到通知；指定師傅尚未被正式預訂。' : '客服與指定師傅已收到這筆預約。')}</span>
       </section>
 
       <nav className={styles.steps} aria-label="預約進度">
@@ -200,14 +225,15 @@ export default function BookingPage() {
         </section>
 
         <section>
-          <div className={styles.sectionTitle}><span>02</span><div><h2>日期與師傅</h2><p>只會列出正式排班且沒有撞單的師傅</p></div></div>
+          <div className={styles.sectionTitle}><span>02</span><div><h2>日期與師傅</h2><p>{requestOnly ? `從官網指定 ${lockedStaffName}，師傅已鎖定不可更換` : '只會列出正式排班且沒有撞單的師傅'}</p></div></div>
           <label className={styles.field}>預約開始時間<input type="datetime-local" value={startTime} min={taipeiInputValue(options?.minimum_lead_minutes || 90)} step="1800" onChange={(event) => setStartTime(event.target.value)} required /></label>
-          <div className={styles.availabilityLine}>{checking ? '正在確認班表與房間…' : availability ? `${availability.staff.length} 位師傅可預約・結束時間 ${availability.end_time.slice(11, 16)}` : '請選擇其他時間'}</div>
-          {availability?.can_choose_staff && <div className={styles.staffGrid}>
+          <div className={styles.availabilityLine}>{checking ? '正在確認時間…' : availability ? (requestOnly ? `${lockedStaffName} 已鎖定・預計結束 ${availability.end_time.slice(11, 16)}・等待客服人工確認` : `${availability.staff.length} 位師傅可預約・結束時間 ${availability.end_time.slice(11, 16)}`) : '請選擇其他時間'}</div>
+          {requestOnly && staff && <div className={styles.assignment}>指定師傅：{staff.name}。即使目前沒有排班也可送出通知，但不會立即成立訂單。</div>}
+          {!requestOnly && availability?.can_choose_staff && <div className={styles.staffGrid}>
             <button type="button" onClick={() => setStaffId('')} className={!staffId ? styles.staffSelected : styles.staff}><i>?</i><span><strong>不指定</strong><small>由店長安排</small></span></button>
             {availability.staff.map((item) => <button type="button" key={item.id} onClick={() => setStaffId(String(item.id))} className={staffId === String(item.id) ? styles.staffSelected : styles.staff}><i>{item.name.slice(0, 1)}</i><span><strong>{item.name}</strong><small>{categoryLabel(item.category)}</small></span></button>)}
           </div>}
-          {availability && !availability.can_choose_staff && <div className={styles.assignment}>此方案不指定師傅，將由店長依班表安排。</div>}
+          {!requestOnly && availability && !availability.can_choose_staff && <div className={styles.assignment}>此方案不指定師傅，將由店長依班表安排。</div>}
         </section>
 
         <section>
@@ -225,7 +251,7 @@ export default function BookingPage() {
       </form>}
 
       {stage === 'review' && <section className={styles.card}>
-        <div className={styles.reviewHeader}><span>尚未送出</span><h2>請確認以下預約內容</h2></div>
+        <div className={styles.reviewHeader}><span>{requestOnly ? '預約通知・尚未成立訂單' : '尚未送出'}</span><h2>請確認以下預約內容</h2></div>
         <dl className={styles.receipt}>
           <div><dt>預約時間</dt><dd>{startTime.replace('T', ' ')}–{availability?.end_time.slice(11, 16)}</dd></div>
           <div><dt>服務方案</dt><dd>{service?.name}・{service?.duration_minutes} 分</dd></div>
@@ -235,11 +261,11 @@ export default function BookingPage() {
           {notes && <div><dt>備註</dt><dd>{notes}</dd></div>}
         </dl>
         <div className={styles.total}><span>預估金額<small>實際金額以現場確認為準</small></span><strong>{money(total)}</strong></div>
-        <div className={styles.actions}><button className={styles.secondary} onClick={() => setStage('details')}>返回修改</button><button className={styles.primary} onClick={submit} disabled={submitting}>{submitting ? '正在送出…' : '確認並送出預約'}</button></div>
+        <div className={styles.actions}><button className={styles.secondary} onClick={() => setStage('details')}>返回修改</button><button className={styles.primary} onClick={submit} disabled={submitting}>{submitting ? '正在送出…' : requestOnly ? '確認送出預約通知' : '確認並送出預約'}</button></div>
       </section>}
 
       {stage === 'success' && <section className={`${styles.card} ${styles.successCard}`}>
-        <div className={styles.checkmark}>✓</div><p>BOOKING CONFIRMED</p><h2>{orderId}</h2><span>請保留此訂單編號。若預約內容需要調整，請透過真人客服聯絡我們。</span>
+        <div className={styles.checkmark}>✓</div><p>{requestOnly ? 'REQUEST RECEIVED' : 'BOOKING CONFIRMED'}</p><h2>{orderId}</h2><span>{requestOnly ? '這是預約通知編號，不是正式訂單編號。客服確認後才會成立預約；若需調整請聯絡真人客服。' : '請保留此訂單編號。若預約內容需要調整，請透過真人客服聯絡我們。'}</span>
         <a className={styles.primary} href={options?.support_url || 'https://lin.ee/vOq3Xvt'}>聯絡真人客服</a>
         {identityMode === 'line' && insideLine && <button className={styles.secondary} onClick={() => window.liff?.closeWindow()}>關閉預約頁</button>}
         <a className={styles.textLink} href="/booking">再預約一筆</a>

@@ -15,6 +15,7 @@ import {
   mapShift,
   mapStaff,
   PromotionView,
+  RawBookingRequest,
   SpaApi,
   StaffIdentity,
   ReturnRuleSetView,
@@ -37,6 +38,7 @@ type ModalState =
   | { type: 'staff' }
   | { type: 'staffEdit'; id: string }
   | { type: 'staffDelete'; id: string }
+  | { type: 'bookingRequest'; id: number }
   | { type: 'user' }
   | { type: 'account' }
   | null;
@@ -161,6 +163,7 @@ export default function Home() {
   const [active, setActive] = useState<SectionId>('dashboard');
   const [role, setRole] = useState<'admin' | 'manager' | 'clerk' | 'staff' | 'viewer'>('viewer');
   const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [bookingRequests, setBookingRequests] = useState<RawBookingRequest[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [plans, setPlans] = useState<ServicePlan[]>([]);
   const [staff, setStaff] = useState<StaffMember[]>([]);
@@ -206,6 +209,7 @@ export default function Home() {
     setStaffIdentity(data.staff_user || null);
     setRole(data.user?.role || (mode === 'staff' ? 'staff' : 'viewer'));
     setAppointments(data.appointments.map(mapAppointment));
+    setBookingRequests(data.booking_requests || []);
     setShifts(data.shifts.map(mapShift));
     setPlans(data.services.map(mapService));
     setStaff(data.staff.map(mapStaff));
@@ -217,6 +221,11 @@ export default function Home() {
     setAuditLogs((data.audit_logs || []).map(mapAuditLog));
     setConnectionError('');
     setAppMode(mode);
+    const requestedId = Number(new URLSearchParams(window.location.search).get('booking_request') || 0);
+    if (mode === 'live' && requestedId && (data.booking_requests || []).some((item) => item.id === requestedId)) {
+      setActive('appointments');
+      setModal({ type: 'bookingRequest', id: requestedId });
+    }
   };
 
   useEffect(() => {
@@ -391,10 +400,11 @@ export default function Home() {
   const selectedAppointment = modal && 'id' in modal ? appointments.find((item) => item.id === modal.id) : undefined;
   const selectedShift = modal && 'id' in modal ? shifts.find((item) => item.id === modal.id) : undefined;
   const selectedCustomer = modal?.type === 'customer' ? customers.find((item) => item.id === modal.id) : undefined;
+  const selectedBookingRequest = modal?.type === 'bookingRequest' ? bookingRequests.find((item) => item.id === modal.id) : undefined;
   const isViewer = appMode === 'public' || appMode === 'unavailable';
   const isStaffUser = appMode === 'staff';
   const canManageAll = appMode === 'live' && (role === 'admin' || role === 'manager');
-  const canCreateUsers = appMode === 'live' && role === 'admin';
+  const canCreateUsers = appMode === 'live' && (role === 'admin' || role === 'manager');
   const canEditAppointments = appMode === 'live';
   const canCreateAppointments = appMode === 'live' || isStaffUser;
   const sensitiveVisible = appMode === 'live';
@@ -732,6 +742,64 @@ export default function Home() {
     notify('目前未連線至資料庫，不能更新員工狀態。');
   };
 
+  const unlinkStaffLine = async (member: typeof staff[number]) => {
+    if (!member.apiId || !canManageAll || !member.lineConnected) return;
+    if (!window.confirm(`確定解除 ${member.name} 目前的 LINE 連結？既有訂單與班表會保留。`)) return;
+    try {
+      const updated = await api.unlinkStaffLine(member.apiId);
+      setStaff((current) => current.map((item) => item.id === member.id ? mapStaff(updated) : item));
+      notify(`${member.name} 的 LINE 連結已解除，原 LINE 已無法登入。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '解除 LINE 連結失敗');
+    }
+  };
+
+  const confirmBookingRequest = async (request: RawBookingRequest) => {
+    try {
+      const result = await api.confirmBookingRequest(request.id);
+      setBookingRequests((current) => current.map((item) => item.id === request.id ? result.booking_request : item));
+      setAppointments((current) => [mapAppointment(result.appointment), ...current.filter((item) => item.apiId !== result.appointment.id)]);
+      setModal(null);
+      notify(`${request.request_id} 已確認並成立正式訂單。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '確認預約通知失敗');
+    }
+  };
+
+  const cancelBookingRequest = async (request: RawBookingRequest) => {
+    if (!window.confirm(`確定取消預約通知 ${request.request_id}？`)) return;
+    try {
+      const updated = await api.cancelBookingRequest(request.id, '後台客服取消');
+      setBookingRequests((current) => current.map((item) => item.id === request.id ? updated : item));
+      setModal(null);
+      notify(`${request.request_id} 已取消。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '取消預約通知失敗');
+    }
+  };
+
+  const saveBookingRequest = async (event: FormEvent<HTMLFormElement>, request: RawBookingRequest) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    try {
+      const updated = await api.updateBookingRequest(request.id, {
+        customer_name: String(data.get('customerName') || '').trim(),
+        phone: String(data.get('phone') || '').trim(),
+        staff_id: Number(data.get('staffId') || 0) || null,
+        service_plan_id: Number(data.get('servicePlanId') || 0),
+        promotion_id: Number(data.get('promotionId') || 0) || null,
+        start_time: String(data.get('startTime')),
+        notes: String(data.get('notes') || '').trim() || null,
+        review_note: String(data.get('reviewNote') || '').trim() || null,
+      });
+      setBookingRequests((current) => current.map((item) => item.id === request.id ? updated : item));
+      setModal(null);
+      notify(`${request.request_id} 已更新，仍等待確認。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '修改預約通知失敗');
+    }
+  };
+
   const permanentlyDeleteStaff = async (event: FormEvent<HTMLFormElement>, member: StaffMember) => {
     event.preventDefault();
     if (!member.apiId || role !== 'admin') return notify('永久刪除只開放 Admin 使用。');
@@ -813,13 +881,13 @@ export default function Home() {
   const addAdminUser = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!canCreateUsers) {
-      notify('只有 Admin 可以新增後台使用者。');
+      notify('只有 Admin 或店長可以新增後台使用者。');
       return;
     }
     const data = new FormData(event.currentTarget);
     if (appMode === 'live') {
       try {
-        const roleName = String(data.get('role'));
+        const roleName = role === 'manager' ? '客服' : String(data.get('role'));
         const created = await api.createUser({
           display_name: String(data.get('displayName')),
           username: String(data.get('username')),
@@ -904,6 +972,17 @@ export default function Home() {
   };
 
   const renderAppointments = () => (
+    <div className="appointments-layout">
+    {appMode === 'live' && <section className="panel table-panel booking-request-panel">
+      <div className="panel-heading"><div><p className="eyebrow">REVIEW QUEUE</p><h2>待確認預約通知</h2></div><span className="subtle-label">{bookingRequests.filter((item) => item.status === 'pending').length} 筆待處理</span></div>
+      <div className="booking-request-list">
+        {bookingRequests.filter((item) => item.status === 'pending').map((item) => <article className="booking-request-card" key={item.id}>
+          <div><strong>{item.request_id}・{item.customer_name}</strong><small>{item.start_time.replace('T', ' ').slice(0, 16)}・{item.staff_name}・{item.service_name}</small><span>這是預約通知，尚未占用師傅或房間。</span></div>
+          <div className="booking-request-actions"><button className="primary-button" onClick={() => confirmBookingRequest(item)}>確認</button><button className="secondary-button" onClick={() => setModal({ type: 'bookingRequest', id: item.id })}>修改</button><button className="danger-button" onClick={() => cancelBookingRequest(item)}>取消</button></div>
+        </article>)}
+        {bookingRequests.every((item) => item.status !== 'pending') && <div className="empty-state">目前沒有待確認的預約通知。</div>}
+      </div>
+    </section>}
     <section className="panel table-panel">
       <div className="toolbar">
         <div className="search-box"><span>⌕</span><input value={appointmentSearch} onChange={(event) => setAppointmentSearch(event.target.value)} placeholder="搜尋訂單、客戶、電話或師傅" /></div>
@@ -925,6 +1004,7 @@ export default function Home() {
       </div>
       {filteredAppointments.length === 0 && <div className="empty-state">沒有符合條件的預約。</div>}
     </section>
+    </div>
   );
 
   const renderSchedule = () => {
@@ -981,7 +1061,7 @@ export default function Home() {
         <h3>{member.name}</h3><p>{member.category}・{[member.height && `${member.height} cm`, member.weight && `${member.weight} kg`].filter(Boolean).join('・') || member.id}</p>
         <div className="staff-meta"><span>{member.lineConnected ? 'LINE 已串接' : 'LINE 待串接'}</span><span>{isViewer || isStaffUser ? '公開基本資料' : '私密資料已分離'}</span></div>
         {canManageAll && returnRuleSets.length > 0 && <label className="staff-rule-select">回帳表<select value={member.returnRuleSetId || returnRuleSets[0]?.id || ''} onChange={(event) => assignReturnRuleSet(member, Number(event.target.value))}>{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label>}
-        {canManageAll && <div className="staff-card-actions"><button className="text-button" onClick={() => setModal({ type: 'staffEdit', id: member.id })}>資料／照片</button><button className="text-button" onClick={() => toggleStaffStatus(member)}>{member.status === '在職' ? '暫時退役' : '恢復在職'}</button>{role === 'admin' && <button className="danger-text" onClick={() => setModal({ type: 'staffDelete', id: member.id })}>永久刪除</button>}</div>}
+        {canManageAll && <div className="staff-card-actions"><button className="text-button" onClick={() => setModal({ type: 'staffEdit', id: member.id })}>資料／照片</button><button className="text-button" onClick={() => toggleStaffStatus(member)}>{member.status === '在職' ? '暫時退役' : '恢復在職'}</button>{member.lineConnected && <button className="text-button" onClick={() => unlinkStaffLine(member)}>解除 LINE</button>}{role === 'admin' && <button className="danger-text" onClick={() => setModal({ type: 'staffDelete', id: member.id })}>永久刪除</button>}</div>}
       </article>)}</div>
       {staff.length === 0 && <div className="empty-state">資料庫目前沒有師傅資料。</div>}
       {sensitiveVisible && <div className="privacy-note"><strong>健康資訊不顯示於此畫面</strong><span>私密欄位存放在獨立加密資料表，且不包含在一般匯出中。永久刪除只開放 Admin，且有歷史訂單、班表或回帳時會被阻止。</span></div>}
@@ -1022,7 +1102,7 @@ export default function Home() {
         </div>
       </section>
       <aside className="panel security-card"><p className="eyebrow">LOGIN SECURITY</p><h2>數字 PIN 安全設定</h2><ul><li>PIN 只保存 Argon2 雜湊</li><li>連續錯誤 5 次鎖定 15 分鐘</li><li>Bearer 工作階段 8 小時到期</li><li>停用後立即撤銷既有登入</li></ul><div className="security-footnote">停用採保留紀錄的安全刪除，不會破壞訂單與稽核資料。</div></aside>
-      <section className="panel permission-panel"><div className="panel-heading"><div><p className="eyebrow">ROLE MATRIX</p><h2>權限對照</h2></div></div><div className="permission-grid"><strong>功能</strong><strong>Admin</strong><strong>店長</strong><strong>客服</strong>{['預約與結帳', '新增／撤銷排班', '新增／退役員工', '修改價格優惠', '新增帳號', '停用客服帳號', '系統與稽核'].flatMap((label, index) => [<span key={`${label}-label`}>{label}</span>, <b key={`${label}-admin`}>✓</b>, <b key={`${label}-manager`}>{index === 6 ? '查看' : index === 4 ? '—' : '✓'}</b>, <b className="limited" key={`${label}-clerk`}>{index < 2 ? '部分' : '—'}</b>])}</div></section>
+      <section className="panel permission-panel"><div className="panel-heading"><div><p className="eyebrow">ROLE MATRIX</p><h2>權限對照</h2></div></div><div className="permission-grid"><strong>功能</strong><strong>Admin</strong><strong>店長</strong><strong>客服</strong>{['預約與結帳', '新增／撤銷排班', '新增／退役員工', '修改價格優惠', '新增帳號', '停用客服帳號', '系統與稽核'].flatMap((label, index) => [<span key={`${label}-label`}>{label}</span>, <b key={`${label}-admin`}>✓</b>, <b key={`${label}-manager`}>{index === 6 ? '查看' : index === 4 ? '限客服' : '✓'}</b>, <b className="limited" key={`${label}-clerk`}>{index < 2 ? '部分' : '—'}</b>])}</div></section>
     </div>
   );
 
@@ -1101,7 +1181,9 @@ export default function Home() {
 
       {modal?.type === 'staffDelete' && (() => { const member = staff.find((item) => item.id === modal.id); return member ? <Modal title={`永久刪除 ${member.name}`} subtitle="這項操作無法復原，系統會先檢查是否存在營運歷史。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => permanentlyDeleteStaff(event, member)}><div className="locked-message">永久刪除會移除 LINE 綁定、登入連結與私密資料。若已有預約、排班、付款或回帳紀錄，系統會拒絕刪除；這種情況請使用「暫時退役」。</div><label>刪除原因<input name="reason" required minLength={3} maxLength={500} placeholder="例如：重複建立的錯誤帳戶" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="danger-button" type="submit">確認永久刪除</button></footer></form></Modal> : null; })()}
 
-      {modal?.type === 'user' && canCreateUsers && <Modal title="新增後台使用者" subtitle="只有 Admin 可以新增任何後台帳號。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={addAdminUser}><label>顯示名稱<input name="displayName" required /></label><label>登入帳號<input name="username" required autoCapitalize="none" /></label><label>角色<select name="role"><option>Admin</option><option>店長</option><option>客服</option></select></label><label>初始數字 PIN<input name="pin" required inputMode="numeric" pattern="[0-9]+" minLength={4} maxLength={12} type="password" placeholder="至少 4 位" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立帳號</button></footer></form></Modal>}
+      {modal?.type === 'bookingRequest' && selectedBookingRequest && <Modal title={`處理 ${selectedBookingRequest.request_id}`} subtitle="這是預約通知；儲存修改不會成立訂單，按確認後才會建立正式訂單。" onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={(event) => saveBookingRequest(event, selectedBookingRequest)}><div className="form-grid two"><label>客戶名稱<input name="customerName" defaultValue={selectedBookingRequest.customer_name} required /></label><label>手機號碼<input name="phone" defaultValue={selectedBookingRequest.phone} pattern="09[0-9]{8}" required /></label><label>預約時間<input name="startTime" type="datetime-local" defaultValue={selectedBookingRequest.start_time.slice(0, 16)} required /></label><label>指定師傅<select name="staffId" defaultValue={selectedBookingRequest.staff_id || ''}><option value="">未指定</option>{staff.filter((item) => item.status === '在職').map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label><label>服務方案<select name="servicePlanId" defaultValue={selectedBookingRequest.service_plan_id}>{plans.filter((item) => item.active).map((item) => <option key={item.id} value={item.apiId}>{item.code}・{item.name}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue={selectedBookingRequest.promotion_id || ''}><option value="">不使用優惠</option>{promotions.filter((item) => item.active).map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label></div><label>客戶備註<textarea name="notes" rows={3} defaultValue={selectedBookingRequest.notes || ''} /></label><label>客服處理備註<textarea name="reviewNote" rows={2} defaultValue={selectedBookingRequest.review_note || ''} /></label><footer className="modal-actions"><button type="button" className="danger-button" onClick={() => cancelBookingRequest(selectedBookingRequest)}>取消通知</button><button className="secondary-button" type="submit">儲存修改</button><button className="primary-button" type="button" onClick={() => confirmBookingRequest(selectedBookingRequest)}>確認並成立訂單</button></footer></form></Modal>}
+
+      {modal?.type === 'user' && canCreateUsers && <Modal title="新增後台使用者" subtitle={role === 'manager' ? '店長只能新增客服（管理）帳號。' : 'Admin 可新增 Admin、店長或客服帳號。'} onClose={() => setModal(null)}><form className="modal-form" onSubmit={addAdminUser}><label>顯示名稱<input name="displayName" required /></label><label>登入帳號<input name="username" required autoCapitalize="none" /></label>{role === 'manager' ? <label>角色<input name="role" value="客服" disabled /></label> : <label>角色<select name="role"><option>Admin</option><option>店長</option><option>客服</option></select></label>}<label>初始數字 PIN<input name="pin" required inputMode="numeric" pattern="[0-9]+" minLength={4} maxLength={12} type="password" placeholder="至少 4 位" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立帳號</button></footer></form></Modal>}
       {modal?.type === 'customer' && selectedCustomer && <Modal title={`編輯 ${selectedCustomer.name}`} subtitle="VIP 是流水；真正的客戶 ID 是手機號碼，同一客戶可保存多支。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={saveCustomer}><label>客戶流水<input value={selectedCustomer.vipSerial} disabled /></label><label>客戶名稱<input name="displayName" defaultValue={selectedCustomer.name} required placeholder="可由後台建立或採用 LINE 顯示名稱" /></label><label>客戶 ID（手機號碼）<textarea name="phones" rows={4} defaultValue={selectedCustomer.phones.join('\n')} required placeholder={"0912345678\n0987654321"} /></label><div className="form-note">每行一支手機；第一支是主要聯絡號碼。每支手機只能屬於一位客戶。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存客戶資料</button></footer></form></Modal>}
     </main>
   );
