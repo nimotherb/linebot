@@ -154,6 +154,10 @@ button { font: inherit; }
 .auth-card label { display: grid; gap: 8px; color: #504a41; font-size: 13px; font-weight: 700; }
 .auth-card input { width: 100%; border: 1px solid #d8d0c2; border-radius: 10px; padding: 13px 14px; background: #fff; color: #2c2923; font: inherit; }
 .auth-card > small { display: block; margin-top: 18px; color: #8a8173; text-align: center; }
+.auth-login-card { width: min(760px, 100%); }
+.auth-login-grid { padding: 18px 0 0; text-align: left; }
+.auth-login-grid .account-login-card { margin-top: 0; border: 1px solid #e1dbcf; border-radius: 14px; background: #fbfaf7; }
+.auth-login-grid .account-login-card h3 { margin: 0; color: var(--ink); font-size: 18px; }
 .auth-error { padding: 10px 12px; border-radius: 9px; background: #f8e6e1; color: #9a3e2b; font-size: 13px; }
 .auth-loading { width: 32px; height: 32px; margin: 24px auto 0; border: 3px solid #ded5c5; border-top-color: #9b793e; border-radius: 50%; animation: auth-spin 0.8s linear infinite; }
 @keyframes auth-spin { to { transform: rotate(360deg); } }
