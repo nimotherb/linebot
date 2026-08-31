@@ -753,18 +753,24 @@ def register_admin_api(
         return customer, contact_phone, "web"
 
     def available_staff(db: Session, start_dt: datetime, end_dt: datetime) -> list:
-        result = []
-        active_staff = db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.name).all()
-        for staff_obj in active_staff:
-            on_shift = db.query(Shift).filter(
-                Shift.staff_id == staff_obj.id,
-                Shift.status == "active",
-                Shift.start_time <= start_dt,
-                Shift.end_time >= end_dt,
-            ).first()
-            if on_shift and not staff_appointment_conflict(db, staff_obj.id, start_dt, end_dt):
-                result.append(staff_obj)
-        return result
+        # One correlated NOT EXISTS query replaces the former 1 + (2 × staff)
+        # round trips. With 47 staff the old code could issue roughly 95 SQL
+        # statements for a single availability check.
+        appointment_conflict = db.query(Appointment.id).filter(
+            Appointment.staff_id == Staff.id,
+            Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES),
+            Appointment.start_time < end_dt,
+            Appointment.end_time > start_dt,
+        ).exists()
+        return db.query(Staff).join(Shift, Shift.staff_id == Staff.id).filter(
+            Staff.employment_status == "active",
+            Shift.status == "active",
+            Shift.start_time <= start_dt,
+            Shift.end_time >= end_dt,
+            ~appointment_conflict,
+        ).distinct().order_by(Staff.name).all()
+
+    app.state.available_staff = available_staff
 
     def room_capacity_available(db: Session, start_dt: datetime, end_dt: datetime) -> bool:
         room_count = db.query(Room).filter(Room.active.is_(True)).count()
@@ -1054,9 +1060,13 @@ def register_admin_api(
         }
 
     def return_rule_sets_dict(db: Session) -> list[dict[str, Any]]:
+        rule_sets = db.query(ReturnRuleSet).order_by(ReturnRuleSet.id).all()
+        rules_by_set: dict[int, list] = {item.id: [] for item in rule_sets}
+        for rule in db.query(ReturnRule).order_by(ReturnRule.rule_set_id, ReturnRule.id).all():
+            rules_by_set.setdefault(rule.rule_set_id, []).append(rule)
         result = []
-        for rule_set in db.query(ReturnRuleSet).order_by(ReturnRuleSet.id).all():
-            rules = db.query(ReturnRule).filter(ReturnRule.rule_set_id == rule_set.id).order_by(ReturnRule.id).all()
+        for rule_set in rule_sets:
+            rules = rules_by_set.get(rule_set.id, [])
             result.append({
                 "id": rule_set.id,
                 "code": rule_set.code,
@@ -1113,17 +1123,61 @@ def register_admin_api(
         fallback = {60: 2000, 90: 2500, 100: 3200, 120: 3000}
         return fallback.get(appointment.duration, 0)
 
-    def appointment_dict(db: Session, item) -> dict[str, Any]:
-        detail = db.query(AppointmentDetail).filter(AppointmentDetail.appointment_id == item.id).first()
-        plan = db.query(ServicePlan).filter(ServicePlan.id == detail.service_plan_id).first() if detail and detail.service_plan_id else None
-        promotion = db.query(Promotion).filter(Promotion.id == detail.promotion_id).first() if detail and detail.promotion_id else None
-        room = db.query(Room).filter(Room.id == detail.room_id).first() if detail and detail.room_id else None
-        venue = db.query(Venue).filter(Venue.id == detail.venue_id).first() if detail and detail.venue_id else None
-        user = db.query(User).filter(User.id == item.user_id).first()
-        staff_obj = db.query(Staff).filter(Staff.id == item.staff_id).first() if item.staff_id else None
-        payment = db.query(Payment).filter(Payment.appointment_id == item.id, Payment.status == "paid").order_by(Payment.id.desc()).first()
-        staff_return = db.query(StaffReturn).filter(StaffReturn.appointment_id == item.id).first()
-        return_rule = return_rule_for_appointment(db, item, detail)
+    def _model_map(db: Session, model, ids: set[int]) -> dict[int, Any]:
+        if not ids:
+            return {}
+        return {row.id: row for row in db.query(model).filter(model.id.in_(ids)).all()}
+
+    def appointment_cache(db: Session, items: list) -> dict[str, Any]:
+        appointment_ids = {item.id for item in items}
+        details = db.query(AppointmentDetail).filter(AppointmentDetail.appointment_id.in_(appointment_ids)).all() if appointment_ids else []
+        detail_map = {item.appointment_id: item for item in details}
+        plans = _model_map(db, ServicePlan, {item.service_plan_id for item in details if item.service_plan_id})
+        promotions = _model_map(db, Promotion, {item.promotion_id for item in details if item.promotion_id})
+        rooms = _model_map(db, Room, {item.room_id for item in details if item.room_id})
+        venues = _model_map(db, Venue, {item.venue_id for item in details if item.venue_id})
+        users = _model_map(db, User, {item.user_id for item in items})
+        staff = _model_map(db, Staff, {item.staff_id for item in items if item.staff_id})
+
+        payment_map: dict[int, Any] = {}
+        if appointment_ids:
+            for payment in db.query(Payment).filter(
+                Payment.appointment_id.in_(appointment_ids), Payment.status == "paid",
+            ).order_by(Payment.appointment_id, Payment.id.desc()).all():
+                payment_map.setdefault(payment.appointment_id, payment)
+        staff_return_map = {
+            item.appointment_id: item for item in db.query(StaffReturn).filter(StaffReturn.appointment_id.in_(appointment_ids)).all()
+        } if appointment_ids else {}
+        active_rule_sets = db.query(ReturnRuleSet).filter(ReturnRuleSet.active.is_(True)).order_by(ReturnRuleSet.id).all()
+        rules = db.query(ReturnRule).filter(ReturnRule.active.is_(True)).order_by(ReturnRule.id).all()
+        return {
+            "details": detail_map,
+            "plans": plans,
+            "promotions": promotions,
+            "rooms": rooms,
+            "venues": venues,
+            "users": users,
+            "staff": staff,
+            "payments": payment_map,
+            "staff_returns": staff_return_map,
+            "default_rule_set_id": active_rule_sets[0].id if active_rule_sets else None,
+            "rules": {(item.rule_set_id, item.service_code): item for item in rules},
+        }
+
+    def appointment_dict(db: Session, item, cache: dict[str, Any] | None = None) -> dict[str, Any]:
+        cache = cache or appointment_cache(db, [item])
+        detail = cache["details"].get(item.id)
+        plan = cache["plans"].get(detail.service_plan_id) if detail and detail.service_plan_id else None
+        promotion = cache["promotions"].get(detail.promotion_id) if detail and detail.promotion_id else None
+        room = cache["rooms"].get(detail.room_id) if detail and detail.room_id else None
+        venue = cache["venues"].get(detail.venue_id) if detail and detail.venue_id else None
+        user = cache["users"].get(item.user_id)
+        staff_obj = cache["staff"].get(item.staff_id) if item.staff_id else None
+        payment = cache["payments"].get(item.id)
+        staff_return = cache["staff_returns"].get(item.id)
+        rule_set_id = getattr(staff_obj, "return_rule_set_id", None) or cache["default_rule_set_id"]
+        service_code = plan.code if plan else (item.plan_name or "").split("-", 1)[0]
+        return_rule = cache["rules"].get((rule_set_id, "E" if service_code == "OUT" else service_code)) if rule_set_id else None
         return {
             "id": item.id,
             "order_id": f"AP-{item.start_time.strftime('%m%d')}-{item.id:03d}",
@@ -1159,8 +1213,12 @@ def register_admin_api(
             "staff_return_status": staff_return.status if staff_return else "not_created",
         }
 
-    def public_appointment_dict(db: Session, item) -> dict[str, Any]:
-        row = appointment_dict(db, item)
+    def appointment_dicts(db: Session, items: list, *, public: bool = False) -> list[dict[str, Any]]:
+        cache = appointment_cache(db, items)
+        return [public_appointment_dict(db, item, cache) if public else appointment_dict(db, item, cache) for item in items]
+
+    def public_appointment_dict(db: Session, item, cache: dict[str, Any] | None = None) -> dict[str, Any]:
+        row = appointment_dict(db, item, cache)
         for key in ("customer_id", "customer_serial", "customer_name", "phone", "base_price", "discount_amount", "extra_amount", "total_amount", "notes", "payment_method", "cash_return_status", "expected_return_amount", "staff_return_status"):
             row.pop(key, None)
         row["customer_name"] = "已隱藏"
@@ -1169,16 +1227,36 @@ def register_admin_api(
         row["notes"] = None
         return row
 
-    def customer_dict(db: Session, item) -> dict[str, Any]:
+    def customer_cache(db: Session, items: list) -> dict[str, Any]:
+        user_ids = {item.id for item in items}
+        phones_by_user: dict[int, list[str]] = {user_id: [] for user_id in user_ids}
+        if user_ids:
+            phone_rows = db.query(CustomerPhone).filter(CustomerPhone.user_id.in_(user_ids)).order_by(
+                CustomerPhone.user_id, CustomerPhone.is_primary.desc(), CustomerPhone.id,
+            ).all()
+            for row in phone_rows:
+                phones_by_user.setdefault(row.user_id, []).append(row.phone)
+        visits_by_user: dict[int, list] = {user_id: [] for user_id in user_ids}
         visits = db.query(Appointment).filter(
-            Appointment.user_id == item.id,
+            Appointment.user_id.in_(user_ids),
             Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES),
-        ).all()
-        spent = 0
+        ).all() if user_ids else []
         for appointment in visits:
-            detail = db.query(AppointmentDetail).filter(AppointmentDetail.appointment_id == appointment.id).first()
-            spent += detail.total_amount if detail else appointment_price_from_legacy(appointment)
-        phones = [row.phone for row in customer_phone_rows(db, item)]
+            visits_by_user.setdefault(appointment.user_id, []).append(appointment)
+        appointment_ids = {item.id for item in visits}
+        details = {
+            item.appointment_id: item for item in db.query(AppointmentDetail).filter(AppointmentDetail.appointment_id.in_(appointment_ids)).all()
+        } if appointment_ids else {}
+        return {"phones": phones_by_user, "visits": visits_by_user, "details": details}
+
+    def customer_dict(db: Session, item, cache: dict[str, Any] | None = None) -> dict[str, Any]:
+        cache = cache or customer_cache(db, [item])
+        visits = cache["visits"].get(item.id, [])
+        spent = sum(
+            cache["details"][appointment.id].total_amount if appointment.id in cache["details"] else appointment_price_from_legacy(appointment)
+            for appointment in visits
+        )
+        phones = cache["phones"].get(item.id, [])
         return {
             "id": item.id,
             "vip_serial": customer_serial(item.id),
@@ -1190,12 +1268,26 @@ def register_admin_api(
             "last_visit": _iso(max((appointment.start_time for appointment in visits), default=None)),
         }
 
-    def booking_request_dict(db: Session, item) -> dict[str, Any]:
-        customer = db.query(User).filter(User.id == item.user_id).first()
-        staff_obj = db.query(Staff).filter(Staff.id == item.requested_staff_id).first() if item.requested_staff_id else None
-        plan = db.query(ServicePlan).filter(ServicePlan.id == item.service_plan_id).first()
-        promotion = db.query(Promotion).filter(Promotion.id == item.promotion_id).first() if item.promotion_id else None
-        reviewer = db.query(AdminUser).filter(AdminUser.id == item.reviewed_by_user_id).first() if item.reviewed_by_user_id else None
+    def customer_dicts(db: Session, items: list) -> list[dict[str, Any]]:
+        cache = customer_cache(db, items)
+        return [customer_dict(db, item, cache) for item in items]
+
+    def booking_request_cache(db: Session, items: list) -> dict[str, dict[int, Any]]:
+        return {
+            "customers": _model_map(db, User, {item.user_id for item in items}),
+            "staff": _model_map(db, Staff, {item.requested_staff_id for item in items if item.requested_staff_id}),
+            "plans": _model_map(db, ServicePlan, {item.service_plan_id for item in items}),
+            "promotions": _model_map(db, Promotion, {item.promotion_id for item in items if item.promotion_id}),
+            "reviewers": _model_map(db, AdminUser, {item.reviewed_by_user_id for item in items if item.reviewed_by_user_id}),
+        }
+
+    def booking_request_dict(db: Session, item, cache: dict[str, dict[int, Any]] | None = None) -> dict[str, Any]:
+        cache = cache or booking_request_cache(db, [item])
+        customer = cache["customers"].get(item.user_id)
+        staff_obj = cache["staff"].get(item.requested_staff_id) if item.requested_staff_id else None
+        plan = cache["plans"].get(item.service_plan_id)
+        promotion = cache["promotions"].get(item.promotion_id) if item.promotion_id else None
+        reviewer = cache["reviewers"].get(item.reviewed_by_user_id) if item.reviewed_by_user_id else None
         return {
             "id": item.id,
             "request_id": f"BR-{item.start_time.strftime('%m%d')}-{item.id:03d}",
@@ -1221,6 +1313,10 @@ def register_admin_api(
             "created_at": _iso(item.created_at),
             "reviewed_at": _iso(item.reviewed_at),
         }
+
+    def booking_request_dicts(db: Session, items: list) -> list[dict[str, Any]]:
+        cache = booking_request_cache(db, items)
+        return [booking_request_dict(db, item, cache) for item in items]
 
     def staff_appointment_conflict(db: Session, staff_id: int, start: datetime, end: datetime, exclude_id: int | None = None):
         query = db.query(Appointment).filter(
@@ -1426,8 +1522,9 @@ def register_admin_api(
                 ("admin", "Admin", "admin", os.getenv("ADMIN_INITIAL_PIN") or "0206"),
                 ("jerry", "Jerry", "manager", os.getenv("MANAGER_INITIAL_PIN") or "1355"),
             ]
+            existing_usernames = {row[0] for row in db.query(AdminUser.username).all()}
             for username, display_name, role_name, pin in initial_users:
-                if db.query(AdminUser).filter(AdminUser.username == username).first():
+                if username in existing_usernames:
                     continue
                 if not pin:
                     logger.warning("%s was not seeded because its initial PIN environment variable is missing", username)
@@ -1441,12 +1538,14 @@ def register_admin_api(
                 ("D", "極緻方案", 120, 3000, "指壓、油壓、體推與機能保養", "onsite", True),
                 ("OUT", "隨享外出方案", 100, 3200, "含獅子林起算三公里", "external", True),
             ]
+            existing_plan_codes = {row[0] for row in db.query(ServicePlan.code).all()}
             for code, name, duration, price, description, location, choose_staff in seed_plans:
-                if not db.query(ServicePlan).filter(ServicePlan.code == code).first():
+                if code not in existing_plan_codes:
                     db.add(ServicePlan(code=code, name=name, duration_minutes=duration, price=price, description=description, location_type=location, can_choose_staff=choose_staff))
 
+            existing_room_names = {row[0] for row in db.query(Room.name).all()}
             for room_name in ("房間 1", "房間 2"):
-                if not db.query(Room).filter(Room.name == room_name).first():
+                if room_name not in existing_room_names:
                     db.add(Room(name=room_name))
 
             seed_promotions = [
@@ -1460,24 +1559,30 @@ def register_admin_api(
                 ("現場加時（每 30 分鐘）", "per_30_minutes", 700, "服務現場臨時增加的加時費。"),
                 ("外出里程費（每公里）", "per_km", 80, "超出基本距離後按公里計算。"),
             ]
+            existing_promotion_names = {row[0] for row in db.query(Promotion.name).all()}
             for name, calculation_type, value, description in seed_promotions:
-                if not db.query(Promotion).filter(Promotion.name == name).first():
+                if name not in existing_promotion_names:
                     db.add(Promotion(name=name, calculation_type=calculation_type, value=value, description=description))
 
             return_tables = [
                 ("TABLE_1", "回帳表一（A–E／借房）", [("A", "A方案", 700, 60), ("B", "B方案", 800, 60), ("C", "C方案", 1000, 90), ("D", "D方案", 1200, 120), ("E", "E方案", 1200, 100), ("BORROW", "借房", 300, 60)]),
                 ("TABLE_2", "回帳表二（A–D）", [("A", "A方案", 300, 60), ("B", "B方案", 300, 60), ("C", "C方案", 400, 90), ("D", "D方案", 500, 120)]),
             ]
+            rule_sets_by_code = {item.code: item for item in db.query(ReturnRuleSet).all()}
             for code, name, rules in return_tables:
-                rule_set = db.query(ReturnRuleSet).filter(ReturnRuleSet.code == code).first()
+                rule_set = rule_sets_by_code.get(code)
                 if not rule_set:
                     rule_set = ReturnRuleSet(code=code, name=name)
                     db.add(rule_set)
-                    db.flush()
+                    rule_sets_by_code[code] = rule_set
+            db.flush()
+            existing_rule_keys = {(row.rule_set_id, row.service_code) for row in db.query(ReturnRule).all()}
+            for code, _name, rules in return_tables:
+                rule_set = rule_sets_by_code[code]
                 for service_code, rule_name, amount, duration in rules:
-                    if not db.query(ReturnRule).filter(ReturnRule.rule_set_id == rule_set.id, ReturnRule.service_code == service_code).first():
+                    if (rule_set.id, service_code) not in existing_rule_keys:
                         db.add(ReturnRule(rule_set_id=rule_set.id, service_code=service_code, name=rule_name, amount=amount, duration_minutes=duration))
-            if not db.query(SiteContent).filter(SiteContent.content_key == "official_site").first():
+            if "official_site" not in {row[0] for row in db.query(SiteContent.content_key).all()}:
                 db.add(SiteContent(content_key="official_site"))
             db.commit()
         except Exception:
@@ -1494,12 +1599,13 @@ def register_admin_api(
     def public_bootstrap(db: Session = Depends(get_db)):
         appointments = db.query(Appointment).order_by(Appointment.start_time.desc()).limit(300).all()
         shifts = db.query(Shift).filter(Shift.status == "active").order_by(Shift.start_time).limit(500).all()
+        shift_staff = _model_map(db, Staff, {item.staff_id for item in shifts})
         return {
             "mode": "public",
             "user": None,
-            "appointments": [public_appointment_dict(db, item) for item in appointments],
+            "appointments": appointment_dicts(db, appointments, public=True),
             "staff": [{"id": item.id, "name": item.name, "category": item.category, "employment_status": item.employment_status, "line_connected": False} for item in db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.name).all()],
-            "shifts": [shift_dict(item) | {"staff_name": (db.query(Staff).filter(Staff.id == item.staff_id).first().name if db.query(Staff).filter(Staff.id == item.staff_id).first() else "未知")} for item in shifts],
+            "shifts": [shift_dict(item) | {"staff_name": shift_staff[item.staff_id].name if item.staff_id in shift_staff else "未知"} for item in shifts],
             "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()],
             "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.active.is_(True), Promotion.deleted_at.is_(None)).order_by(Promotion.id).all()],
             "rooms": [{"id": item.id, "name": item.name, "active": item.active} for item in db.query(Room).filter(Room.active.is_(True)).order_by(Room.id).all()],
@@ -1692,7 +1798,7 @@ def register_admin_api(
         return {
             "mode": "staff",
             "staff_user": {"id": staff_obj.id, "name": staff_obj.name, "role": "staff"},
-            "appointments": [appointment_dict(db, item) for item in appointments],
+            "appointments": appointment_dicts(db, appointments),
             "staff": [staff_dict(staff_obj)],
             "shifts": [shift_dict(item) | {"staff_name": staff_obj.name} for item in shifts],
             "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()],
@@ -1763,24 +1869,28 @@ def register_admin_api(
     @app.get("/api/admin/bootstrap")
     def bootstrap(db: Session = Depends(get_db), user=Depends(current_admin)):
         appointments = db.query(Appointment).order_by(Appointment.start_time.desc()).limit(300).all()
+        booking_requests = db.query(BookingRequest).order_by(BookingRequest.created_at.desc()).limit(500).all()
         shift_rows = db.query(Shift).filter(Shift.status == "active").order_by(Shift.start_time).limit(500).all()
+        shift_staff = _model_map(db, Staff, {item.staff_id for item in shift_rows})
+        customers = db.query(User).order_by(User.created_at.desc()).limit(1000).all()
         audit_rows = db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(20).all()
+        audit_actors = _model_map(db, AdminUser, {item.actor_user_id for item in audit_rows if item.actor_user_id})
         return {
             "user": serialize_admin(user),
-            "appointments": [appointment_dict(db, item) for item in appointments],
-            "booking_requests": [booking_request_dict(db, item) for item in db.query(BookingRequest).order_by(BookingRequest.created_at.desc()).limit(500).all()],
+            "appointments": appointment_dicts(db, appointments),
+            "booking_requests": booking_request_dicts(db, booking_requests),
             "staff": [staff_dict(item) for item in db.query(Staff).order_by(Staff.name).all()],
-            "shifts": [shift_dict(item) | {"staff_name": db.query(Staff).filter(Staff.id == item.staff_id).first().name} for item in shift_rows],
+            "shifts": [shift_dict(item) | {"staff_name": shift_staff[item.staff_id].name if item.staff_id in shift_staff else "未知"} for item in shift_rows],
             "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()],
             "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.deleted_at.is_(None)).order_by(Promotion.id).all()],
             "rooms": [{"id": item.id, "name": item.name, "active": item.active} for item in db.query(Room).order_by(Room.id).all()],
             "venues": [{"id": item.id, "name": item.name, "address": item.address, "room_name": item.room_name, "rental_cost": item.rental_cost, "notes": item.notes, "active": item.active} for item in db.query(Venue).filter(Venue.active.is_(True)).all()],
-            "customers": [customer_dict(db, item) for item in db.query(User).order_by(User.created_at.desc()).limit(1000).all()],
+            "customers": customer_dicts(db, customers),
             "admin_users": [serialize_admin(item) for item in db.query(AdminUser).order_by(AdminUser.id).all()] if user.role in {"admin", "manager"} else [],
             "return_rule_sets": return_rule_sets_dict(db),
             "audit_logs": [{
                 "id": item.id,
-                "actor_name": (db.query(AdminUser).filter(AdminUser.id == item.actor_user_id).first().display_name if item.actor_user_id and db.query(AdminUser).filter(AdminUser.id == item.actor_user_id).first() else "系統／員工"),
+                "actor_name": audit_actors[item.actor_user_id].display_name if item.actor_user_id in audit_actors else "系統／員工",
                 "action": item.action,
                 "entity_type": item.entity_type,
                 "entity_id": item.entity_id,
@@ -1791,7 +1901,8 @@ def register_admin_api(
 
     @app.get("/api/admin/booking-requests")
     def list_booking_requests(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
-        return [booking_request_dict(db, item) for item in db.query(BookingRequest).order_by(BookingRequest.created_at.desc()).limit(1000).all()]
+        items = db.query(BookingRequest).order_by(BookingRequest.created_at.desc()).limit(1000).all()
+        return booking_request_dicts(db, items)
 
     @app.patch("/api/admin/booking-requests/{request_id}")
     def update_booking_request(request_id: int, payload: BookingRequestPatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
@@ -1891,11 +2002,11 @@ def register_admin_api(
             query = query.filter(Appointment.start_time >= parse_local_datetime(start))
         if end:
             query = query.filter(Appointment.start_time < parse_local_datetime(end))
-        return [appointment_dict(db, item) for item in query.order_by(Appointment.start_time.desc()).limit(1000).all()]
+        return appointment_dicts(db, query.order_by(Appointment.start_time.desc()).limit(1000).all())
 
     @app.get("/api/admin/customers")
     def list_customers(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
-        return [customer_dict(db, item) for item in db.query(User).order_by(User.created_at.desc()).limit(1000).all()]
+        return customer_dicts(db, db.query(User).order_by(User.created_at.desc()).limit(1000).all())
 
     @app.patch("/api/admin/customers/{customer_id}")
     def update_customer(customer_id: int, payload: CustomerPatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
@@ -2635,10 +2746,13 @@ def register_admin_api(
 
     @app.get("/api/admin/staff-returns")
     def list_staff_returns(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
+        items = db.query(StaffReturn).order_by(StaffReturn.created_at.desc()).limit(1000).all()
+        appointments = _model_map(db, Appointment, {item.appointment_id for item in items})
+        staff = _model_map(db, Staff, {item.staff_id for item in items})
         result = []
-        for item in db.query(StaffReturn).order_by(StaffReturn.created_at.desc()).limit(1000).all():
-            appointment = db.query(Appointment).filter(Appointment.id == item.appointment_id).first()
-            staff_obj = db.query(Staff).filter(Staff.id == item.staff_id).first()
+        for item in items:
+            appointment = appointments.get(item.appointment_id)
+            staff_obj = staff.get(item.staff_id)
             result.append({
                 "id": item.id,
                 "appointment_id": item.appointment_id,
@@ -2693,9 +2807,11 @@ def register_admin_api(
 
     @app.get("/api/admin/audit-logs")
     def list_audit_logs(limit: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        items = db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit).all()
+        users = _model_map(db, AdminUser, {item.actor_user_id for item in items if item.actor_user_id})
         result = []
-        for item in db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit).all():
-            user = db.query(AdminUser).filter(AdminUser.id == item.actor_user_id).first() if item.actor_user_id else None
+        for item in items:
+            user = users.get(item.actor_user_id) if item.actor_user_id else None
             result.append({"id": item.id, "actor": user.display_name if user else "系統", "action": item.action, "entity_type": item.entity_type, "entity_id": item.entity_id, "reason": item.reason, "created_at": _iso(item.created_at)})
         return result
 
@@ -2711,8 +2827,8 @@ def register_admin_api(
             if end:
                 query = query.filter(Appointment.start_time < parse_local_datetime(end))
             writer.writerow(["訂單編號", "日期", "開始", "結束", "客戶", "電話", "師傅", "方案", "場地", "狀態", "金額"])
-            for item in query.order_by(Appointment.start_time).all():
-                row = appointment_dict(db, item)
+            items = query.order_by(Appointment.start_time).all()
+            for item, row in zip(items, appointment_dicts(db, items)):
                 writer.writerow([row["order_id"], item.start_time.date(), item.start_time.strftime("%H:%M"), item.end_time.strftime("%H:%M"), row["customer_name"], row["phone"], row["staff_name"], row["service_name"], row["room_name"] or row["venue_name"] or row["location_type"], row["status_label"], row["total_amount"]])
         elif dataset == "shifts":
             writer.writerow(["排班編號", "師傅", "日期", "開始", "結束", "來源", "狀態"])
@@ -2721,8 +2837,10 @@ def register_admin_api(
                 query = query.filter(Shift.start_time >= parse_local_datetime(start))
             if end:
                 query = query.filter(Shift.start_time < parse_local_datetime(end))
-            for item in query.order_by(Shift.start_time).all():
-                staff_obj = db.query(Staff).filter(Staff.id == item.staff_id).first()
+            items = query.order_by(Shift.start_time).all()
+            staff = _model_map(db, Staff, {item.staff_id for item in items})
+            for item in items:
+                staff_obj = staff.get(item.staff_id)
                 writer.writerow([item.id, staff_obj.name if staff_obj else item.staff_id, item.start_time.date(), item.start_time.strftime("%H:%M"), item.end_time.strftime("%H:%M"), item.source, item.status])
         elif dataset == "customers":
             writer.writerow(["客戶流水", "客戶名稱", "客戶 ID（手機，可多支）", "建立日期"])
@@ -2731,8 +2849,10 @@ def register_admin_api(
                 query = query.filter(User.created_at >= parse_local_datetime(start))
             if end:
                 query = query.filter(User.created_at < parse_local_datetime(end))
-            for item in query.order_by(User.id).all():
-                phones = [row.phone for row in customer_phone_rows(db, item)]
+            items = query.order_by(User.id).all()
+            customers = {item["id"]: item for item in customer_dicts(db, items)}
+            for item in items:
+                phones = customers[item.id]["phones"]
                 writer.writerow([customer_serial(item.id), getattr(item, "display_name", None) or "未命名客戶", "、".join(phones), item.created_at])
         else:
             writer.writerow(["回帳編號", "訂單編號", "師傅", "應回帳", "狀態", "建立時間", "確認時間"])
@@ -2741,9 +2861,12 @@ def register_admin_api(
                 query = query.filter(StaffReturn.created_at >= parse_local_datetime(start))
             if end:
                 query = query.filter(StaffReturn.created_at < parse_local_datetime(end))
-            for item in query.order_by(StaffReturn.created_at).all():
-                appointment = db.query(Appointment).filter(Appointment.id == item.appointment_id).first()
-                staff_obj = db.query(Staff).filter(Staff.id == item.staff_id).first()
+            items = query.order_by(StaffReturn.created_at).all()
+            appointments = _model_map(db, Appointment, {item.appointment_id for item in items})
+            staff = _model_map(db, Staff, {item.staff_id for item in items})
+            for item in items:
+                appointment = appointments.get(item.appointment_id)
+                staff_obj = staff.get(item.staff_id)
                 writer.writerow([item.id, f"AP-{appointment.start_time.strftime('%m%d')}-{appointment.id:03d}" if appointment else item.appointment_id, staff_obj.name if staff_obj else item.staff_id, item.amount, item.status, item.created_at, item.confirmed_at])
         audit(db, actor, "export", dataset, reason=f"start={start};end={end}")
         db.commit()

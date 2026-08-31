@@ -36,10 +36,39 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("環境變數 DATABASE_URL 未設定")
 
-# 建立 SQLAlchemy engine 與 Session 工廠
+def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+# Render currently runs one Uvicorn worker. Five persistent connections plus a
+# small overflow is ample for this system's traffic while avoiding a new TCP +
+# TLS handshake on each request. Values stay configurable for future scaling.
 engine_options = {"pool_pre_ping": True}
 if DATABASE_URL.startswith("sqlite"):
     engine_options["connect_args"] = {"check_same_thread": False}
+else:
+    engine_options.update({
+        "pool_size": _bounded_env_int("DATABASE_POOL_SIZE", 5, 1, 20),
+        "max_overflow": _bounded_env_int("DATABASE_MAX_OVERFLOW", 3, 0, 20),
+        "pool_timeout": _bounded_env_int("DATABASE_POOL_TIMEOUT_SECONDS", 10, 1, 60),
+        "pool_recycle": _bounded_env_int("DATABASE_POOL_RECYCLE_SECONDS", 1800, 60, 7200),
+        "pool_use_lifo": True,
+    })
+    if DATABASE_URL.startswith(("mysql://", "mysql+pymysql://")):
+        mysql_connect_args = {
+            "connect_timeout": _bounded_env_int("DATABASE_CONNECT_TIMEOUT_SECONDS", 10, 1, 60),
+            "read_timeout": _bounded_env_int("DATABASE_READ_TIMEOUT_SECONDS", 20, 1, 120),
+            "write_timeout": _bounded_env_int("DATABASE_WRITE_TIMEOUT_SECONDS", 20, 1, 120),
+        }
+        if "ssl_ca=" not in DATABASE_URL and "ssl_cert=" not in DATABASE_URL:
+            # Aiven requires encrypted MySQL connections. This matches
+            # ssl-mode=REQUIRED when no CA path was supplied in the URL.
+            mysql_connect_args["ssl"] = {"check_hostname": False}
+        engine_options["connect_args"] = mysql_connect_args
 engine = create_engine(DATABASE_URL, **engine_options)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -50,7 +79,7 @@ SUPPORT_URL = os.getenv("CUSTOMER_SERVICE_URL", "https://lin.ee/vOq3Xvt")
 BOOKING_WEB_URL = os.getenv("BOOKING_WEB_URL", "https://equalspa-admin.pages.dev/booking")
 RENDER_LOGS_URL = os.getenv("RENDER_LOGS_URL", "https://dashboard.render.com/web/srv-da059bgjo6nc73doq380/logs")
 _DISPATCH_ALERTED_AT: dict[str, datetime] = {}
-_HEARTBEAT_STOP = threading.Event()
+_DATABASE_KEEPALIVE_STOP = threading.Event()
 
 # --- SQLAlchemy models ---
 class User(Base):
@@ -1143,26 +1172,8 @@ if handler_customer:
                 p_info = PLANS_INFO.get(plan, {"duration": 60})
                 booking_start = parse_local_datetime(selected_dt)
                 booking_end = appointment_end(booking_start, p_info["duration"])
-                models = getattr(app.state, "admin_models", {})
-                Shift = models.get("Shift")
-                staff_query = db.query(Staff).filter(Staff.employment_status == "active")
-                if Shift:
-                    scheduled_ids = [row[0] for row in db.query(Shift.staff_id).filter(
-                        Shift.status == "active",
-                        Shift.start_time <= booking_start,
-                        Shift.end_time >= booking_end,
-                    ).distinct().all()]
-                    staff_query = staff_query.filter(Staff.id.in_(scheduled_ids)) if scheduled_ids else staff_query.filter(Staff.id == -1)
-                eligible_staff = []
-                for candidate in staff_query.order_by(Staff.id).all():
-                    conflict = db.query(Appointment).filter(
-                        Appointment.staff_id == candidate.id,
-                        Appointment.status.notin_(["cancelled", "已取消"]),
-                        Appointment.start_time < booking_end,
-                        Appointment.end_time > booking_start,
-                    ).first()
-                    if not conflict:
-                        eligible_staff.append(candidate)
+                resolver = getattr(app.state, "available_staff", None)
+                eligible_staff = resolver(db, booking_start, booking_end) if resolver else []
                 active_staff = eligible_staff[offset:offset + 10]
 
                 if not active_staff:
@@ -1687,14 +1698,15 @@ def notify_booking_request_parties(booking_request, db: Session, *, origin: str 
 app = FastAPI(title="SPA 智能客服與預約系統")
 
 
-def _database_heartbeat_loop(interval_seconds: int) -> None:
-    while not _HEARTBEAT_STOP.wait(interval_seconds):
+def _database_keepalive_loop(interval_seconds: int) -> None:
+    """Optional Aiven keepalive; this cannot prevent a Render instance sleeping."""
+    while not _DATABASE_KEEPALIVE_STOP.wait(interval_seconds):
         try:
             with engine.connect() as connection:
                 connection.execute(text("SELECT 1"))
-            logging.info("Database heartbeat succeeded")
+            logging.info("Database keepalive succeeded")
         except Exception:
-            logging.exception("Database heartbeat failed")
+            logging.exception("Database keepalive failed")
 
 @app.on_event("startup")
 def on_startup():
@@ -1762,15 +1774,18 @@ def on_startup():
             if not staff_obj.category:
                 staff_obj.category = profile.category
             staff_obj.photo_url = therapist_photo_url(profile)
+        existing_phone_rows = {item.phone: item for item in db.query(CustomerPhone).all()}
         for customer in db.query(User).filter(User.phone.isnot(None)).order_by(User.id).all():
             try:
                 normalized = normalize_phone(customer.phone)
             except ValueError:
                 logging.warning("略過無法正規化的舊客戶手機 user_id=%s", customer.id)
                 continue
-            owner = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
+            owner = existing_phone_rows.get(normalized)
             if not owner:
-                db.add(CustomerPhone(user_id=customer.id, phone=normalized, is_primary=True))
+                owner = CustomerPhone(user_id=customer.id, phone=normalized, is_primary=True)
+                db.add(owner)
+                existing_phone_rows[normalized] = owner
                 customer.phone = normalized
             elif owner.user_id == customer.id:
                 owner.is_primary = True
@@ -1781,22 +1796,29 @@ def on_startup():
     finally:
         db.close()
 
-    interval = max(60, int(os.getenv("DATABASE_HEARTBEAT_SECONDS", "720")))
-    heartbeat = getattr(app.state, "database_heartbeat_thread", None)
-    if not heartbeat or not heartbeat.is_alive():
-        _HEARTBEAT_STOP.clear()
-        heartbeat = threading.Thread(target=_database_heartbeat_loop, args=(interval,), daemon=True, name="aiven-heartbeat")
-        heartbeat.start()
-        app.state.database_heartbeat_thread = heartbeat
+    legacy_interval = _bounded_env_int("DATABASE_HEARTBEAT_SECONDS", 0, 0, 3600)
+    interval = _bounded_env_int("DATABASE_KEEPALIVE_SECONDS", legacy_interval, 0, 3600)
+    keepalive = getattr(app.state, "database_keepalive_thread", None)
+    if interval >= 300 and (not keepalive or not keepalive.is_alive()):
+        logging.warning("Database keepalive is enabled; it keeps Aiven active only while Render is awake")
+        _DATABASE_KEEPALIVE_STOP.clear()
+        keepalive = threading.Thread(target=_database_keepalive_loop, args=(interval,), daemon=True, name="aiven-keepalive")
+        keepalive.start()
+        app.state.database_keepalive_thread = keepalive
 
 
 @app.on_event("shutdown")
 def on_shutdown():
-    _HEARTBEAT_STOP.set()
+    _DATABASE_KEEPALIVE_STOP.set()
 
 @app.get("/")
 def read_root():
     return {"message": "Hello from SPA FastAPI"}
+
+
+@app.head("/")
+def read_root_head():
+    return Response(status_code=200)
 
 @app.post("/webhook/customer")
 async def webhook_customer(request: Request, background_tasks: BackgroundTasks):
