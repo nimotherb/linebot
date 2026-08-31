@@ -226,7 +226,7 @@ export default function BookingPage() {
       <section className={styles.hero}>
         <p>RESERVATION</p>
         <h1>{stage === 'success' ? (requestOnly ? '指定需求已送出' : '預約已送出') : stage === 'review' ? '最後確認一次' : '選一段留給自己的時間'}</h1>
-        <span>{stage === 'details' ? '先選擇「目前排班師傅」或「指定師傅」，兩種方式的成立規則不同。' : stage === 'review' ? (requestOnly ? '指定師傅只會送出預約通知，必須由客服確認後才會成立。' : '目前尚未建立訂單，按下確認後才會正式送出。') : (requestOnly ? '客服已收到指定需求；師傅尚未被正式預訂。' : '客服與指定師傅已收到這筆預約。')}</span>
+        <span>{stage === 'details' ? '同一張預約表單內，可選擇「所有師傅預約」或「現有排班師傅預訂」。' : stage === 'review' ? (requestOnly ? '所有師傅預約只會先送出通知，必須由客服確認後才會成立。' : '目前尚未建立訂單，按下確認後才會正式送出。') : (requestOnly ? '客服已收到指定需求；師傅尚未被正式預訂。' : '客服與指定師傅已收到這筆預約。')}</span>
       </section>
 
       <nav className={styles.steps} aria-label="預約進度">
@@ -249,17 +249,17 @@ export default function BookingPage() {
         </section>
 
         <section>
-          <div className={styles.sectionTitle}><span>02</span><div><h2>日期與師傅</h2><p>選擇直接預約目前排班師傅，或指定任一位在職師傅交由客服確認</p></div></div>
+          <div className={styles.sectionTitle}><span>02</span><div><h2>日期與師傅</h2><p>在同一個預約流程中選擇師傅範圍，不會跳到另一個入口</p></div></div>
           <div className={flowStyles.bookingModeGrid} role="radiogroup" aria-label="師傅選擇方式">
             <button type="button" role="radio" aria-checked={bookingMode === 'scheduled'} className={bookingMode === 'scheduled' ? flowStyles.bookingModeSelected : flowStyles.bookingMode} onClick={() => { setBookingMode('scheduled'); setStaffId(''); setAvailability(null); setError(''); }}>
-              <i>01</i><span><strong>目前排班師傅</strong><small>只顯示有正式排班且沒有撞單的師傅，可直接成立預約。</small></span>
+              <i>01</i><span><strong>現有排班師傅預訂</strong><small>只顯示有正式排班且沒有撞單的師傅，可直接成立預約。</small></span>
             </button>
             <button type="button" role="radio" aria-checked={bookingMode === 'requested'} className={bookingMode === 'requested' ? flowStyles.bookingModeSelected : flowStyles.bookingMode} onClick={() => { setBookingMode('requested'); setStaffId(''); setAvailability(null); setError(''); }}>
-              <i>02</i><span><strong>指定師傅</strong><small>瀏覽全部在職師傅；送出後由客服確認，不會立即成立預約。</small></span>
+              <i>02</i><span><strong>所有師傅預約</strong><small>瀏覽全部在職師傅並指定人選；送出後由客服確認，不會立即成立預約。</small></span>
             </button>
           </div>
           <label className={styles.field}>預約開始時間<input type="datetime-local" value={startTime} min={taipeiInputValue(options?.minimum_lead_minutes || 90)} step="1800" onChange={(event) => setStartTime(event.target.value)} required /></label>
-          <div className={styles.availabilityLine}>{checking ? '正在確認時間…' : availability ? (requestOnly ? `已選擇 ${staff?.name}・預計結束 ${availability.end_time.slice(11, 16)}・等待客服人工確認` : `${availability.staff.length} 位師傅目前可預約・結束時間 ${availability.end_time.slice(11, 16)}`) : requestOnly ? '請從下方卡片選擇希望指定的師傅' : '這個時段暫無可直接預約的師傅，可改用「指定師傅」送出通知'}</div>
+          <div className={styles.availabilityLine}>{checking ? '正在確認時間…' : availability ? (requestOnly ? `已選擇 ${staff?.name}・預計結束 ${availability.end_time.slice(11, 16)}・等待客服人工確認` : `${availability.staff.length} 位師傅目前可預約・結束時間 ${availability.end_time.slice(11, 16)}`) : requestOnly ? '請從下方卡片選擇希望指定的師傅' : '這個時段暫無可直接預訂的師傅，可切換為「所有師傅預約」送出通知'}</div>
           {requestOnly && <div className={flowStyles.requestedRail} role="listbox" aria-label="全部在職師傅">
             {options?.staff.map((item) => {
               const photo = resolveStaffPhotoUrl(item.photo_url);
