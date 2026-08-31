@@ -50,6 +50,8 @@ SQLAlchemy 本身原本就會使用 QueuePool；目前程式另外明確限制�
 
 外部 POKE 請呼叫 `GET https://linebot-3r2w.onrender.com/api/health/db`。此端點只執行一次 `SELECT 1`，同時確認 Render 與 Aiven MySQL 可用；成功回傳 HTTP 200，資料庫無法連線則回傳 HTTP 503。請勿再用錯誤手機或建立測試客戶的方式喚醒服務。
 
+`.github/workflows/keep-render-awake.yml` 由 GitHub Actions 每 10 分鐘啟動一台臨時 runner 呼叫上述端點，因此不需要另一台常駐伺服器。也可在 GitHub 的 Actions 頁面手動執行 `Keep Equal SPA API awake`。排程只會在預設分支生效，且 GitHub 可能在尖峰時段延遲執行；公開專案長期沒有任何活動時，也需從 Actions 頁面重新啟用排程。
+
 ## 重要規則
 
 - 預約結束時間永遠由方案分鐘數計算。
