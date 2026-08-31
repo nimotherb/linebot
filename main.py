@@ -286,8 +286,7 @@ def build_promotion_flex(promotions, plan_key: str, selected_dt: str):
     bubbles = []
     for promotion_id, name, amount_text, description in choices:
         promotion_value = promotion_id or 0
-        next_action = "preview_booking" if plan_key == "A" else "select_staff"
-        next_data = f"action={next_action}&staff_id=none&plan={plan_key}&promotion_id={promotion_value}&datetime={selected_dt}&offset=0"
+        next_data = f"action=select_booking_flow&plan={plan_key}&promotion_id={promotion_value}&datetime={selected_dt}"
         bubbles.append({
             "type": "bubble",
             "styles": {"body": {"backgroundColor": "#1A1B26"}, "footer": {"backgroundColor": "#1A1B26"}},
@@ -305,6 +304,40 @@ def build_promotion_flex(promotions, plan_key: str, selected_dt: str):
             },
         })
     return FlexSendMessage(alt_text="請選擇優惠", contents={"type": "carousel", "contents": bubbles})
+
+
+def build_booking_flow_flex(*, plan_key: str, promotion_id: str, selected_dt: str):
+    scheduled_action = "preview_booking" if plan_key == "A" else "select_staff"
+    scheduled_extra = "&staff_id=none" if plan_key == "A" else "&offset=0"
+    scheduled_data = f"action={scheduled_action}&plan={plan_key}&promotion_id={promotion_id}&datetime={selected_dt}{scheduled_extra}"
+    requested_data = f"action=select_all_staff&plan={plan_key}&promotion_id={promotion_id}&datetime={selected_dt}&offset=0"
+    return FlexSendMessage(
+        alt_text="請選擇師傅方式",
+        contents={
+            "type": "bubble",
+            "styles": {"header": {"backgroundColor": "#123F37"}, "footer": {"backgroundColor": "#F7F3EA"}},
+            "header": {
+                "type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                    {"type": "text", "text": "選擇師傅方式", "weight": "bold", "size": "xl", "color": "#F7D7A3"},
+                    {"type": "text", "text": "兩種方式的預約成立規則不同", "size": "sm", "color": "#D1FAE5", "wrap": True},
+                ],
+            },
+            "body": {
+                "type": "box", "layout": "vertical", "spacing": "lg", "contents": [
+                    {"type": "box", "layout": "vertical", "spacing": "sm", "paddingAll": "16px", "backgroundColor": "#EDF3E5", "cornerRadius": "16px", "contents": [
+                        {"type": "text", "text": "目前排班師傅", "weight": "bold", "size": "lg", "color": "#123F37"},
+                        {"type": "text", "text": "只列出有正式排班且沒有撞單的師傅，可直接成立預約。", "size": "sm", "color": "#5B6C66", "wrap": True},
+                        {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "postback", "label": "查看目前排班", "data": scheduled_data}},
+                    ]},
+                    {"type": "box", "layout": "vertical", "spacing": "sm", "paddingAll": "16px", "backgroundColor": "#FFF6E8", "cornerRadius": "16px", "contents": [
+                        {"type": "text", "text": "指定師傅", "weight": "bold", "size": "lg", "color": "#8A5C22"},
+                        {"type": "text", "text": "瀏覽全部在職師傅；只會先通知客服，確認後才正式成立。", "size": "sm", "color": "#7B6A53", "wrap": True},
+                        {"type": "button", "style": "primary", "color": "#C9852D", "action": {"type": "postback", "label": "瀏覽指定師傅", "data": requested_data}},
+                    ]},
+                ],
+            },
+        },
+    )
 
 
 def build_booking_preview_flex(*, staff, plan_key: str, promotion, selected_dt: str):
@@ -1086,7 +1119,20 @@ if handler_customer:
                     promotions = [item for item in promotions if (not item.starts_at or item.starts_at <= now) and (not item.ends_at or item.ends_at >= now)]
                 bot_customer_api.reply_message(event.reply_token, build_promotion_flex(promotions, plan, selected_dt))
 
-            # 選擇方案後 -> 師傅分頁輪播 (分頁處理，避開 LINE 10 張限制)
+            elif action_name == "select_booking_flow":
+                qs = parse_qs(data)
+                plan = qs.get("plan", [None])[0]
+                promotion_id = qs.get("promotion_id", ["0"])[0]
+                selected_dt = qs.get("datetime", [None])[0]
+                reply_with_fallback(
+                    bot_customer_api,
+                    event.reply_token,
+                    build_booking_flow_flex(plan_key=plan, promotion_id=promotion_id, selected_dt=selected_dt),
+                    db=db,
+                    context="選擇師傅方式 Flex",
+                )
+
+            # 目前排班師傅 -> 分頁輪播（避開 LINE 10 張限制）
             elif action_name == "select_staff":
                 qs = parse_qs(data)
                 plan = qs.get("plan", [None])[0]

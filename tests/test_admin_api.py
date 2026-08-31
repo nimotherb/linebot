@@ -14,7 +14,7 @@ os.environ["ADMIN_INITIAL_PIN"] = "123456"
 os.environ["MANAGER_INITIAL_PIN"] = "654321"
 os.environ["CUSTOMER_SERIAL_START"] = "4800"
 
-from main import Base, SessionLocal, Staff, app, build_staff_bubble, build_staff_week_appointments, engine, now_taipei_naive  # noqa: E402
+from main import Base, SessionLocal, Staff, app, build_booking_flow_flex, build_promotion_flex, build_staff_bubble, build_staff_week_appointments, engine, now_taipei_naive  # noqa: E402
 from identifiers import customer_serial  # noqa: E402
 
 
@@ -31,6 +31,19 @@ def login(client, username="admin", pin="123456"):
     response = client.post("/api/admin/auth/login", json={"username": username, "pin": pin})
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+def test_booking_flex_uses_explicit_scheduled_and_requested_flows():
+    promotion_message = build_promotion_flex([], "B", "2099-01-01T16:00:00")
+    promotion_action = promotion_message.contents.contents[0].footer.contents[0].action.data
+    assert "action=select_booking_flow" in promotion_action
+
+    flow_message = build_booking_flow_flex(plan_key="B", promotion_id="0", selected_dt="2099-01-01T16:00:00")
+    flow_contents = flow_message.contents.body.contents
+    scheduled_action = flow_contents[0].contents[2].action.data
+    requested_action = flow_contents[1].contents[2].action.data
+    assert "action=select_staff" in scheduled_action
+    assert "action=select_all_staff" in requested_action
 
 
 def test_login_is_required_and_bootstrap_seeds_two_rooms(client):
