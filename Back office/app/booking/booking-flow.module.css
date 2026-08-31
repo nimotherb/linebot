@@ -1,0 +1,173 @@
+.bookingModeGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.bookingMode,
+.bookingModeSelected {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 15px;
+  border: 1px solid #ddd8ce;
+  border-radius: 18px;
+  background: #fbfaf7;
+  color: #123f37;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bookingMode > i,
+.bookingModeSelected > i {
+  display: grid;
+  place-items: center;
+  flex: 0 0 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: #e8eee7;
+  color: #537060;
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.bookingMode > span,
+.bookingModeSelected > span {
+  display: grid;
+  gap: 5px;
+}
+
+.bookingMode strong,
+.bookingModeSelected strong {
+  font-size: 14px;
+}
+
+.bookingMode small,
+.bookingModeSelected small {
+  color: #74807b;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.bookingModeSelected {
+  border: 2px solid #123f37;
+  padding: 14px;
+  background: #edf3e5;
+}
+
+.bookingModeSelected > i {
+  background: #123f37;
+  color: #fff;
+}
+
+.requestedRail {
+  display: flex;
+  gap: 12px;
+  margin: 14px -2px 0;
+  padding: 2px 2px 12px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-color: #9db5a8 transparent;
+}
+
+.requestedCard,
+.requestedCardSelected {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  flex: 0 0 170px;
+  min-height: 310px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #dcd7cc;
+  border-radius: 20px;
+  background: #fff;
+  color: #123f37;
+  text-align: left;
+  cursor: pointer;
+  scroll-snap-align: start;
+}
+
+.requestedPortrait {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 3 / 4;
+  overflow: hidden;
+  background: linear-gradient(145deg, #dce9df, #f1eadc);
+}
+
+.requestedPortrait img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.requestedPortrait > i {
+  display: grid;
+  place-items: center;
+  width: 66px;
+  height: 66px;
+  border-radius: 50%;
+  background: rgb(18 63 55 / 12%);
+  font-style: normal;
+  font-size: 28px;
+  font-weight: 800;
+}
+
+.requestedInfo {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  padding: 13px 13px 9px;
+}
+
+.requestedInfo small {
+  color: #8a6a39;
+  font-size: 9px;
+  letter-spacing: .08em;
+}
+
+.requestedInfo strong {
+  font-size: 18px;
+}
+
+.requestedInfo em {
+  color: #7b8580;
+  font-size: 10px;
+  font-style: normal;
+}
+
+.requestedCard > b,
+.requestedCardSelected > b {
+  margin: 0 10px 10px;
+  padding: 10px;
+  border-radius: 11px;
+  background: #edf1ec;
+  color: #49635d;
+  font-size: 11px;
+  text-align: center;
+}
+
+.requestedCardSelected {
+  border: 3px solid #123f37;
+  box-shadow: 0 10px 24px rgb(18 63 55 / 16%);
+}
+
+.requestedCardSelected > b {
+  background: #123f37;
+  color: #fff;
+}
+
+@media (max-width: 620px) {
+  .bookingModeGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .requestedCard,
+  .requestedCardSelected {
+    flex-basis: 154px;
+    min-height: 286px;
+  }
+}

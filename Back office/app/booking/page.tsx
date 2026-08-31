@@ -1,11 +1,13 @@
 'use client';
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { PublicBookingAvailability, PublicBookingOptions, SpaApi } from '../api-client';
+import { PublicBookingAvailability, PublicBookingOptions, resolveStaffPhotoUrl, SpaApi } from '../api-client';
 import styles from './booking.module.css';
+import flowStyles from './booking-flow.module.css';
 
 type Stage = 'details' | 'review' | 'success';
 type IdentityMode = 'loading' | 'line' | 'web';
+type BookingMode = 'scheduled' | 'requested';
 
 type LiffClient = {
   init: (config: { liffId: string }) => Promise<void>;
@@ -56,7 +58,7 @@ const readBookingIntent = () => {
   return {
     requestedId,
     requestedName,
-    locked: Boolean(requestedId || requestedName || source === 'official' || source === 'official_website'),
+    requested: Boolean(requestedId || requestedName || source === 'official' || source === 'official_website'),
   };
 };
 
@@ -82,8 +84,7 @@ export default function BookingPage() {
   const [identityMode, setIdentityMode] = useState<IdentityMode>('loading');
   const [identityMessage, setIdentityMessage] = useState('正在確認開啟方式');
   const [insideLine, setInsideLine] = useState(false);
-  const [requestOnly, setRequestOnly] = useState(false);
-  const [lockedStaffName, setLockedStaffName] = useState('');
+  const [bookingMode, setBookingMode] = useState<BookingMode>('scheduled');
 
   useEffect(() => {
     api.publicBookingOptions()
@@ -91,13 +92,12 @@ export default function BookingPage() {
         setOptions(data);
         setServiceId(String(data.services[0]?.id || ''));
         const intent = readBookingIntent();
-        if (intent.locked) {
-          const locked = data.staff.find((item) => String(item.id) === intent.requestedId)
+        if (intent.requested) {
+          const requested = data.staff.find((item) => String(item.id) === intent.requestedId)
             || data.staff.find((item) => normalizeStaffName(item.name) === normalizeStaffName(intent.requestedName));
-          if (locked) {
-            setRequestOnly(true);
-            setStaffId(String(locked.id));
-            setLockedStaffName(locked.name);
+          setBookingMode('requested');
+          if (requested) {
+            setStaffId(String(requested.id));
           } else {
             setError(`找不到「${intent.requestedName || '指定師傅'}」的最新資料，請回官網重新選擇或聯絡真人客服`);
           }
@@ -142,6 +142,12 @@ export default function BookingPage() {
 
   useEffect(() => {
     if (!serviceId || !startTime) return;
+    const requestOnly = bookingMode === 'requested';
+    if (requestOnly && !staffId) {
+      setAvailability(null);
+      setChecking(false);
+      return;
+    }
     let active = true;
     setChecking(true);
     setError('');
@@ -155,8 +161,9 @@ export default function BookingPage() {
       .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : '目前無法確認這個時段'); })
       .finally(() => { if (active) setChecking(false); });
     return () => { active = false; };
-  }, [api, serviceId, startTime, requestOnly, staffId]);
+  }, [api, serviceId, startTime, bookingMode, staffId]);
 
+  const requestOnly = bookingMode === 'requested';
   const service = options?.services.find((item) => String(item.id) === serviceId);
   const promotion = options?.promotions.find((item) => String(item.id) === promotionId);
   const staff = (requestOnly ? options?.staff : availability?.staff)?.find((item) => String(item.id) === staffId);
@@ -170,6 +177,7 @@ export default function BookingPage() {
   const review = (event: FormEvent) => {
     event.preventDefault();
     setError('');
+    if (requestOnly && !staff) return setError('請先從指定師傅卡片中選擇一位師傅');
     if (!service || !availability) return setError('請先選擇可預約的方案與時段');
     if (!/^09\d{8}$/.test(phone)) return setError('手機號碼必須是 09 開頭的 10 碼數字');
     if (!name.trim()) return setError('請填寫您的稱呼');
@@ -217,8 +225,8 @@ export default function BookingPage() {
 
       <section className={styles.hero}>
         <p>RESERVATION</p>
-        <h1>{stage === 'success' ? (requestOnly ? '預約通知已送出' : '預約已送出') : stage === 'review' ? '最後確認一次' : '選一段留給自己的時間'}</h1>
-        <span>{stage === 'details' ? (requestOnly ? `已鎖定 ${lockedStaffName}；不受班表限制，送出後由客服人工確認。` : '所有預約須至少提前 90 分鐘，送出後客服會收到通知。') : stage === 'review' ? (requestOnly ? '這只是預約通知；必須由客服確認後才會成立正式訂單。' : '目前尚未建立訂單，按下確認後才會正式送出。') : (requestOnly ? '客服已收到通知；指定師傅尚未被正式預訂。' : '客服與指定師傅已收到這筆預約。')}</span>
+        <h1>{stage === 'success' ? (requestOnly ? '指定需求已送出' : '預約已送出') : stage === 'review' ? '最後確認一次' : '選一段留給自己的時間'}</h1>
+        <span>{stage === 'details' ? '先選擇「目前排班師傅」或「指定師傅」，兩種方式的成立規則不同。' : stage === 'review' ? (requestOnly ? '指定師傅只會送出預約通知，必須由客服確認後才會成立。' : '目前尚未建立訂單，按下確認後才會正式送出。') : (requestOnly ? '客服已收到指定需求；師傅尚未被正式預訂。' : '客服與指定師傅已收到這筆預約。')}</span>
       </section>
 
       <nav className={styles.steps} aria-label="預約進度">
@@ -241,10 +249,29 @@ export default function BookingPage() {
         </section>
 
         <section>
-          <div className={styles.sectionTitle}><span>02</span><div><h2>日期與師傅</h2><p>{requestOnly ? `從官網指定 ${lockedStaffName}，師傅已鎖定不可更換` : '只會列出正式排班且沒有撞單的師傅'}</p></div></div>
+          <div className={styles.sectionTitle}><span>02</span><div><h2>日期與師傅</h2><p>選擇直接預約目前排班師傅，或指定任一位在職師傅交由客服確認</p></div></div>
+          <div className={flowStyles.bookingModeGrid} role="radiogroup" aria-label="師傅選擇方式">
+            <button type="button" role="radio" aria-checked={bookingMode === 'scheduled'} className={bookingMode === 'scheduled' ? flowStyles.bookingModeSelected : flowStyles.bookingMode} onClick={() => { setBookingMode('scheduled'); setStaffId(''); setAvailability(null); setError(''); }}>
+              <i>01</i><span><strong>目前排班師傅</strong><small>只顯示有正式排班且沒有撞單的師傅，可直接成立預約。</small></span>
+            </button>
+            <button type="button" role="radio" aria-checked={bookingMode === 'requested'} className={bookingMode === 'requested' ? flowStyles.bookingModeSelected : flowStyles.bookingMode} onClick={() => { setBookingMode('requested'); setStaffId(''); setAvailability(null); setError(''); }}>
+              <i>02</i><span><strong>指定師傅</strong><small>瀏覽全部在職師傅；送出後由客服確認，不會立即成立預約。</small></span>
+            </button>
+          </div>
           <label className={styles.field}>預約開始時間<input type="datetime-local" value={startTime} min={taipeiInputValue(options?.minimum_lead_minutes || 90)} step="1800" onChange={(event) => setStartTime(event.target.value)} required /></label>
-          <div className={styles.availabilityLine}>{checking ? '正在確認時間…' : availability ? (requestOnly ? `${lockedStaffName} 已鎖定・預計結束 ${availability.end_time.slice(11, 16)}・等待客服人工確認` : `${availability.staff.length} 位師傅可預約・結束時間 ${availability.end_time.slice(11, 16)}`) : '請選擇其他時間'}</div>
-          {requestOnly && staff && <div className={styles.assignment}>指定師傅：{staff.name}。即使目前沒有排班也可送出通知，但不會立即成立訂單。</div>}
+          <div className={styles.availabilityLine}>{checking ? '正在確認時間…' : availability ? (requestOnly ? `已選擇 ${staff?.name}・預計結束 ${availability.end_time.slice(11, 16)}・等待客服人工確認` : `${availability.staff.length} 位師傅目前可預約・結束時間 ${availability.end_time.slice(11, 16)}`) : requestOnly ? '請從下方卡片選擇希望指定的師傅' : '這個時段暫無可直接預約的師傅，可改用「指定師傅」送出通知'}</div>
+          {requestOnly && <div className={flowStyles.requestedRail} role="listbox" aria-label="全部在職師傅">
+            {options?.staff.map((item) => {
+              const photo = resolveStaffPhotoUrl(item.photo_url);
+              const selected = staffId === String(item.id);
+              return <button type="button" role="option" aria-selected={selected} key={item.id} onClick={() => setStaffId(String(item.id))} className={selected ? flowStyles.requestedCardSelected : flowStyles.requestedCard}>
+                <span className={flowStyles.requestedPortrait}>{photo ? <img src={photo} alt={`${item.name}師傅`} loading="lazy" /> : <i>{item.name.slice(0, 1)}</i>}</span>
+                <span className={flowStyles.requestedInfo}><small>{categoryLabel(item.category)}</small><strong>{item.name}</strong><em>{[item.height && `${item.height} cm`, item.weight && `${item.weight} kg`].filter(Boolean).join('・') || '資料更新中'}</em></span>
+                <b>{selected ? '已選擇' : '選擇這位'}</b>
+              </button>;
+            })}
+          </div>}
+          {requestOnly && staff && <div className={styles.assignment}>已指定 {staff.name}。不論目前是否排班，都只會先送出通知並保留這位師傅，等待客服確認。</div>}
           {!requestOnly && availability?.can_choose_staff && <div className={styles.staffGrid}>
             <button type="button" onClick={() => setStaffId('')} className={!staffId ? styles.staffSelected : styles.staff}><i>?</i><span><strong>不指定</strong><small>由店長安排</small></span></button>
             {availability.staff.map((item) => <button type="button" key={item.id} onClick={() => setStaffId(String(item.id))} className={staffId === String(item.id) ? styles.staffSelected : styles.staff}><i>{item.name.slice(0, 1)}</i><span><strong>{item.name}</strong><small>{categoryLabel(item.category)}</small></span></button>)}
@@ -263,7 +290,7 @@ export default function BookingPage() {
           <input className={styles.honeypot} name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" />
         </section>
         <div className={styles.total}><span>預估金額<small>{promotion ? `已套用 ${promotion.name}` : '未使用優惠'}</small></span><strong>{money(total)}</strong></div>
-        <button className={styles.primary} disabled={!availability || checking}>查看預約明細</button>
+        <button className={styles.primary} disabled={!availability || checking || (requestOnly && !staff)}>查看預約明細</button>
       </form>}
 
       {stage === 'review' && <section className={styles.card}>
@@ -271,7 +298,7 @@ export default function BookingPage() {
         <dl className={styles.receipt}>
           <div><dt>預約時間</dt><dd>{startTime.replace('T', ' ')}–{availability?.end_time.slice(11, 16)}</dd></div>
           <div><dt>服務方案</dt><dd>{service?.name}・{service?.duration_minutes} 分</dd></div>
-          <div><dt>指定師傅</dt><dd>{staff?.name || '不指定，由店長安排'}</dd></div>
+          <div><dt>師傅選擇</dt><dd>{staff?.name || '不指定，由店長安排'}・{requestOnly ? '待客服確認' : '目前排班'}</dd></div>
           <div><dt>優惠</dt><dd>{promotion?.name || '不使用優惠'}</dd></div>
           <div><dt>客戶</dt><dd>{name}・{phone}</dd></div>
           {notes && <div><dt>備註</dt><dd>{notes}</dd></div>}
