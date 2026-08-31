@@ -1,10 +1,11 @@
 import os
 import tempfile
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 
 
 _database_file = tempfile.NamedTemporaryFile(prefix="equalspa-test-", suffix=".sqlite3", delete=False)
@@ -44,6 +45,40 @@ def test_booking_flex_uses_explicit_scheduled_and_requested_flows():
     requested_action = flow_contents[1].contents[2].action.data
     assert "action=select_staff" in scheduled_action
     assert "action=select_all_staff" in requested_action
+
+
+def test_booking_availability_uses_bounded_query_count(client):
+    Shift = app.state.admin_models["Shift"]
+    ServicePlan = app.state.admin_models["ServicePlan"]
+    db = SessionLocal()
+    try:
+        plan = db.query(ServicePlan).filter(ServicePlan.code == "B").first()
+        staff = db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.id).limit(12).all()
+        plan_id = plan.id
+        staff_count = len(staff)
+        for item in staff:
+            db.add(Shift(staff_id=item.id, start_time=datetime(2099, 12, 1, 16), end_time=datetime(2099, 12, 1, 20), status="active", source="query-count-test"))
+        db.commit()
+    finally:
+        db.close()
+
+    statements = []
+
+    def count_statement(*_args):
+        statements.append(1)
+
+    event.listen(engine, "before_cursor_execute", count_statement)
+    try:
+        response = client.get(
+            "/api/public/booking/availability",
+            params={"service_plan_id": plan_id, "start_time": "2099-12-01T17:00:00"},
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", count_statement)
+
+    assert response.status_code == 200, response.text
+    assert len(response.json()["staff"]) == staff_count
+    assert len(statements) <= 5
 
 
 def test_login_is_required_and_bootstrap_seeds_two_rooms(client):
