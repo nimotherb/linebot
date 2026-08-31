@@ -67,6 +67,14 @@ function imagePath(therapist: Therapist) {
   return `/images/therapists/${therapist.category}/${therapist.slug}.png`;
 }
 
+function therapistBookingUrl(baseUrl: string, therapist: Therapist) {
+  const query = new URLSearchParams({ source: 'official', staff_name: therapist.name });
+  const hashIndex = baseUrl.indexOf('#');
+  const urlWithoutHash = hashIndex >= 0 ? baseUrl.slice(0, hashIndex) : baseUrl;
+  const hash = hashIndex >= 0 ? baseUrl.slice(hashIndex) : '';
+  return `${urlWithoutHash}${urlWithoutHash.includes('?') ? '&' : '?'}${query.toString()}${hash}`;
+}
+
 export default function TherapistCatalog() {
   const [category, setCategory] = useState<'all' | Category>('all');
   const visible = useMemo(() => category === 'all' ? therapists : therapists.filter((item) => item.category === category), [category]);
@@ -94,7 +102,7 @@ export default function TherapistCatalog() {
       <header><small>CATALOG / {visible.length} PROFILES</small><h2>THERAPIST<br />SELECTION.</h2></header>
       <div className="therapist-product-grid">{visible.map((therapist, index) => <article key={`${therapist.category}-${therapist.slug}`}>
         <div className="therapist-product-image"><img src={imagePath(therapist)} alt={`${therapist.name}師傅`} loading="lazy"/><span>{String(index + 1).padStart(2, '0')}</span></div>
-        <div className="therapist-product-copy"><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3><dl><div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div><div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div></dl><p>{categoryMeta[therapist.category].note}</p><a href={bookingUrl} target="_blank" rel="noreferrer">詢問班表／指定預約 ↗</a></div>
+        <div className="therapist-product-copy"><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3><dl><div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div><div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div></dl><p>{categoryMeta[therapist.category].note}</p><a href={therapistBookingUrl(bookingUrl, therapist)} target="_blank" rel="noreferrer">指定 {therapist.name}／送出預約通知 ↗</a></div>
       </article>)}</div>
     </section>
   </>;

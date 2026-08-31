@@ -29,7 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from pwdlib import PasswordHash
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, text
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -73,6 +73,10 @@ ZH_TO_STATUS = {value: key for key, value in STATUS_TO_ZH.items()}
 class LoginIn(BaseModel):
     username: str = Field(min_length=1, max_length=80)
     pin: str = Field(min_length=4, max_length=32, pattern=r"^\d+$")
+
+
+class BookingDataResetIn(BaseModel):
+    confirmation: Literal["DELETE_ALL_BOOKING_DATA"]
 
 
 class AdminUserCreateIn(BaseModel):
@@ -1842,6 +1846,38 @@ def register_admin_api(
     def cancel_booking_request(request_id: int, payload: BookingRequestPatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
         item = cancel_booking_request_record(request_id, db, actor, payload.review_note)
         return booking_request_dict(db, item)
+
+    @app.post("/api/admin/maintenance/reset-booking-data")
+    def reset_booking_data(payload: BookingDataResetIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin"))):
+        """Delete booking/test transaction rows while preserving operational master data."""
+        _ = payload
+        audit_entity_types = ["appointment", "booking_request", "payment"]
+        counts = {
+            "staff_returns": db.query(StaffReturn).count(),
+            "payments": db.query(Payment).count(),
+            "appointment_details": db.query(AppointmentDetail).count(),
+            "booking_requests": db.query(BookingRequest).count(),
+            "public_booking_requests": db.query(PublicBookingRequest).count(),
+            "appointments": db.query(Appointment).count(),
+            "booking_audit_logs": db.query(AuditLog).filter(AuditLog.entity_type.in_(audit_entity_types)).count(),
+        }
+        db.query(StaffReturn).delete(synchronize_session=False)
+        db.query(Payment).delete(synchronize_session=False)
+        db.query(AppointmentDetail).delete(synchronize_session=False)
+        db.query(BookingRequest).delete(synchronize_session=False)
+        db.query(PublicBookingRequest).delete(synchronize_session=False)
+        db.query(Appointment).delete(synchronize_session=False)
+        db.query(AuditLog).filter(AuditLog.entity_type.in_(audit_entity_types)).delete(synchronize_session=False)
+        audit(db, actor, "reset_booking_data", "maintenance", None, reason="production_launch_cleanup", after=counts)
+        db.commit()
+        if db.get_bind().dialect.name == "mysql":
+            for table_name in ("staff_returns", "payments", "appointment_details", "booking_requests", "public_booking_requests", "appointments"):
+                db.execute(text(f"ALTER TABLE {table_name} AUTO_INCREMENT = 1"))
+            db.commit()
+        return {
+            "deleted": counts,
+            "preserved": ["staffs", "users", "customer_phones", "shifts", "service_plans", "promotions", "rooms", "admin_users"],
+        }
 
     @app.get("/api/admin/appointments")
     def list_appointments(

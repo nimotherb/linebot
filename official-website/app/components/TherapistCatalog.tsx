@@ -79,7 +79,10 @@ function imagePath(therapist: Therapist) {
 function therapistBookingUrl(baseUrl: string, therapist: Therapist) {
   const query = new URLSearchParams({ source: 'official', staff_name: therapist.name });
   if (therapist.id) query.set('staff_id', String(therapist.id));
-  return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}${query.toString()}`;
+  const hashIndex = baseUrl.indexOf('#');
+  const urlWithoutHash = hashIndex >= 0 ? baseUrl.slice(0, hashIndex) : baseUrl;
+  const hash = hashIndex >= 0 ? baseUrl.slice(hashIndex) : '';
+  return `${urlWithoutHash}${urlWithoutHash.includes('?') ? '&' : '?'}${query.toString()}${hash}`;
 }
 
 export default function TherapistCatalog() {

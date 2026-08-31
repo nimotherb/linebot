@@ -590,3 +590,41 @@ def test_catalog_create_and_delete_preserves_historical_order_links(client):
     appointment_after = next(item for item in client.get("/api/admin/bootstrap", headers=headers).json()["appointments"] if item["id"] == appointment_id)
     assert appointment_after["service_name"] == "歷史保留測試方案"
     assert appointment_after["promotion_name"] == "歷史保留測試優惠"
+
+
+def test_admin_can_reset_booking_data_without_deleting_master_data(client):
+    admin_headers = login(client)
+    manager_headers = login(client, "jerry", "654321")
+    before = client.get("/api/admin/bootstrap", headers=admin_headers).json()
+    assert before["appointments"]
+    staff_count = len(before["staff"])
+    customer_count = len(before["customers"])
+    service_count = len(before["services"])
+
+    denied = client.post(
+        "/api/admin/maintenance/reset-booking-data",
+        headers=manager_headers,
+        json={"confirmation": "DELETE_ALL_BOOKING_DATA"},
+    )
+    assert denied.status_code == 403
+    invalid = client.post(
+        "/api/admin/maintenance/reset-booking-data",
+        headers=admin_headers,
+        json={"confirmation": "DELETE_SOMETHING_ELSE"},
+    )
+    assert invalid.status_code == 422
+
+    reset = client.post(
+        "/api/admin/maintenance/reset-booking-data",
+        headers=admin_headers,
+        json={"confirmation": "DELETE_ALL_BOOKING_DATA"},
+    )
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["deleted"]["appointments"] > 0
+
+    after = client.get("/api/admin/bootstrap", headers=admin_headers).json()
+    assert after["appointments"] == []
+    assert after["booking_requests"] == []
+    assert len(after["staff"]) == staff_count
+    assert len(after["customers"]) == customer_count
+    assert len(after["services"]) == service_count

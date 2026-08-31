@@ -178,7 +178,7 @@ export default function Home() {
   const [statusFilter, setStatusFilter] = useState('全部');
   const [customerSearch, setCustomerSearch] = useState('');
   const [week, setWeek] = useState<'current' | 'next'>('current');
-  const [appMode, setAppMode] = useState<'checking' | 'unavailable' | 'public' | 'live' | 'staff' | 'staffLink'>('checking');
+  const [appMode, setAppMode] = useState<'checking' | 'unavailable' | 'login' | 'live' | 'staff' | 'staffLink'>('checking');
   const [connectionError, setConnectionError] = useState('');
   const [token, setToken] = useState('');
   const [identity, setIdentity] = useState<AdminIdentity | null>(null);
@@ -204,10 +204,10 @@ export default function Home() {
     }, '正在切換頁面…');
   };
 
-  const applyBootstrap = (data: BootstrapData, mode: 'live' | 'public' | 'staff' = 'live') => {
+  const applyBootstrap = (data: BootstrapData, mode: 'live' | 'staff' = 'live') => {
     setIdentity(data.user || null);
     setStaffIdentity(data.staff_user || null);
-    setRole(data.user?.role || (mode === 'staff' ? 'staff' : 'viewer'));
+    setRole(data.user?.role || 'staff');
     setAppointments(data.appointments.map(mapAppointment));
     setBookingRequests(data.booking_requests || []);
     setShifts(data.shifts.map(mapShift));
@@ -264,6 +264,21 @@ export default function Home() {
         setAppMode('staffLink');
         return;
       }
+      const savedAdminToken = window.sessionStorage.getItem('equalspa-admin-token');
+      const savedStaffToken = window.sessionStorage.getItem('equalspa-staff-token');
+      if (!savedAdminToken && !savedStaffToken) {
+        setAppMode('login');
+        try {
+          const data = await new SpaApi().publicBookingOptions();
+          if (!activeRequest) return;
+          setStaff(data.staff.map((item) => mapStaff({ ...item, category: item.category as 'straight' | 'gay' | 'bisexual' | undefined, employment_status: 'active', line_connected: false })));
+          setConnectionError('');
+        } catch (error) {
+          if (!activeRequest) return;
+          setConnectionError(error instanceof Error ? error.message : '目前無法讀取登入資料');
+        }
+        return;
+      }
       const backendReady = await SpaApi.probe();
       if (!activeRequest) return;
       if (!backendReady) {
@@ -271,8 +286,6 @@ export default function Home() {
         setAppMode('unavailable');
         return;
       }
-      const savedAdminToken = window.sessionStorage.getItem('equalspa-admin-token');
-      const savedStaffToken = window.sessionStorage.getItem('equalspa-staff-token');
       if (savedAdminToken) {
         try {
           const data = await new SpaApi(savedAdminToken).bootstrap();
@@ -291,13 +304,15 @@ export default function Home() {
           return;
         } catch { window.sessionStorage.removeItem('equalspa-staff-token'); }
       }
+      setAppMode('login');
       try {
-        const data = await new SpaApi().publicBootstrap();
+        const data = await new SpaApi().publicBookingOptions();
         if (!activeRequest) return;
-        applyBootstrap(data, 'public');
+        setStaff(data.staff.map((item) => mapStaff({ ...item, category: item.category as 'straight' | 'gay' | 'bisexual' | undefined, employment_status: 'active', line_connected: false })));
+        setConnectionError('');
       } catch (error) {
-        setConnectionError(error instanceof Error ? error.message : '目前無法讀取資料庫資料');
-        setAppMode('unavailable');
+        setConnectionError(error instanceof Error ? error.message : '目前無法讀取登入資料');
+        setAppMode('login');
       }
     };
     initialize();
@@ -369,7 +384,7 @@ export default function Home() {
   };
 
   const logout = async () => {
-    startNavigation('正在登出並返回公開總覽…');
+    startNavigation('正在登出並返回登入畫面…');
     try { if (token) await api.logout(appMode === 'staff' ? 'staff' : 'admin'); } catch {}
     window.sessionStorage.removeItem('equalspa-admin-token');
     window.sessionStorage.removeItem('equalspa-staff-token');
@@ -378,15 +393,9 @@ export default function Home() {
     setStaffIdentity(null);
     setRole('viewer');
     setActive('dashboard');
-    try {
-      const data = await new SpaApi().publicBootstrap();
-      applyBootstrap(data, 'public');
-    } catch (error) {
-      setConnectionError(error instanceof Error ? error.message : '目前無法讀取資料庫資料');
-      setAppMode('unavailable');
-    } finally {
-      stopNavigation();
-    }
+    setAppMode('login');
+    setLoginError('');
+    stopNavigation();
   };
 
   const notify = (message: string) => {
@@ -401,7 +410,7 @@ export default function Home() {
   const selectedShift = modal && 'id' in modal ? shifts.find((item) => item.id === modal.id) : undefined;
   const selectedCustomer = modal?.type === 'customer' ? customers.find((item) => item.id === modal.id) : undefined;
   const selectedBookingRequest = modal?.type === 'bookingRequest' ? bookingRequests.find((item) => item.id === modal.id) : undefined;
-  const isViewer = appMode === 'public' || appMode === 'unavailable';
+  const isViewer = appMode === 'unavailable';
   const isStaffUser = appMode === 'staff';
   const canManageAll = appMode === 'live' && (role === 'admin' || role === 'manager');
   const canCreateUsers = appMode === 'live' && (role === 'admin' || role === 'manager');
@@ -1132,6 +1141,10 @@ export default function Home() {
     return <main className="auth-shell"><section className="auth-card"><span className="brand-seal">E</span><p className="eyebrow">EQUAL SPA</p><h1>正在讀取管理資料</h1><p>正在連線 FastAPI 與 MySQL。</p><div className="auth-loading" /></section></main>;
   }
 
+  if (appMode === 'login' || appMode === 'unavailable') {
+    return <main className="auth-shell"><section className="auth-card auth-login-card"><span className="brand-seal">E</span><p className="eyebrow">EQUAL SPA</p><h1>登入伊果 SPA 營運後台</h1><p>後台不提供訪客模式。客服、店長與 Admin 請使用管理帳號；師傅可使用姓名與手機登入。</p>{connectionError && <div className="auth-error">{connectionError}</div>}<div className="account-login-grid auth-login-grid"><form className="modal-form account-login-card" onSubmit={login}><p className="eyebrow">MANAGEMENT</p><h3>客服／店長／Admin</h3><label>登入帳號<input name="username" required autoCapitalize="none" autoComplete="username" placeholder="例如：admin" autoFocus /></label><label>數字 PIN<input name="pin" required type="password" inputMode="numeric" pattern="[0-9]+" minLength={4} autoComplete="current-password" /></label><button className="primary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '管理帳號登入'}</button></form><form className="modal-form account-login-card" onSubmit={loginStaff}><p className="eyebrow">STAFF</p><h3>師傅免密碼登入</h3><label>選擇自己的名字<select name="staffId" required defaultValue={staff.find((item) => item.status === '在職')?.apiId}>{staff.filter((item) => item.status === '在職').map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label><label>手機 ID<input name="staffPhone" required inputMode="tel" pattern="09[0-9]{8}" placeholder="09xxxxxxxx" /></label><button className="secondary-button full" disabled={loginBusy || staff.length === 0}>{loginBusy ? '切換中…' : '以員工身分進入'}</button></form></div>{loginError && <div className="auth-error modal-auth-error">{loginError}</div>}<small>從 LINE Bot 開啟師傅後台時，仍會使用安全連結直接登入。</small></section></main>;
+  }
+
   if (appMode === 'staffLink') {
     return <main className="staff-standalone"><section className="staff-portal-card"><header><span className="brand-seal">E</span><div><small>伊果 SPA 師傅班表</small><strong>{staffPortalName}，辛苦了</strong></div><span className="link-badge">專屬連結</span></header><div className="portal-rule"><strong>排班提醒</strong><span>每段至少 2 小時；開始前 90 分鐘內不可自行新增或撤銷，請聯絡店長。</span></div>{staffPortalError ? <div className="auth-error">{staffPortalError}</div> : <><form className="public-shift-form" onSubmit={(event) => addShift(event, 'staff')}><label>日期<input name="date" type="date" min={todayIso} defaultValue={bookingDefault.date} required /></label><label>開始<input name="start" type="time" defaultValue={bookingDefault.time} required /></label><label>結束<input name="end" type="time" required /></label><button className="primary-button" type="submit">新增排班</button></form><div className="portal-week"><div className="portal-week-head"><strong>我的班表</strong><span>{shifts.length} 段</span></div>{shifts.map((shift) => <article className="portal-shift public-shift" key={shift.id}><span><strong>{shift.date.slice(5).replace('-', '/')}</strong><small>{isShiftLocked(shift) ? '已鎖定' : '可調整'}</small></span><div><strong>{shift.start}–{shift.end}</strong><small>共 {(toMinutes(shift.end) - toMinutes(shift.start)) / 60} 小時</small></div><button className="danger-text" disabled={isShiftLocked(shift)} onClick={() => removeShift(shift, 'staff')}>{isShiftLocked(shift) ? '洽店長' : '撤銷'}</button></article>)}{shifts.length === 0 && <div className="empty-state">本週與下週尚未排班。</div>}</div></>}</section>{toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}</main>;
   }
@@ -1142,18 +1155,18 @@ export default function Home() {
         <button className="brand-mark" onClick={() => navigateTo('dashboard')}><span className="brand-seal">E</span><div><strong>伊果 SPA</strong><small>EQUAL OPERATIONS</small></div></button>
         <div className="nav-scroll">{visibleNavGroups.map((group) => <nav aria-label={group.label} key={group.label}><p>{group.label}</p>{group.items.map((item) => <button className={active === item.id ? 'nav-item active' : 'nav-item'} key={item.id} onClick={() => navigateTo(item.id)}><span className="nav-glyph">{item.glyph}</span>{item.label}</button>)}</nav>)}</div>
         {appMode === 'live' && <button className={active === 'staffPortal' ? 'portal-link active' : 'portal-link'} onClick={() => navigateTo('staffPortal')}><span>↗</span><div><strong>師傅班表連結</strong><small>免登入入口預覽</small></div></button>}
-        <div className="sidebar-user account-entry" onClick={() => setModal({ type: 'account' })} role="button" tabIndex={0}><span className="avatar">{role === 'admin' ? 'A' : role === 'manager' ? 'J' : role === 'clerk' ? '客' : role === 'staff' ? '師' : '？'}</span><div><strong>{identity?.display_name || staffIdentity?.name || '登入資訊'}</strong><small>{role === 'admin' ? '系統管理員' : role === 'manager' ? '店長' : role === 'clerk' ? '客服' : role === 'staff' ? '員工' : '訪客唯讀'}</small></div>{(appMode === 'live' || appMode === 'staff') ? <button className="logout-button" onClick={(event) => { event.stopPropagation(); logout(); }}>登出</button> : <button className="logout-button" onClick={(event) => { event.stopPropagation(); setModal({ type: 'account' }); }}>登入</button>}</div>
+        <div className="sidebar-user account-entry" onClick={() => setModal({ type: 'account' })} role="button" tabIndex={0}><span className="avatar">{role === 'admin' ? 'A' : role === 'manager' ? 'J' : role === 'clerk' ? '客' : role === 'staff' ? '師' : '？'}</span><div><strong>{identity?.display_name || staffIdentity?.name || '登入資訊'}</strong><small>{role === 'admin' ? '系統管理員' : role === 'manager' ? '店長' : role === 'clerk' ? '客服' : role === 'staff' ? '員工' : '未登入'}</small></div>{(appMode === 'live' || appMode === 'staff') ? <button className="logout-button" onClick={(event) => { event.stopPropagation(); logout(); }}>登出</button> : <button className="logout-button" onClick={(event) => { event.stopPropagation(); setModal({ type: 'account' }); }}>登入</button>}</div>
       </aside>
 
       <section className="workspace">
-        <div className={(appMode === 'live' || appMode === 'staff' || appMode === 'public') ? 'prototype-ribbon live-ribbon' : 'prototype-ribbon'}><span>{appMode === 'live' ? '管理帳號' : appMode === 'staff' ? '員工模式' : appMode === 'public' ? '公開唯讀' : '資料庫未連線'}</span>{appMode === 'live' ? '操作會經 FastAPI 權限驗證並保存到 MySQL。' : appMode === 'staff' ? '只顯示自己的班表與訂單，帳務總覽已隱藏。' : appMode === 'public' ? '資料均來自 MySQL；敏感資訊已隱藏。' : connectionError}</div>
+        <div className={(appMode === 'live' || appMode === 'staff') ? 'prototype-ribbon live-ribbon' : 'prototype-ribbon'}><span>{appMode === 'live' ? '管理帳號' : appMode === 'staff' ? '員工模式' : '資料庫未連線'}</span>{appMode === 'live' ? '操作會經 FastAPI 權限驗證並保存到 MySQL。' : appMode === 'staff' ? '只顯示自己的班表與訂單，帳務總覽已隱藏。' : connectionError}</div>
         <header className="topbar"><div><p className="eyebrow">{active === 'dashboard' ? todayLabel : headings[active].eyebrow}</p><h1>{headings[active].title}</h1><span>{active === 'dashboard' ? `目前登入：${currentLoginLabel}` : headings[active].description}</span></div><div className="topbar-actions"><button className="icon-button" aria-label="通知" onClick={() => notify('目前沒有新的系統通知。')}>●</button>{canCreateAppointments && !['staffPortal', 'users'].includes(active) && <button className="primary-button" onClick={() => setModal({ type: 'appointment' })}>＋ 新增預約</button>}</div></header>
         {renderActiveSection()}
       </section>
 
       {toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}
 
-      {modal?.type === 'account' && <Modal title="登入資訊" subtitle="訪客可直接唯讀；師傅使用姓名與手機，客服與管理者使用帳號及 PIN。" onClose={() => setModal(null)} wide><div className="account-login-grid"><form className="modal-form account-login-card" onSubmit={login}><p className="eyebrow">MANAGEMENT</p><h3>客服／店長／Admin</h3><label>登入帳號<input name="username" required autoCapitalize="none" autoComplete="username" placeholder="例如：admin" /></label><label>數字 PIN<input name="pin" required type="password" inputMode="numeric" pattern="[0-9]+" minLength={4} autoComplete="current-password" /></label><button className="primary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '管理帳號登入'}</button></form><form className="modal-form account-login-card" onSubmit={loginStaff}><p className="eyebrow">STAFF</p><h3>師傅免密碼登入</h3><label>選擇自己的名字<select name="staffId" required defaultValue={staff[0]?.apiId}>{staff.filter((item) => item.status === '在職').map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label><label>手機 ID<input name="staffPhone" required inputMode="tel" pattern="09[0-9]{8}" placeholder="09xxxxxxxx" /></label><button className="secondary-button full" disabled={loginBusy}>{loginBusy ? '切換中…' : '以員工身分進入'}</button></form></div>{loginError && <div className="auth-error modal-auth-error">{loginError}</div>}<div className="form-note">從 LINE Bot 開啟後台時會以安全連結直接登入，不會再出現登入畫面。</div></Modal>}
+      {modal?.type === 'account' && <Modal title="登入資訊" subtitle="師傅使用姓名與手機；客服與管理者使用帳號及 PIN。" onClose={() => setModal(null)} wide><div className="account-login-grid"><form className="modal-form account-login-card" onSubmit={login}><p className="eyebrow">MANAGEMENT</p><h3>客服／店長／Admin</h3><label>登入帳號<input name="username" required autoCapitalize="none" autoComplete="username" placeholder="例如：admin" /></label><label>數字 PIN<input name="pin" required type="password" inputMode="numeric" pattern="[0-9]+" minLength={4} autoComplete="current-password" /></label><button className="primary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '管理帳號登入'}</button></form><form className="modal-form account-login-card" onSubmit={loginStaff}><p className="eyebrow">STAFF</p><h3>師傅免密碼登入</h3><label>選擇自己的名字<select name="staffId" required defaultValue={staff[0]?.apiId}>{staff.filter((item) => item.status === '在職').map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label><label>手機 ID<input name="staffPhone" required inputMode="tel" pattern="09[0-9]{8}" placeholder="09xxxxxxxx" /></label><button className="secondary-button full" disabled={loginBusy}>{loginBusy ? '切換中…' : '以員工身分進入'}</button></form></div>{loginError && <div className="auth-error modal-auth-error">{loginError}</div>}<div className="form-note">從 LINE Bot 開啟師傅後台時會以安全連結直接登入，不會再出現登入畫面。</div></Modal>}
 
       {modal?.type === 'appointment' && <Modal title="新增預約" subtitle="所有入口最少提前 90 分鐘，並檢查師傅與房間衝突。" onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={addAppointment}><div className="form-grid two"><label>客戶姓名<input name="customer" required placeholder="例如：王先生" /></label><label>手機號碼<input name="phone" required inputMode="numeric" pattern="09[0-9]{8}" placeholder="09xxxxxxxx" /></label><label>日期<input name="date" type="date" min={todayIso} defaultValue={bookingDefault.date} required /></label><label>開始時間<input name="start" type="time" defaultValue={bookingDefault.time} required /></label><label>服務方案<select name="serviceId" defaultValue={plans.find((item) => item.code === 'C')?.id}>{plans.filter((item) => item.active).map((plan) => <option value={plan.id} key={plan.id}>{plan.code}・{plan.name}｜{plan.duration} 分｜{formatCurrency(plan.price)}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue="0"><option value="0">不使用優惠</option>{promotions.filter((item) => item.active && item.kind.includes('折扣')).map((item) => <option key={item.id} value={item.apiId}>{item.name}｜{item.kind === '百分比折扣' ? `${item.value}%` : `折 ${formatCurrency(item.value)}`}</option>)}</select></label><label>指派師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label>場地／房間<select name="room" defaultValue={rooms[0]?.name}>{rooms.map((room) => <option key={room.id}>{room.name}</option>)}<option>外出場地</option><option>待確認</option></select></label><label className="span-two">客服備註<textarea name="note" rows={3} placeholder="不公開給客戶的內部備註" /></label></div><div className="form-note">例如 09:00 當下最早可預約 10:30；後端也會阻止重疊或過近的時間。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">建立預約</button></footer></form></Modal>}
 

@@ -42,6 +42,24 @@ const taipeiInputValue = (leadMinutes = 90) => {
 const money = (value: number) => `NT$ ${value.toLocaleString('zh-TW')}`;
 const categoryLabel = (value?: string) => value === 'straight' ? '直男師傅' : value === 'bisexual' ? '雙性師傅' : '圈內師傅';
 
+const normalizeStaffName = (value: string) => value.normalize('NFKC').replace(/\s+/g, '').toLocaleLowerCase('zh-TW');
+
+const readBookingIntent = () => {
+  const params = new URLSearchParams(window.location.search);
+  const hash = window.location.hash.slice(1);
+  const hashQuery = hash.includes('?') ? hash.slice(hash.indexOf('?') + 1) : hash.includes('=') ? hash : '';
+  const hashParams = new URLSearchParams(hashQuery);
+  const value = (key: string) => params.get(key) || hashParams.get(key) || '';
+  const requestedId = value('staff_id') || value('requested_staff_id');
+  const requestedName = value('staff_name') || value('therapist') || value('therapist_name');
+  const source = value('source').toLocaleLowerCase();
+  return {
+    requestedId,
+    requestedName,
+    locked: Boolean(requestedId || requestedName || source === 'official' || source === 'official_website'),
+  };
+};
+
 export default function BookingPage() {
   const api = useMemo(() => new SpaApi(), []);
   const [stage, setStage] = useState<Stage>('details');
@@ -72,18 +90,16 @@ export default function BookingPage() {
       .then((data) => {
         setOptions(data);
         setServiceId(String(data.services[0]?.id || ''));
-        const params = new URLSearchParams(window.location.search);
-        if (params.get('source') === 'official') {
-          const requestedId = params.get('staff_id');
-          const requestedName = params.get('staff_name') || '';
-          const locked = data.staff.find((item) => String(item.id) === requestedId)
-            || data.staff.find((item) => item.name.trim().toLocaleLowerCase() === requestedName.trim().toLocaleLowerCase());
+        const intent = readBookingIntent();
+        if (intent.locked) {
+          const locked = data.staff.find((item) => String(item.id) === intent.requestedId)
+            || data.staff.find((item) => normalizeStaffName(item.name) === normalizeStaffName(intent.requestedName));
           if (locked) {
             setRequestOnly(true);
             setStaffId(String(locked.id));
             setLockedStaffName(locked.name);
           } else {
-            setError(`找不到「${requestedName || '指定師傅'}」的最新資料，請回官網重新選擇或聯絡真人客服`);
+            setError(`找不到「${intent.requestedName || '指定師傅'}」的最新資料，請回官網重新選擇或聯絡真人客服`);
           }
         }
       })

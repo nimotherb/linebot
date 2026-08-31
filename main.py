@@ -336,7 +336,7 @@ def build_booking_preview_flex(*, staff, plan_key: str, promotion, selected_dt: 
             "styles": {"header": {"backgroundColor": "#123F37"}, "footer": {"backgroundColor": "#F7F3EA"}},
             "header": {"type": "box", "layout": "vertical", "contents": [
                 {"type": "text", "text": "送出前再次確認", "weight": "bold", "size": "xl", "color": "#F7D7A3"},
-                {"type": "text", "text": "此時尚未建立訂單", "size": "sm", "color": "#D1FAE5", "margin": "sm"},
+                {"type": "text", "text": "師傅已鎖定、不會自動換人；此時尚未建立訂單", "size": "sm", "color": "#D1FAE5", "margin": "sm", "wrap": True},
             ]},
             "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
                 *[{"type": "box", "layout": "horizontal", "contents": [
@@ -785,13 +785,13 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
     if not is_line_manager(user_id, db):
         return TextSendMessage(text="此功能只開放管理帳號使用。")
 
-    if "action=admin_logout" in data:
+    if action_name == "admin_logout":
         unbind = getattr(getattr(app, "state", None), "unbind_line_admin", None)
         if unbind:
             unbind(user_id, db)
         return TextSendMessage(text="管理員帳戶已從這個 LINE 登出。")
 
-    if "action=confirm_booking_request" in data:
+    if action_name == "confirm_booking_request":
         qs = parse_qs(data)
         request_id = qs.get("request_id", [None])[0]
         confirmer = getattr(getattr(app, "state", None), "confirm_booking_request_record", None)
@@ -807,7 +807,7 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         except Exception as exc:
             return TextSendMessage(text=getattr(exc, "detail", "確認預約通知失敗，請改從後台查看。"))
 
-    if "action=cancel_booking_request" in data:
+    if action_name == "cancel_booking_request":
         qs = parse_qs(data)
         request_id = qs.get("request_id", [None])[0]
         canceller = getattr(getattr(app, "state", None), "cancel_booking_request_record", None)
@@ -822,7 +822,7 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         except Exception as exc:
             return TextSendMessage(text=getattr(exc, "detail", "取消預約通知失敗，請改從後台查看。"))
     
-    if "action=admin_view" in data:
+    if action_name == "admin_view":
         today = date.today()
         appointments = db.query(Appointment).filter(
             Appointment.start_time >= datetime.combine(today, datetime.min.time()),
@@ -835,7 +835,7 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         bubbles = [build_appointment_bubble(appt, db=db, show_return=True) for appt in appointments[:10]]
         return FlexSendMessage(alt_text="本日預約", contents={"type": "carousel", "contents": bubbles})
     
-    elif "action=admin_staff" in data:
+    elif action_name == "admin_staff":
         # LINE carousel 上限為 12 張；以 10 位師傅加 1 張下一頁卡片分頁。
         qs = parse_qs(data)
         offset = max(0, int(qs.get("offset", ["0"])[0] or 0))
@@ -857,19 +857,19 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
             })
         return FlexSendMessage(alt_text="師傅管理", contents={"type": "carousel", "contents": bubbles})
     
-    elif "action=request_permanent_delete_staff" in data:
+    elif action_name == "request_permanent_delete_staff":
         qs = parse_qs(data)
         staff_id = qs.get("staff_id", [None])[0]
         staff = db.query(Staff).filter(Staff.id == int(staff_id)).first() if staff_id else None
         return build_permanent_delete_staff_confirmation(staff) if staff else TextSendMessage(text="查無師傅資料")
 
-    elif "action=request_unlink_staff" in data:
+    elif action_name == "request_unlink_staff":
         qs = parse_qs(data)
         staff_id = qs.get("staff_id", [None])[0]
         staff = db.query(Staff).filter(Staff.id == int(staff_id)).first() if staff_id else None
         return build_unlink_staff_confirmation(staff) if staff else TextSendMessage(text="查無師傅資料")
 
-    elif "action=confirm_unlink_staff" in data:
+    elif action_name == "confirm_unlink_staff":
         qs = parse_qs(data)
         staff_id = qs.get("staff_id", [None])[0]
         unlinker = getattr(getattr(app, "state", None), "unlink_staff_line", None)
@@ -883,7 +883,7 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         except Exception as exc:
             return TextSendMessage(text=getattr(exc, "detail", "解除 LINE 連結失敗。"))
 
-    elif "action=confirm_permanent_delete_staff" in data:
+    elif action_name == "confirm_permanent_delete_staff":
         qs = parse_qs(data)
         staff_id = qs.get("staff_id", [None])[0]
         delete_staff = getattr(getattr(app, "state", None), "permanently_delete_staff", None)
@@ -897,7 +897,7 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         except Exception as exc:
             return TextSendMessage(text=getattr(exc, "detail", "永久刪除失敗，請改從後台查看原因。"))
 
-    elif "action=delete_staff" in data:
+    elif action_name == "delete_staff":
         # 保留歷史訂單，僅將師傅標為暫時退役
         qs = parse_qs(data)
         staff_id = qs.get("staff_id", [None])[0]
@@ -909,7 +909,7 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
                 return TextSendMessage(text=f"已將師傅 {staff.name} 設為暫時退役")
         return TextSendMessage(text="更新失敗")
     
-    elif "action=toggle_staff" in data:
+    elif action_name == "toggle_staff":
         qs = parse_qs(data)
         staff_id = qs.get("staff_id", [None])[0]
         if staff_id:
@@ -1000,6 +1000,7 @@ if handler_customer:
     @handler_customer.add(PostbackEvent)
     def handle_customer_postback(event):
         data = getattr(getattr(event, "postback", None), "data", "")
+        action_name = parse_qs(data).get("action", [""])[0]
         params = getattr(getattr(event, "postback", None), "params", None) or {}
         user_id = getattr(getattr(event, "source", None), "user_id", None)
 
@@ -1010,7 +1011,7 @@ if handler_customer:
                 reply_with_fallback(bot_customer_api, event.reply_token, root_response, db=db, context="客戶端管理員選單", admin=True)
                 return
 
-            if "action=confirm_customer_phone" in data:
+            if action_name == "confirm_customer_phone":
                 qs = parse_qs(data)
                 result = qs.get("result", [None])[0]
                 user = db.query(User).filter(User.line_user_id == user_id).first()
@@ -1048,7 +1049,7 @@ if handler_customer:
                         bot_customer_api.reply_message(event.reply_token, TextSendMessage(text="請再次輸入您的 10 碼手機號碼："))
 
             # 選擇日期後 -> 彈出各方案的輪播卡片
-            elif data == "action=select_date":
+            elif action_name == "select_date":
                 selected_dt = params.get("datetime")
                 bubbles = []
                 for plan_key, p_info in PLANS_INFO.items():
@@ -1072,7 +1073,7 @@ if handler_customer:
                     })
                 bot_customer_api.reply_message(event.reply_token, FlexSendMessage(alt_text="請選擇服務方案", contents={"type": "carousel", "contents": bubbles}))
 
-            elif "action=select_promotion" in data:
+            elif action_name == "select_promotion":
                 qs = parse_qs(data)
                 plan = qs.get("plan", [None])[0]
                 promotion_id = qs.get("promotion_id", ["0"])[0]
@@ -1086,7 +1087,7 @@ if handler_customer:
                 bot_customer_api.reply_message(event.reply_token, build_promotion_flex(promotions, plan, selected_dt))
 
             # 選擇方案後 -> 師傅分頁輪播 (分頁處理，避開 LINE 10 張限制)
-            elif "action=select_staff" in data:
+            elif action_name == "select_staff":
                 qs = parse_qs(data)
                 plan = qs.get("plan", [None])[0]
                 promotion_id = qs.get("promotion_id", ["0"])[0]
@@ -1179,7 +1180,7 @@ if handler_customer:
 
                 reply_with_fallback(bot_customer_api, event.reply_token, FlexSendMessage(alt_text="請選擇師傅", contents={"type": "carousel", "contents": bubbles}), db=db, context="選擇師傅 Flex")
 
-            elif "action=select_all_staff" in data:
+            elif action_name == "select_all_staff":
                 qs = parse_qs(data)
                 plan = qs.get("plan", [None])[0]
                 promotion_id = qs.get("promotion_id", ["0"])[0]
@@ -1229,7 +1230,7 @@ if handler_customer:
                     })
                 reply_with_fallback(bot_customer_api, event.reply_token, FlexSendMessage(alt_text="查看全部師傅", contents={"type": "carousel", "contents": bubbles}), db=db, context="查看全部師傅 Flex")
 
-            elif "action=preview_booking_request" in data:
+            elif action_name == "preview_booking_request":
                 qs = parse_qs(data)
                 staff_id = int(qs.get("staff_id", ["0"])[0] or 0)
                 plan_key = qs.get("plan", [None])[0]
@@ -1248,7 +1249,7 @@ if handler_customer:
                 promotion = db.query(Promotion).filter(Promotion.id == promotion_id, Promotion.active.is_(True)).first() if Promotion and promotion_id else None
                 reply_with_fallback(bot_customer_api, event.reply_token, build_booking_request_preview_flex(staff=staff_obj, plan_key=plan_key, promotion=promotion, selected_dt=selected_dt), db=db, context="預約通知確認 Flex")
 
-            elif "action=confirm_booking_request_customer" in data:
+            elif action_name == "confirm_booking_request_customer":
                 qs = parse_qs(data)
                 staff_id = int(qs.get("staff_id", ["0"])[0] or 0)
                 plan_key = qs.get("plan", [None])[0]
@@ -1285,7 +1286,7 @@ if handler_customer:
                 except Exception as exc:
                     reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text=getattr(exc, "detail", "預約通知送出失敗，請聯絡真人客服。")), db=db, context="預約通知建立失敗")
 
-            elif "action=preview_booking" in data:
+            elif action_name == "preview_booking":
                 qs = parse_qs(data)
                 staff_id = qs.get("staff_id", ["none"])[0]
                 plan_key = qs.get("plan", [None])[0]
@@ -1310,7 +1311,7 @@ if handler_customer:
                     context="預約送出前確認 Flex",
                 )
 
-            elif "action=confirm_booking" in data:
+            elif action_name == "confirm_booking":
                 qs = parse_qs(data)
                 staff_id = qs.get("staff_id", [None])[0]
                 plan_key = qs.get("plan", [None])[0]
@@ -1356,6 +1357,46 @@ if handler_customer:
                     )
                     return
 
+                models = getattr(app.state, "admin_models", {})
+                Shift = models.get("Shift")
+                ServicePlan = models.get("ServicePlan")
+                if staff_obj and Shift:
+                    scheduled = db.query(Shift).filter(
+                        Shift.staff_id == staff_obj.id,
+                        Shift.status == "active",
+                        Shift.start_time <= booking_start,
+                        Shift.end_time >= booking_end,
+                    ).first()
+                    if not scheduled:
+                        creator = getattr(getattr(app, "state", None), "create_booking_request_record", None)
+                        service_code = "OUT" if plan_key == "Out" else plan_key
+                        service_plan = db.query(ServicePlan).filter(
+                            ServicePlan.code == service_code,
+                            ServicePlan.active.is_(True),
+                        ).first() if ServicePlan else None
+                        if not creator or not service_plan or not user.phone:
+                            reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text="指定師傅的班表剛剛有異動，請聯絡真人客服協助。"), db=db, context="指定師傅班表異動")
+                            return
+                        raw_key = f"line-locked-request:{user.id}:{staff_obj.id}:{service_code}:{promotion_id}:{selected_dt}"
+                        try:
+                            item, duplicate = creator(
+                                db,
+                                customer=user,
+                                contact_phone=user.phone,
+                                service_plan_id=service_plan.id,
+                                start_time=booking_start,
+                                staff_id=staff_obj.id,
+                                promotion_id=promotion_id or None,
+                                notes="指定師傅的排班在確認前異動；保留原指定師傅並轉由客服確認",
+                                source="line_locked_staff",
+                                idempotency_key=hashlib.sha256(raw_key.encode("utf-8")).hexdigest(),
+                            )
+                            alt_text = "這筆預約通知先前已送出" if duplicate else "師傅已鎖定並轉由客服確認"
+                            reply_with_fallback(bot_customer_api, event.reply_token, FlexSendMessage(alt_text=alt_text, contents=build_booking_request_bubble(item, db, customer_copy=True)), db=db, context="指定師傅轉預約通知")
+                        except Exception as exc:
+                            reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text=getattr(exc, "detail", "指定師傅的班表剛剛有異動，請聯絡真人客服協助。")), db=db, context="指定師傅轉預約通知失敗")
+                        return
+
                 if staff_obj:
                     conflict = db.query(Appointment).filter(
                         Appointment.staff_id == staff_obj.id,
@@ -1389,9 +1430,7 @@ if handler_customer:
                 )
                 db.add(appointment)
                 db.flush()
-                models = getattr(app.state, "admin_models", {})
                 AppointmentDetail = models.get("AppointmentDetail")
-                ServicePlan = models.get("ServicePlan")
                 Promotion = models.get("Promotion")
                 if AppointmentDetail and ServicePlan:
                     service_code = "OUT" if plan_key == "Out" else plan_key
@@ -1518,6 +1557,7 @@ if handler_staff:
     @handler_staff.add(PostbackEvent)
     def handle_staff_postback(event):
         data = getattr(getattr(event, "postback", None), "data", "")
+        action_name = parse_qs(data).get("action", [""])[0]
         user_id = getattr(getattr(event, "source", None), "user_id", None)
         
         db = SessionLocal()
@@ -1527,7 +1567,7 @@ if handler_staff:
                 reply_with_fallback(bot_staff_api, event.reply_token, root_response, db=db, context="派單端管理員選單", admin=True)
                 return
 
-            if "action=confirm_staff_phone" in data:
+            if action_name == "confirm_staff_phone":
                 qs = parse_qs(data)
                 result = qs.get("result", [None])[0]
                 staff = db.query(Staff).filter(Staff.line_user_id == user_id).first()
