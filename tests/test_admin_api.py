@@ -312,9 +312,15 @@ def test_staff_passwordless_session_only_returns_own_data(client):
     )
     assert created.status_code == 201, created.text
     staff = created.json()
-    assert client.post("/api/staff/auth/login", json={"staff_id": staff["id"]}).status_code == 422
-    assert client.post("/api/staff/auth/login", json={"staff_id": staff["id"], "phone": "0911111111"}).status_code == 401
-    login_response = client.post("/api/staff/auth/login", json={"staff_id": staff["id"], "phone": "0987654321"})
+    assert client.post("/api/staff/auth/login", json={}).status_code == 422
+    assert client.post("/api/staff/auth/login", json={"phone": "0911111111"}).status_code == 401
+    duplicate = client.post(
+        "/api/admin/staff",
+        headers=headers,
+        json={"name": "重複手機測試師傅", "category": "gay", "phone": "0987654321"},
+    )
+    assert duplicate.status_code == 409
+    login_response = client.post("/api/staff/auth/login", json={"phone": "0987654321"})
     assert login_response.status_code == 200, login_response.text
     headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
     bootstrap = client.get("/api/staff/bootstrap", headers=headers)

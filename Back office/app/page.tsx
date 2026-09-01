@@ -267,16 +267,8 @@ export default function Home() {
       const savedAdminToken = window.sessionStorage.getItem('equalspa-admin-token');
       const savedStaffToken = window.sessionStorage.getItem('equalspa-staff-token');
       if (!savedAdminToken && !savedStaffToken) {
+        setConnectionError('');
         setAppMode('login');
-        try {
-          const data = await new SpaApi().publicBookingOptions();
-          if (!activeRequest) return;
-          setStaff(data.staff.map((item) => mapStaff({ ...item, category: item.category as 'straight' | 'gay' | 'bisexual' | undefined, employment_status: 'active', line_connected: false })));
-          setConnectionError('');
-        } catch (error) {
-          if (!activeRequest) return;
-          setConnectionError(error instanceof Error ? error.message : '目前無法讀取登入資料');
-        }
         return;
       }
       const backendReady = await SpaApi.probe();
@@ -304,16 +296,8 @@ export default function Home() {
           return;
         } catch { window.sessionStorage.removeItem('equalspa-staff-token'); }
       }
+      setConnectionError('');
       setAppMode('login');
-      try {
-        const data = await new SpaApi().publicBookingOptions();
-        if (!activeRequest) return;
-        setStaff(data.staff.map((item) => mapStaff({ ...item, category: item.category as 'straight' | 'gay' | 'bisexual' | undefined, employment_status: 'active', line_connected: false })));
-        setConnectionError('');
-      } catch (error) {
-        setConnectionError(error instanceof Error ? error.message : '目前無法讀取登入資料');
-        setAppMode('login');
-      }
     };
     initialize();
     return () => { activeRequest = false; };
@@ -356,11 +340,10 @@ export default function Home() {
     setLoginError('');
     startNavigation('正在切換員工帳號…');
     const data = new FormData(event.currentTarget);
-    const selectedId = Number(data.get('staffId') || 0);
     const phone = String(data.get('staffPhone') || '').trim();
     let redirecting = false;
     try {
-      const result = await new SpaApi().staffLogin({ staff_id: selectedId, phone });
+      const result = await new SpaApi().staffLogin({ phone });
       window.sessionStorage.setItem('equalspa-staff-token', result.access_token);
       window.sessionStorage.removeItem('equalspa-admin-token');
       setToken(result.access_token);
@@ -1142,7 +1125,7 @@ export default function Home() {
   }
 
   if (appMode === 'login' || appMode === 'unavailable') {
-    return <main className="auth-shell"><section className="auth-card auth-login-card"><span className="brand-seal">E</span><p className="eyebrow">EQUAL SPA</p><h1>登入伊果 SPA 營運後台</h1><p>後台不提供訪客模式。客服、店長與 Admin 請使用管理帳號；師傅可使用姓名與手機登入。</p>{connectionError && <div className="auth-error">{connectionError}</div>}<div className="account-login-grid auth-login-grid"><form className="modal-form account-login-card" onSubmit={login}><p className="eyebrow">MANAGEMENT</p><h3>客服／店長／Admin</h3><label>登入帳號<input name="username" required autoCapitalize="none" autoComplete="username" placeholder="例如：admin" autoFocus /></label><label>數字 PIN<input name="pin" required type="password" inputMode="numeric" pattern="[0-9]+" minLength={4} autoComplete="current-password" /></label><button className="primary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '管理帳號登入'}</button></form><form className="modal-form account-login-card" onSubmit={loginStaff}><p className="eyebrow">STAFF</p><h3>師傅免密碼登入</h3><label>選擇自己的名字<select name="staffId" required defaultValue={staff.find((item) => item.status === '在職')?.apiId}>{staff.filter((item) => item.status === '在職').map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label><label>手機 ID<input name="staffPhone" required inputMode="tel" pattern="09[0-9]{8}" placeholder="09xxxxxxxx" /></label><button className="secondary-button full" disabled={loginBusy || staff.length === 0}>{loginBusy ? '切換中…' : '以員工身分進入'}</button></form></div>{loginError && <div className="auth-error modal-auth-error">{loginError}</div>}<small>從 LINE Bot 開啟師傅後台時，仍會使用安全連結直接登入。</small></section></main>;
+    return <main className="auth-shell"><section className="auth-card auth-login-card"><span className="brand-seal">E</span><p className="eyebrow">EQUAL SPA</p><h1>登入伊果 SPA 營運後台</h1><p>客服、店長與 Admin 使用管理帳號；師傅只需輸入自己的手機 ID。</p>{connectionError && <div className="auth-error">{connectionError}</div>}<div className="account-login-grid auth-login-grid"><form className="modal-form account-login-card" onSubmit={login}><p className="eyebrow">MANAGEMENT</p><h3>客服／店長／Admin</h3><label>登入帳號<input name="username" required autoCapitalize="none" autoComplete="username" placeholder="例如：admin" autoFocus /></label><label>數字 PIN<input name="pin" required type="password" inputMode="numeric" pattern="[0-9]+" minLength={4} autoComplete="current-password" /></label><button className="primary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '管理帳號登入'}</button></form><form className="modal-form account-login-card" onSubmit={loginStaff}><p className="eyebrow">STAFF</p><h3>師傅手機 ID 登入</h3><label>手機 ID<input name="staffPhone" required inputMode="tel" pattern="09[0-9]{8}" autoComplete="tel" placeholder="09xxxxxxxx" /></label><button className="secondary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '以員工身分進入'}</button></form></div>{loginError && <div className="auth-error modal-auth-error">{loginError}</div>}<small>從 LINE Bot 開啟師傅後台時，仍會使用安全連結直接登入。</small></section></main>;
   }
 
   if (appMode === 'staffLink') {
@@ -1166,7 +1149,7 @@ export default function Home() {
 
       {toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}
 
-      {modal?.type === 'account' && <Modal title="登入資訊" subtitle="師傅使用姓名與手機；客服與管理者使用帳號及 PIN。" onClose={() => setModal(null)} wide><div className="account-login-grid"><form className="modal-form account-login-card" onSubmit={login}><p className="eyebrow">MANAGEMENT</p><h3>客服／店長／Admin</h3><label>登入帳號<input name="username" required autoCapitalize="none" autoComplete="username" placeholder="例如：admin" /></label><label>數字 PIN<input name="pin" required type="password" inputMode="numeric" pattern="[0-9]+" minLength={4} autoComplete="current-password" /></label><button className="primary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '管理帳號登入'}</button></form><form className="modal-form account-login-card" onSubmit={loginStaff}><p className="eyebrow">STAFF</p><h3>師傅免密碼登入</h3><label>選擇自己的名字<select name="staffId" required defaultValue={staff[0]?.apiId}>{staff.filter((item) => item.status === '在職').map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label><label>手機 ID<input name="staffPhone" required inputMode="tel" pattern="09[0-9]{8}" placeholder="09xxxxxxxx" /></label><button className="secondary-button full" disabled={loginBusy}>{loginBusy ? '切換中…' : '以員工身分進入'}</button></form></div>{loginError && <div className="auth-error modal-auth-error">{loginError}</div>}<div className="form-note">從 LINE Bot 開啟師傅後台時會以安全連結直接登入，不會再出現登入畫面。</div></Modal>}
+      {modal?.type === 'account' && <Modal title="登入資訊" subtitle="師傅只使用手機 ID；客服與管理者使用帳號及 PIN。" onClose={() => setModal(null)} wide><div className="account-login-grid"><form className="modal-form account-login-card" onSubmit={login}><p className="eyebrow">MANAGEMENT</p><h3>客服／店長／Admin</h3><label>登入帳號<input name="username" required autoCapitalize="none" autoComplete="username" placeholder="例如：admin" /></label><label>數字 PIN<input name="pin" required type="password" inputMode="numeric" pattern="[0-9]+" minLength={4} autoComplete="current-password" /></label><button className="primary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '管理帳號登入'}</button></form><form className="modal-form account-login-card" onSubmit={loginStaff}><p className="eyebrow">STAFF</p><h3>師傅手機 ID 登入</h3><label>手機 ID<input name="staffPhone" required inputMode="tel" pattern="09[0-9]{8}" autoComplete="tel" placeholder="09xxxxxxxx" /></label><button className="secondary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '以員工身分進入'}</button></form></div>{loginError && <div className="auth-error modal-auth-error">{loginError}</div>}<div className="form-note">從 LINE Bot 開啟師傅後台時會以安全連結直接登入，不會再出現登入畫面。</div></Modal>}
 
       {modal?.type === 'appointment' && <Modal title="新增預約" subtitle="所有入口最少提前 90 分鐘，並檢查師傅與房間衝突。" onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={addAppointment}><div className="form-grid two"><label>客戶姓名<input name="customer" required placeholder="例如：王先生" /></label><label>手機號碼<input name="phone" required inputMode="numeric" pattern="09[0-9]{8}" placeholder="09xxxxxxxx" /></label><label>日期<input name="date" type="date" min={todayIso} defaultValue={bookingDefault.date} required /></label><label>開始時間<input name="start" type="time" defaultValue={bookingDefault.time} required /></label><label>服務方案<select name="serviceId" defaultValue={plans.find((item) => item.code === 'C')?.id}>{plans.filter((item) => item.active).map((plan) => <option value={plan.id} key={plan.id}>{plan.code}・{plan.name}｜{plan.duration} 分｜{formatCurrency(plan.price)}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue="0"><option value="0">不使用優惠</option>{promotions.filter((item) => item.active && item.kind.includes('折扣')).map((item) => <option key={item.id} value={item.apiId}>{item.name}｜{item.kind === '百分比折扣' ? `${item.value}%` : `折 ${formatCurrency(item.value)}`}</option>)}</select></label><label>指派師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label>場地／房間<select name="room" defaultValue={rooms[0]?.name}>{rooms.map((room) => <option key={room.id}>{room.name}</option>)}<option>外出場地</option><option>待確認</option></select></label><label className="span-two">客服備註<textarea name="note" rows={3} placeholder="不公開給客戶的內部備註" /></label></div><div className="form-note">例如 09:00 當下最早可預約 10:30；後端也會阻止重疊或過近的時間。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">建立預約</button></footer></form></Modal>}
 
@@ -1188,7 +1171,7 @@ export default function Home() {
 
       {modal?.type === 'returnRule' && (() => { const set = returnRuleSets.find((item) => item.id === modal.setId); const rule = set?.rules.find((item) => item.id === modal.ruleId); return set && rule ? <Modal title={`編輯 ${set.name}`} subtitle={`${rule.service_code}・${rule.name}`} onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => saveReturnRule(event, set.id, rule.id)}><label>顯示名稱<input name="name" defaultValue={rule.name} required /></label><div className="form-grid two"><label>回帳金額<input name="amount" type="number" min="0" step="100" defaultValue={rule.amount} required /></label><label>服務分鐘<input name="duration" type="number" min="30" defaultValue={rule.duration_minutes} required /></label></div><label className="checkbox-field"><input name="active" type="checkbox" defaultChecked={rule.active} />啟用此回帳規則</label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存回帳規則</button></footer></form></Modal> : null; })()}
 
-      {modal?.type === 'staff' && <Modal title="新增員工" subtitle="照片可貼網址或直接上傳；健康資訊不會出現在公開資料或一般匯出。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={addStaff}><label>姓名／稱呼<input name="name" required /></label><label>手機 ID<input name="phone" inputMode="tel" placeholder="師傅免密碼登入使用" /></label><label>師傅分類<select name="category"><option>直男師傅</option><option>圈內師傅</option><option>雙性師傅</option></select></label><label>公開照片網址<input name="photoUrl" type="url" placeholder="https://..." /></label><label>或從電腦上傳照片<input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label><div className="form-note">若同時填網址並選擇檔案，會以上傳檔案為準；限 JPEG、PNG、WebP，最大 3 MB。</div><label>回帳表<select name="returnRuleSetId">{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label><label>LINE User ID<input name="lineUserId" placeholder="可稍後由 LINE Bot 自動綁定" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立員工</button></footer></form></Modal>}
+      {modal?.type === 'staff' && <Modal title="新增員工" subtitle="照片可貼網址或直接上傳；健康資訊不會出現在公開資料或一般匯出。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={addStaff}><label>姓名／稱呼<input name="name" required /></label><label>手機 ID<input name="phone" inputMode="tel" placeholder="師傅手機 ID 登入使用" /></label><label>師傅分類<select name="category"><option>直男師傅</option><option>圈內師傅</option><option>雙性師傅</option></select></label><label>公開照片網址<input name="photoUrl" type="url" placeholder="https://..." /></label><label>或從電腦上傳照片<input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label><div className="form-note">若同時填網址並選擇檔案，會以上傳檔案為準；限 JPEG、PNG、WebP，最大 3 MB。</div><label>回帳表<select name="returnRuleSetId">{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label><label>LINE User ID<input name="lineUserId" placeholder="可稍後由 LINE Bot 自動綁定" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立員工</button></footer></form></Modal>}
 
       {modal?.type === 'staffEdit' && (() => { const member = staff.find((item) => item.id === modal.id); return member ? <Modal title={`編輯 ${member.name}`} subtitle="公開照片可貼網址或從電腦上傳。永久刪除不會用來取代暫時退役。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => saveStaffProfile(event, member)}><label>姓名／稱呼<input name="name" defaultValue={member.name} required /></label><label>師傅分類<select name="category" defaultValue={member.category}><option>直男師傅</option><option>圈內師傅</option><option>雙性師傅</option></select></label>{member.photoUrl && <img className="staff-edit-preview" src={member.photoUrl} alt={`${member.name}目前公開照片`} />}<label>公開照片網址<input name="photoUrl" type="url" defaultValue={member.photoUrl || ''} placeholder="https://..." /></label><label>或從電腦上傳新照片<input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label><div className="form-note">選擇新檔案時會覆蓋網址欄位的照片。限 JPEG、PNG、WebP，最大 3 MB。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button>{role === 'admin' && <button type="button" className="danger-button" onClick={() => setModal({ type: 'staffDelete', id: member.id })}>永久刪除</button>}<button className="primary-button">儲存公開資料</button></footer></form></Modal> : null; })()}
 

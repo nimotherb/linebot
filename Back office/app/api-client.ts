@@ -397,7 +397,7 @@ export class SpaApi {
     });
   }
 
-  staffLogin(payload: { staff_id: number; phone: string }) {
+  staffLogin(payload: { phone: string }) {
     return this.request<{ access_token: string; staff: StaffIdentity }>('/api/staff/auth/login', { method: 'POST', body: JSON.stringify(payload) });
   }
 
