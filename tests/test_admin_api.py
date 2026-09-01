@@ -15,7 +15,7 @@ os.environ["ADMIN_INITIAL_PIN"] = "123456"
 os.environ["MANAGER_INITIAL_PIN"] = "654321"
 os.environ["CUSTOMER_SERIAL_START"] = "4800"
 
-from main import Base, SessionLocal, Staff, app, build_booking_flow_flex, build_promotion_flex, build_staff_bubble, build_staff_week_appointments, engine, now_taipei_naive  # noqa: E402
+from main import Base, SessionLocal, Staff, User, app, build_booking_flow_flex, build_promotion_flex, build_staff_bubble, build_staff_week_appointments, engine, now_taipei_naive, on_startup  # noqa: E402
 from identifiers import customer_serial  # noqa: E402
 
 
@@ -692,3 +692,18 @@ def test_admin_can_reset_booking_data_without_deleting_master_data(client):
     assert len(after["staff"]) == staff_count
     assert len(after["customers"]) == customer_count
     assert len(after["services"]) == service_count
+
+
+def test_startup_clears_invalid_legacy_phone_without_deleting_customer(client):
+    with SessionLocal() as db:
+        customer = User(line_user_id="legacy-invalid-phone-test", phone="B;4", display_name="舊測試客戶")
+        db.add(customer)
+        db.commit()
+        customer_id = customer.id
+
+    on_startup()
+
+    with SessionLocal() as db:
+        customer = db.query(User).filter(User.id == customer_id).first()
+        assert customer is not None
+        assert customer.phone is None
