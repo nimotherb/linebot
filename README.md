@@ -34,7 +34,8 @@ Copy-Item .env.example .env
 - `DATABASE_POOL_RECYCLE_SECONDS=1800`：每 30 分鐘汰換舊連線，搭配 `pool_pre_ping` 避免重用已被 Aiven 中斷的連線，也不會過度重做 TLS 握手。
 - `CUSTOMER_SERVICE_URL`：Flex 選單失敗時顯示給客戶的真人客服連結。
 - `RENDER_LOGS_URL`：管理員錯誤備援訊息中的系統紀錄連結。
-- `BOOKING_WEB_URL`：LINE Flex 故障或客戶輸入「網頁預約」時提供的備用預約頁。
+- `BOOKING_WEB_URL`：LINE 客戶端唯一使用的正式網頁預約入口。
+- `PUBLIC_API_BASE_URL`：將資料庫中的相對照片路徑補成 LINE Flex 可接受的完整 HTTPS 網址。
 - `LINE_LIFF_ID`、`LINE_LOGIN_CHANNEL_ID`：建立 LINE Login／LIFF 後填入；後端會向 LINE 驗證 ID Token，未設定前仍可用姓名＋手機完成一般網頁預約。
 
 Fernet 金鑰可在本機產生：

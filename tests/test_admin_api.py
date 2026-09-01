@@ -15,7 +15,7 @@ os.environ["ADMIN_INITIAL_PIN"] = "123456"
 os.environ["MANAGER_INITIAL_PIN"] = "654321"
 os.environ["CUSTOMER_SERIAL_START"] = "4800"
 
-from main import Base, SessionLocal, Staff, User, app, build_booking_flow_flex, build_promotion_flex, build_staff_bubble, build_staff_week_appointments, engine, now_taipei_naive, on_startup  # noqa: E402
+from main import Base, SessionLocal, Staff, User, app, build_booking_web_message, build_staff_bubble, build_staff_week_appointments, engine, now_taipei_naive, on_startup, parse_staff_profile_text, public_https_url  # noqa: E402
 from identifiers import customer_serial  # noqa: E402
 
 
@@ -34,17 +34,30 @@ def login(client, username="admin", pin="123456"):
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
-def test_booking_flex_uses_explicit_scheduled_and_requested_flows():
-    promotion_message = build_promotion_flex([], "B", "2099-01-01T16:00:00")
-    promotion_action = promotion_message.contents.contents[0].footer.contents[0].action.data
-    assert "action=select_booking_flow" in promotion_action
+def test_line_booking_uses_one_small_web_entry_without_postbacks():
+    message = build_booking_web_message()
+    actions = [item.action for item in message.contents.footer.contents]
+    assert all(action.type == "uri" for action in actions)
+    assert actions[0].uri.startswith("https://")
+    assert "booking" in actions[0].uri
 
-    flow_message = build_booking_flow_flex(plan_key="B", promotion_id="0", selected_dt="2099-01-01T16:00:00")
-    flow_contents = flow_message.contents.body.contents
-    scheduled_action = flow_contents[0].contents[2].action.data
-    requested_action = flow_contents[1].contents[2].action.data
-    assert "action=select_staff" in scheduled_action
-    assert "action=select_all_staff" in requested_action
+
+def test_staff_profile_parser_requires_one_complete_strict_update():
+    assert parse_staff_profile_text("身高=156\n體重=60\n角色=攻擊手") == {
+        "height": "156",
+        "weight": "60",
+        "role": "攻擊手",
+    }
+    assert parse_staff_profile_text("角色：攻守兼備 身高 188 體重 80")["role"] == "攻守兼備"
+    with pytest.raises(ValueError):
+        parse_staff_profile_text("身高=156\n體重=60")
+    with pytest.raises(ValueError):
+        parse_staff_profile_text("身高=156\n體重=60\n角色=攻擊方")
+
+
+def test_relative_staff_photo_is_converted_to_line_safe_https_url():
+    assert public_https_url("/api/public/staff/1/photo").startswith("https://")
+    assert public_https_url("ftp://example.com/photo.jpg") is None
 
 
 def test_booking_availability_uses_bounded_query_count(client):
@@ -482,11 +495,23 @@ def test_public_booking_checks_availability_and_is_idempotent(client):
     assert first.json()["duplicate"] is False
     assert first.json()["appointment"]["customer_name"] == "網頁預約客戶"
     assert first.json()["appointment"]["phone"] == "0977000002"
+    assert first.json()["appointment"]["staff_id"] == staff["id"]
 
     repeated = client.post("/api/public/booking/appointments", json=payload)
     assert repeated.status_code == 201, repeated.text
     assert repeated.json()["duplicate"] is True
     assert repeated.json()["appointment"]["id"] == first.json()["appointment"]["id"]
+
+    automatic = client.post("/api/public/booking/appointments", json={
+        **payload,
+        "phone": "0977000003",
+        "customer_name": "自動派單客戶",
+        "start_time": "2099-08-27T21:00:00",
+        "staff_id": None,
+        "idempotency_key": "booking-test-key-auto-0001",
+    })
+    assert automatic.status_code == 201, automatic.text
+    assert automatic.json()["appointment"]["staff_id"] == staff["id"]
 
 
 def test_return_tables_promotions_and_line_pin_binding(client):

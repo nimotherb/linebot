@@ -78,8 +78,25 @@ LINE_ADMIN_PENDING: dict[str, datetime] = {}
 VALID_STAFF_ROLES = {"攻擊手", "守備方", "無特定", "攻守兼備"}
 SUPPORT_URL = os.getenv("CUSTOMER_SERVICE_URL", "https://lin.ee/vOq3Xvt")
 BOOKING_WEB_URL = os.getenv("BOOKING_WEB_URL", "https://equalspa-admin.pages.dev/booking")
+ADMIN_DASHBOARD_URL = os.getenv("ADMIN_DASHBOARD_URL", "https://equalspa-admin.pages.dev/")
+PUBLIC_API_BASE_URL = (
+    os.getenv("PUBLIC_API_BASE_URL")
+    or os.getenv("RENDER_EXTERNAL_URL")
+    or "https://linebot-3r2w.onrender.com"
+).rstrip("/")
 RENDER_LOGS_URL = os.getenv("RENDER_LOGS_URL", "https://dashboard.render.com/web/srv-da059bgjo6nc73doq380/logs")
 _DISPATCH_ALERTED_AT: dict[str, datetime] = {}
+DISABLED_LINE_BOOKING_ACTIONS = {
+    "select_date",
+    "select_promotion",
+    "select_booking_flow",
+    "select_staff",
+    "select_all_staff",
+    "preview_booking_request",
+    "confirm_booking_request_customer",
+    "preview_booking",
+    "confirm_booking",
+}
 
 # --- SQLAlchemy models ---
 class User(Base):
@@ -217,6 +234,47 @@ def valid_staff_role(value: str | None) -> str | None:
     return normalized if normalized in VALID_STAFF_ROLES else None
 
 
+def public_https_url(value: str | None) -> str | None:
+    """Return a LINE-safe absolute HTTPS URL for public media."""
+    candidate = (value or "").strip()
+    if not candidate:
+        return None
+    if candidate.startswith("https://"):
+        return candidate
+    if candidate.startswith("/"):
+        return f"{PUBLIC_API_BASE_URL}{candidate}"
+    return None
+
+
+def parse_staff_profile_text(value: str) -> dict[str, str]:
+    """Parse an atomic staff profile update pasted as one text message."""
+    normalized = re.sub(r"[,，;；]+", " ", (value or "").replace("\r", "\n")).strip()
+
+    def extract(label: str, pattern: str) -> str:
+        matches = re.findall(
+            rf"(?<!\S){re.escape(label)}\s*(?:[:：=]\s*|\s+)({pattern})(?=\s|$)",
+            normalized,
+        )
+        if len(matches) != 1:
+            raise ValueError("profile_format")
+        return matches[0]
+
+    try:
+        height = extract("身高", r"\d{3}")
+        weight = extract("體重", r"\d{2,3}")
+        role = extract("角色", "|".join(re.escape(item) for item in sorted(VALID_STAFF_ROLES)))
+    except ValueError as exc:
+        raise ValueError(
+            "請一次貼上完整且正確的資料：\n"
+            "身高=156\n體重=60\n角色=攻擊手\n\n"
+            "身高須為 3 位數字；角色僅可填：攻擊手／守備方／無特定／攻守兼備。"
+        ) from exc
+
+    if not 100 <= int(height) <= 250 or not 30 <= int(weight) <= 250:
+        raise ValueError("身高或體重超出合理範圍，請確認後一次重新貼上完整資料。")
+    return {"height": height, "weight": weight, "role": role}
+
+
 def customer_phone_values(db: Session, user: User | None) -> list[str]:
     if not user:
         return []
@@ -283,9 +341,9 @@ def reply_with_fallback(bot_api, reply_token: str, message, *, db: Session | Non
         trace_id = _trace_id()
         logging.exception("LINE 回覆失敗 context=%s trace=%s", context, trace_id)
         fallback = (
-            f"系統暫時無法顯示管理選單。請稍後再試。\n追蹤碼：{trace_id}\n系統紀錄：{RENDER_LOGS_URL}"
+            f"系統暫時無法顯示管理選單。請改從營運後台操作：{ADMIN_DASHBOARD_URL}\n追蹤碼：{trace_id}"
             if admin else
-            f"系統暫時無法顯示選單。您可改用備用網頁預約：{BOOKING_WEB_URL}\n真人客服：{SUPPORT_URL}\n追蹤碼：{trace_id}"
+            f"系統暫時無法顯示選單。請改用網頁預約：{BOOKING_WEB_URL}\n真人客服：{SUPPORT_URL}\n追蹤碼：{trace_id}"
         )
         try:
             bot_api.reply_message(reply_token, TextSendMessage(text=fallback))
@@ -294,6 +352,44 @@ def reply_with_fallback(bot_api, reply_token: str, message, *, db: Session | Non
         if db is not None:
             notify_dispatch_error(db, context, trace_id)
         return False
+
+
+def build_booking_web_message():
+    """Small, image-free Flex message used as the only customer booking entry."""
+    return FlexSendMessage(
+        alt_text="開啟伊果 SPA 網頁預約",
+        contents={
+            "type": "bubble",
+            "styles": {
+                "header": {"backgroundColor": "#123F37"},
+                "footer": {"backgroundColor": "#F7F3EA"},
+            },
+            "header": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": "伊果 SPA 網頁預約", "weight": "bold", "size": "xl", "color": "#F7D7A3"},
+                    {"type": "text", "text": "排班師傅可直接預訂；指定其他師傅則送出預約通知。", "size": "sm", "color": "#D1FAE5", "wrap": True, "margin": "sm"},
+                ],
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": "請在網頁選擇時間、方案與師傅。送出前會再次顯示明細供您確認。", "size": "sm", "color": "#5B6C66", "wrap": True},
+                ],
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "sm",
+                "contents": [
+                    {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "uri", "label": "開啟預約網頁", "uri": BOOKING_WEB_URL}},
+                    {"type": "button", "style": "secondary", "action": {"type": "uri", "label": "聯絡真人客服", "uri": SUPPORT_URL}},
+                ],
+            },
+        },
+    )
 
 # 方案設定字典
 PLANS_INFO = {
@@ -503,7 +599,6 @@ def build_phone_confirm_flex(phone_num, action_prefix):
 def build_root_admin_menu(identity=None):
     display_name = identity.get("display_name", "管理員") if isinstance(identity, dict) else "管理員"
     role_label = "系統管理員" if isinstance(identity, dict) and identity.get("role") == "admin" else "店長"
-    dashboard_url = os.getenv("ADMIN_DASHBOARD_URL", "https://equalspa-admin.pages.dev/")
     return FlexSendMessage(
         alt_text="系統管理員選單",
         contents={
@@ -516,8 +611,7 @@ def build_root_admin_menu(identity=None):
                     {"type": "text", "text": "ROOT ADMIN", "weight": "bold", "color": "#FCD34D", "size": "xl"},
                     {"type": "text", "text": f"{display_name}・{role_label}", "color": "#E9D5FF", "size": "sm", "margin": "sm"},
                     {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "查看本日預約", "data": "action=admin_view"}},
-                    {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "sm", "action": {"type": "postback", "label": "管理師傅", "data": "action=admin_staff"}},
-                    {"type": "button", "style": "primary", "color": "#312E81", "margin": "sm", "action": {"type": "uri", "label": "開啟營運後台", "uri": dashboard_url}},
+                    {"type": "button", "style": "primary", "color": "#312E81", "margin": "sm", "action": {"type": "uri", "label": "師傅管理／營運後台", "uri": ADMIN_DASHBOARD_URL}},
                     {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "登出管理員", "data": "action=admin_logout"}}
                 ]
             }
@@ -526,7 +620,7 @@ def build_root_admin_menu(identity=None):
 
 
 def build_staff_backend_link(staff, db: Session):
-    dashboard_url = os.getenv("ADMIN_DASHBOARD_URL", "https://equalspa-admin.pages.dev/").rstrip("/")
+    dashboard_url = ADMIN_DASHBOARD_URL.rstrip("/")
     issuer = getattr(getattr(app, "state", None), "issue_staff_magic_link", None)
     login_token = issuer(staff, db) if issuer else None
     target_url = f"{dashboard_url}/?staff_login={login_token}" if login_token else dashboard_url
@@ -687,7 +781,7 @@ def build_booking_request_bubble(booking_request, db: Session, *, customer_copy:
             {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "uri", "label": "聯絡真人客服", "uri": SUPPORT_URL}},
         ]}
     else:
-        dashboard_url = os.getenv("ADMIN_DASHBOARD_URL", "https://equalspa-admin.pages.dev/").rstrip("/")
+        dashboard_url = ADMIN_DASHBOARD_URL.rstrip("/")
         bubble["footer"] = {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
             {"type": "button", "style": "primary", "color": "#059669", "action": {"type": "postback", "label": "確認並成立訂單", "data": f"action=confirm_booking_request&request_id={booking_request.id}"}},
             {"type": "button", "style": "secondary", "action": {"type": "uri", "label": "修改通知", "uri": f"{dashboard_url}/?booking_request={booking_request.id}"}},
@@ -730,10 +824,11 @@ def build_staff_bubble(staff):
             ]
         }
     }
-    if staff.photo_url:
+    photo_url = public_https_url(staff.photo_url)
+    if photo_url:
         bubble["hero"] = {
             "type": "image",
-            "url": staff.photo_url,
+            "url": photo_url,
             "size": "full",
             "aspectRatio": "4:5",
             "aspectMode": "cover",
@@ -898,26 +993,8 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         return FlexSendMessage(alt_text="本日預約", contents={"type": "carousel", "contents": bubbles})
     
     elif action_name == "admin_staff":
-        # LINE carousel 上限為 12 張；以 10 位師傅加 1 張下一頁卡片分頁。
-        qs = parse_qs(data)
-        offset = max(0, int(qs.get("offset", ["0"])[0] or 0))
-        staffs = db.query(Staff).filter(Staff.employment_status.in_(["active", "retired"])).order_by(Staff.id).offset(offset).limit(11).all()
-        if not staffs:
-            return TextSendMessage(text="目前無師傅資料")
-        has_more = len(staffs) > 10
-        bubbles = [build_staff_bubble(staff) for staff in staffs[:10]]
-        if has_more:
-            bubbles.append({
-                "type": "bubble",
-                "body": {"type": "box", "layout": "vertical", "paddingAll": "28px", "contents": [
-                    {"type": "text", "text": "更多師傅", "weight": "bold", "size": "xl", "align": "center"},
-                    {"type": "text", "text": f"繼續查看第 {offset + 11} 位起的資料", "size": "sm", "color": "#777777", "wrap": True, "align": "center", "margin": "md"},
-                ]},
-                "footer": {"type": "box", "layout": "vertical", "contents": [
-                    {"type": "button", "style": "primary", "action": {"type": "postback", "label": "下一頁", "data": f"action=admin_staff&offset={offset + 10}"}}
-                ]},
-            })
-        return FlexSendMessage(alt_text="師傅管理", contents={"type": "carousel", "contents": bubbles})
+        # 舊聊天訊息中的按鈕仍可能被點擊；統一導向後台，避免大型 Flex 輪播失敗。
+        return TextSendMessage(text=f"師傅管理已改由營運後台操作：\n{ADMIN_DASHBOARD_URL}")
     
     elif action_name == "request_permanent_delete_staff":
         qs = parse_qs(data)
@@ -1008,22 +1085,14 @@ if handler_customer:
                     db.add(user)
                     db.commit()
 
-                if text in {"網頁預約", "備用預約", "預約網頁"}:
+                if text in {"預約", "網頁預約", "備用預約", "預約網頁"}:
                     reply_with_fallback(
                         bot_customer_api,
                         event.reply_token,
-                        TextSendMessage(text=f"請由備用預約頁完成預約：\n{BOOKING_WEB_URL}\n\n若仍無法操作，請聯絡真人客服：{SUPPORT_URL}"),
+                        build_booking_web_message(),
                         db=db,
-                        context="備用網頁預約連結",
+                        context="網頁預約入口",
                     )
-                    return
-
-                if text == "預約":
-                    if not user.phone:
-                        bot_customer_api.reply_message(event.reply_token, TextSendMessage(text="為了保障您的預約權益，請在下方輸入您的 10 碼手機號碼（例如：0912345678）"))
-                    else:
-                        dt_action = DatetimePickerTemplateAction(label="選擇時間", data="action=select_date", mode="datetime")
-                        bot_customer_api.reply_message(event.reply_token, TemplateSendMessage(alt_text="請選擇時間", template=ButtonsTemplate(text="請選擇您想預約的時間", actions=[dt_action])))
                     return
 
                 if not user.phone and re.match(r"^09\d{8}$", text):
@@ -1046,8 +1115,8 @@ if handler_customer:
                         "footer": {
                             "type": "box", "layout": "vertical",
                             "contents": [
-                                {"type": "button", "style": "primary", "action": {"type": "message", "label": "LINE 內預約", "text": "預約"}},
-                                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "uri", "label": "備用網頁預約", "uri": BOOKING_WEB_URL}},
+                                {"type": "button", "style": "primary", "action": {"type": "uri", "label": "開啟網頁預約", "uri": BOOKING_WEB_URL}},
+                                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "uri", "label": "聯絡真人客服", "uri": SUPPORT_URL}},
                             ]
                         }
                     }
@@ -1055,7 +1124,7 @@ if handler_customer:
                 reply_with_fallback(bot_customer_api, event.reply_token, flex_message, db=db, context="客戶歡迎選單")
             except Exception:
                 logging.exception("處理客戶文字訊息失敗 user_id=%s", user_id)
-                reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text=f"系統暫時忙碌，請改用備用網頁預約：{BOOKING_WEB_URL}"), db=db, context="客戶文字訊息")
+                reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text=f"系統暫時忙碌，請改用網頁預約：{BOOKING_WEB_URL}"), db=db, context="客戶文字訊息")
             finally:
                 db.close()
 
@@ -1071,6 +1140,17 @@ if handler_customer:
             root_response = handle_root_action(data, user_id, db, is_staff_side=False)
             if root_response:
                 reply_with_fallback(bot_customer_api, event.reply_token, root_response, db=db, context="客戶端管理員選單", admin=True)
+                return
+
+            if action_name in DISABLED_LINE_BOOKING_ACTIONS:
+                # 舊 Flex 卡片仍會留在既有聊天紀錄中；所有舊預約動作統一安全轉往網頁。
+                reply_with_fallback(
+                    bot_customer_api,
+                    event.reply_token,
+                    build_booking_web_message(),
+                    db=db,
+                    context=f"停用的 LINE 預約動作 {action_name}",
+                )
                 return
 
             if action_name == "confirm_customer_phone":
@@ -1103,8 +1183,7 @@ if handler_customer:
                         add_customer_phone(db, user, confirmed_phone, primary=True)
                         user.phone_temp = None
                         db.commit()
-                        dt_action = DatetimePickerTemplateAction(label="選擇時間", data="action=select_date", mode="datetime")
-                        reply_with_fallback(bot_customer_api, event.reply_token, TemplateSendMessage(alt_text="請選擇時間", template=ButtonsTemplate(text="感謝綁定！現在請選擇想預約的時間", actions=[dt_action])), db=db, context="客戶手機綁定完成")
+                        reply_with_fallback(bot_customer_api, event.reply_token, build_booking_web_message(), db=db, context="客戶手機綁定完成")
                     else:
                         user.phone_temp = None
                         db.commit()
@@ -1211,9 +1290,10 @@ if handler_customer:
                             "contents": [{"type": "button", "style": "primary", "color": "#9ECE6A", "action": {"type": "postback", "label": "預約這位", "data": f"action=preview_booking&staff_id={s.id}&plan={plan}&promotion_id={promotion_id}&datetime={selected_dt}"}}]
                         }
                     }
-                    if s.photo_url:
+                    photo_url = public_https_url(s.photo_url)
+                    if photo_url:
                         staff_bubble["hero"] = {
-                            "type": "image", "size": "full", "aspectRatio": "4:5", "aspectMode": "cover", "url": s.photo_url
+                            "type": "image", "size": "full", "aspectRatio": "4:5", "aspectMode": "cover", "url": photo_url
                         }
                     bubbles.append(staff_bubble)
 
@@ -1272,8 +1352,9 @@ if handler_customer:
                             {"type": "button", "style": "primary", "color": "#D97706", "action": {"type": "postback", "label": "選擇並通知客服", "data": f"action=preview_booking_request&staff_id={staff_obj.id}&plan={plan}&promotion_id={promotion_id}&datetime={selected_dt}"}},
                         ]},
                     }
-                    if staff_obj.photo_url:
-                        bubble["hero"] = {"type": "image", "size": "full", "aspectRatio": "4:5", "aspectMode": "cover", "url": staff_obj.photo_url}
+                    photo_url = public_https_url(staff_obj.photo_url)
+                    if photo_url:
+                        bubble["hero"] = {"type": "image", "size": "full", "aspectRatio": "4:5", "aspectMode": "cover", "url": photo_url}
                     bubbles.append(bubble)
                 if has_more:
                     bubbles.append({
@@ -1558,7 +1639,17 @@ if handler_staff:
                 if staff.name == "新進員工":
                     staff.name = text
                     db.commit()
-                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"設定完成！{text} 師傅您好。\n請輸入「我的檔案」來完善基本資料，或輸入「上線」開始接單。"))
+                    bot_staff_api.reply_message(
+                        event.reply_token,
+                        TextSendMessage(
+                            text=(
+                                f"設定完成！{text} 師傅您好。\n"
+                                "請一次貼上完整基本資料：\n"
+                                "身高=156\n體重=60\n角色=攻擊手\n\n"
+                                "角色僅可填：攻擊手／守備方／無特定／攻守兼備"
+                            )
+                        ),
+                    )
                     return
 
                 if text == "預約":
@@ -1584,24 +1675,23 @@ if handler_staff:
                     role = valid_staff_role(staff.role)
                     if role:
                         profile_lines.append(f"角色：{role}")
-                    profile_txt = "\n".join(profile_lines) + "\n\n如需修改，請分別輸入：\n身高 170\n體重 65\n角色 攻擊手\n\n角色僅可填：攻擊手／守備方／無特定／攻守兼備"
+                    profile_txt = "\n".join(profile_lines) + "\n\n如需修改，請一次貼上：\n身高=170\n體重=65\n角色=攻擊手\n\n角色僅可填：攻擊手／守備方／無特定／攻守兼備"
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=profile_txt))
-                elif text.startswith("身高 "):
-                    staff.height = text.replace("身高 ", "").strip()
-                    db.commit()
-                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"已更新身高為 {staff.height}"))
-                elif text.startswith("體重 "):
-                    staff.weight = text.replace("體重 ", "").strip()
-                    db.commit()
-                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"已更新體重為 {staff.weight}"))
-                elif text.startswith("角色 "):
-                    requested_role = text.replace("角色 ", "").strip()
-                    if requested_role not in VALID_STAFF_ROLES:
-                        bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="角色格式不正確。僅可輸入：\n角色 攻擊手\n角色 守備方\n角色 無特定\n角色 攻守兼備"))
+                elif any(label in text for label in ("身高", "體重", "角色")):
+                    try:
+                        profile = parse_staff_profile_text(text)
+                    except ValueError as exc:
+                        bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=str(exc)))
                     else:
-                        staff.role = requested_role
+                        # 三個欄位全部驗證成功後才一次寫入，避免留下半套資料。
+                        staff.height = profile["height"]
+                        staff.weight = profile["weight"]
+                        staff.role = profile["role"]
                         db.commit()
-                        bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"已更新角色為 {staff.role}"))
+                        bot_staff_api.reply_message(
+                            event.reply_token,
+                            TextSendMessage(text=f"基本資料已一次更新完成：\n身高：{staff.height}\n體重：{staff.weight}\n角色：{staff.role}"),
+                        )
                 else:
                     guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n📋「預約」：查看未來一週自己的預約\n👤「我的檔案」：查看與更新資料\n📅「排班」或「後台」：開啟自己的後台\n🔧「root」：管理員需再輸入 PIN 綁定"
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=guide_txt))
@@ -1659,8 +1749,14 @@ def _process_webhook(body: bytes, signature: str, bot_api, handler):
         pass
 
 
-def notify_appointment_parties(appointment, db: Session, *, origin: str = "後台建立") -> None:
-    """Push a new order to bound customer-service accounts and the assigned staff only."""
+def notify_appointment_parties(
+    appointment,
+    db: Session,
+    *,
+    origin: str = "後台建立",
+    notify_management: bool = True,
+) -> None:
+    """Push an order to its staff, and optionally to bound management accounts."""
     if not bot_staff_api:
         logging.warning("略過派單通知：LINE_TOKEN_STAFF 未設定 appointment_id=%s", appointment.id)
         return
@@ -1671,7 +1767,7 @@ def notify_appointment_parties(appointment, db: Session, *, origin: str = "後�
         contents=build_appointment_bubble(appointment, is_staff_notify=True, db=db, show_return=True),
     )
     recipients: dict[str, str] = {}
-    if AdminUser:
+    if notify_management and AdminUser:
         for account in db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.line_user_id.isnot(None)).all():
             recipients[account.line_user_id] = f"客服帳號 {account.username}"
     if appointment.staff and appointment.staff.line_user_id and not appointment.staff.line_user_id.startswith(("pending:", "seeded:")):
