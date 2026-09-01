@@ -2138,6 +2138,9 @@ def register_admin_api(
                 raise HTTPException(status_code=422, detail="這個方案由店長安排師傅")
             if payload.staff_id not in available_ids:
                 raise HTTPException(status_code=409, detail="這位師傅在該時段已無法預約")
+        # 進到正式預訂端點代表使用「目前排班師傅」流程；未指定時由
+        # 系統從當下可用班表中直接指派一位，讓訂單能立即派給師傅。
+        assigned_staff_id = payload.staff_id or staff_items[0].id
         if plan.location_type == "onsite" and not room_capacity_available(db, start_dt, end_dt):
             raise HTTPException(status_code=409, detail="這個時段兩間房都已使用，請改選其他時間")
 
@@ -2155,7 +2158,7 @@ def register_admin_api(
 
         appointment = Appointment(
             user_id=customer.id,
-            staff_id=payload.staff_id,
+            staff_id=assigned_staff_id,
             duration=plan.duration_minutes,
             plan_name=f"{plan.code}-{plan.name}",
             start_time=start_dt,
@@ -2165,7 +2168,7 @@ def register_admin_api(
         db.add(appointment)
         db.flush()
         discount = promotion_discount(promotion, plan.price)
-        source_label = "LINE LIFF 備用預約" if source == "liff" else "網頁備用預約"
+        source_label = "LINE LIFF 網頁預約" if source == "liff" else "網頁預約"
         notes = f"來源：{source_label}"
         if payload.notes and payload.notes.strip():
             notes += f"\n客戶備註：{payload.notes.strip()}"
@@ -2184,14 +2187,16 @@ def register_admin_api(
         audit(db, None, "create_public_booking", "appointment", appointment.id, reason=source_label, after={
             "start": start_dt,
             "end": end_dt,
-            "staff_id": payload.staff_id,
+            "staff_id": assigned_staff_id,
             "promotion_id": payload.promotion_id,
         })
         db.commit()
         db.refresh(appointment)
         if appointment_notifier:
             try:
-                appointment_notifier(appointment, db, origin=source_label)
+                # 已有正式排班並直接成立的訂單只派給該師傅；指定／全師傅
+                # 的預約通知使用另一個 requests 端點，仍由客服審核。
+                appointment_notifier(appointment, db, origin=source_label, notify_management=False)
             except Exception:
                 logger.exception("Unable to push public booking notification appointment_id=%s", appointment.id)
         return {"duplicate": False, "appointment": appointment_dict(db, appointment)}
