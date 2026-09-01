@@ -1632,10 +1632,16 @@ if handler_staff:
                 staff = db.query(Staff).filter(Staff.line_user_id == user_id).first()
                 if staff:
                     if result == "yes":
-                        staff.phone = staff.phone_temp
-                        staff.phone_temp = None
-                        db.commit()
-                        bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="綁定成功！請回覆您的「姓名」或「稱呼」來建立檔案。"))
+                        duplicate = db.query(Staff).filter(Staff.phone == staff.phone_temp, Staff.id != staff.id).first()
+                        if duplicate:
+                            staff.phone_temp = None
+                            db.commit()
+                            bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="此手機 ID 已綁定其他師傅，請聯絡店長修正後再試。"))
+                        else:
+                            staff.phone = staff.phone_temp
+                            staff.phone_temp = None
+                            db.commit()
+                            bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="綁定成功！請回覆您的「姓名」或「稱呼」來建立檔案。"))
                     else:
                         staff.phone_temp = None
                         db.commit()

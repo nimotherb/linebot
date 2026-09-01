@@ -181,8 +181,7 @@ class CheckoutIn(BaseModel):
 
 
 class StaffLoginIn(BaseModel):
-    staff_id: int | None = None
-    phone: str | None = Field(default=None, min_length=8, max_length=50)
+    phone: str = Field(min_length=8, max_length=50)
 
 
 class StaffMagicLoginIn(BaseModel):
@@ -659,6 +658,15 @@ def register_admin_api(
         if not re.fullmatch(r"09\d{8}", cleaned):
             raise HTTPException(status_code=422, detail="手機號碼必須是 09 開頭的 10 碼數字")
         return cleaned
+
+    def unique_staff_phone(db: Session, value: str, *, exclude_staff_id: int | None = None) -> str:
+        phone = normalize_phone(value)
+        query = db.query(Staff).filter(Staff.phone == phone)
+        if exclude_staff_id is not None:
+            query = query.filter(Staff.id != exclude_staff_id)
+        if query.first():
+            raise HTTPException(status_code=409, detail="此手機 ID 已綁定其他師傅")
+        return phone
 
     def customer_phone_rows(db: Session, customer) -> list:
         rows = db.query(CustomerPhone).filter(CustomerPhone.user_id == customer.id).order_by(CustomerPhone.is_primary.desc(), CustomerPhone.id).all()
@@ -1726,16 +1734,16 @@ def register_admin_api(
 
     @app.post("/api/staff/auth/login")
     def staff_login(payload: StaffLoginIn, db: Session = Depends(get_db)):
-        if not payload.staff_id or not payload.phone:
-            raise HTTPException(status_code=422, detail="請同時選擇自己的名字並輸入手機號碼")
         phone = normalize_phone(payload.phone)
-        staff_obj = db.query(Staff).filter(
-            Staff.id == payload.staff_id,
+        matches = db.query(Staff).filter(
             Staff.phone == phone,
             Staff.employment_status == "active",
-        ).first()
-        if not staff_obj:
-            raise HTTPException(status_code=401, detail="姓名與手機號碼不相符")
+        ).limit(2).all()
+        if not matches:
+            raise HTTPException(status_code=401, detail="手機 ID 不正確或員工帳號已停用")
+        if len(matches) > 1:
+            raise HTTPException(status_code=409, detail="此手機 ID 綁定多位師傅，請聯絡店長修正")
+        staff_obj = matches[0]
         raw_token = secrets.token_urlsafe(40)
         db.add(StaffSession(staff_id=staff_obj.id, token_hash=_token_hash(raw_token), expires_at=now_taipei_naive() + timedelta(hours=24)))
         audit(db, None, "staff_login", "staff", staff_obj.id, reason="passwordless staff identity")
@@ -2524,10 +2532,11 @@ def register_admin_api(
         photo_url = (payload.photo_url or "").strip()
         if photo_url and not photo_url.startswith(("https://", "http://")):
             raise HTTPException(status_code=422, detail="照片網址必須以 https:// 或 http:// 開頭；本機照片請使用上傳功能")
+        phone = unique_staff_phone(db, payload.phone) if payload.phone else None
         item = Staff(
             line_user_id=line_user_id,
             name=payload.name,
-            phone=payload.phone,
+            phone=phone,
             category=payload.category,
             employment_status="active",
             return_rule_set_id=payload.return_rule_set_id,
@@ -2545,6 +2554,8 @@ def register_admin_api(
         if not item:
             raise HTTPException(status_code=404, detail="找不到員工")
         changes = _model_dump_unset(payload)
+        if "phone" in changes:
+            changes["phone"] = unique_staff_phone(db, changes["phone"], exclude_staff_id=staff_id) if changes["phone"] else None
         if "photo_url" in changes:
             photo_url = (changes["photo_url"] or "").strip()
             if photo_url and not photo_url.startswith(("https://", "http://", "/api/public/staff/")):
