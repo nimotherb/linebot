@@ -32,7 +32,6 @@ Copy-Item .env.example .env
 - `STAFF_SCHEDULE_BASE_URL`：師傅班表連結的網址前綴。
 - `DATABASE_POOL_SIZE=5`、`DATABASE_MAX_OVERFLOW=3`：目前單一 Render worker 與每月約 80 單的建議連線池上限；不需要設得更大。
 - `DATABASE_POOL_RECYCLE_SECONDS=1800`：每 30 分鐘汰換舊連線，搭配 `pool_pre_ping` 避免重用已被 Aiven 中斷的連線，也不會過度重做 TLS 握手。
-- `DATABASE_KEEPALIVE_SECONDS`：有外部 POKE 時維持 `0`，避免重複查詢；只有沒有外部 POKE 時才考慮啟用。
 - `CUSTOMER_SERVICE_URL`：Flex 選單失敗時顯示給客戶的真人客服連結。
 - `RENDER_LOGS_URL`：管理員錯誤備援訊息中的系統紀錄連結。
 - `BOOKING_WEB_URL`：LINE Flex 故障或客戶輸入「網頁預約」時提供的備用預約頁。
@@ -48,7 +47,7 @@ Fernet 金鑰可在本機產生：
 
 SQLAlchemy 本身原本就會使用 QueuePool；目前程式另外明確限制連線數、設定逾時、`pool_pre_ping`、`pool_recycle` 與 MySQL TLS。Render Free 休眠時 Python 程序會停止，因此程序內的 SQL 心跳不能讓 Render 保持喚醒；若不能接受冷啟動，只能改用不休眠的 Render 方案。
 
-外部 POKE 請呼叫 `GET https://linebot-3r2w.onrender.com/api/health/db`。此端點只執行一次 `SELECT 1`，同時確認 Render 與 Aiven MySQL 可用；成功回傳 HTTP 200，資料庫無法連線則回傳 HTTP 503。請勿再用錯誤手機或建立測試客戶的方式喚醒服務。
+外部 POKE 請呼叫 `GET https://linebot-3r2w.onrender.com/api/health/db`。此端點只執行一次 `SELECT 1`，同時確認 Render 與 Aiven MySQL 可用；成功回傳 HTTP 200，資料庫無法連線則回傳 HTTP 503。程式內不再啟動另一個資料庫心跳，也不再用錯誤手機或測試客戶喚醒服務。
 
 `.github/workflows/keep-render-awake.yml` 由 GitHub Actions 每 10 分鐘啟動一台臨時 runner 呼叫上述端點，因此不需要另一台常駐伺服器。也可在 GitHub 的 Actions 頁面手動執行 `Keep Equal SPA API awake`。排程只會在預設分支生效，且 GitHub 可能在尖峰時段延遲執行；公開專案長期沒有任何活動時，也需從 Actions 頁面重新啟用排程。
 

@@ -6,7 +6,6 @@ from dotenv import load_dotenv
 import os
 import logging
 import secrets
-import threading
 import hashlib
 import time
 from datetime import datetime, date, timedelta
@@ -81,7 +80,6 @@ SUPPORT_URL = os.getenv("CUSTOMER_SERVICE_URL", "https://lin.ee/vOq3Xvt")
 BOOKING_WEB_URL = os.getenv("BOOKING_WEB_URL", "https://equalspa-admin.pages.dev/booking")
 RENDER_LOGS_URL = os.getenv("RENDER_LOGS_URL", "https://dashboard.render.com/web/srv-da059bgjo6nc73doq380/logs")
 _DISPATCH_ALERTED_AT: dict[str, datetime] = {}
-_DATABASE_KEEPALIVE_STOP = threading.Event()
 
 # --- SQLAlchemy models ---
 class User(Base):
@@ -1713,15 +1711,6 @@ def _database_probe() -> int:
     return round((time.perf_counter() - started_at) * 1000)
 
 
-def _database_keepalive_loop(interval_seconds: int) -> None:
-    """Optional Aiven keepalive; this cannot prevent a Render instance sleeping."""
-    while not _DATABASE_KEEPALIVE_STOP.wait(interval_seconds):
-        try:
-            _database_probe()
-            logging.info("Database keepalive succeeded")
-        except Exception:
-            logging.exception("Database keepalive failed")
-
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
@@ -1793,7 +1782,12 @@ def on_startup():
             try:
                 normalized = normalize_phone(customer.phone)
             except ValueError:
-                logging.warning("略過無法正規化的舊客戶手機 user_id=%s", customer.id)
+                # Early test records used non-phone strings as keepalive
+                # markers. Preserve the customer and order history, but clear
+                # the unusable credential once. GitHub Actions now POKEs the
+                # dedicated /api/health/db endpoint.
+                customer.phone = None
+                customer.phone_temp = None
                 continue
             owner = existing_phone_rows.get(normalized)
             if not owner:
@@ -1809,21 +1803,6 @@ def on_startup():
         logging.exception("無法補齊師傅名單")
     finally:
         db.close()
-
-    legacy_interval = _bounded_env_int("DATABASE_HEARTBEAT_SECONDS", 0, 0, 3600)
-    interval = _bounded_env_int("DATABASE_KEEPALIVE_SECONDS", legacy_interval, 0, 3600)
-    keepalive = getattr(app.state, "database_keepalive_thread", None)
-    if interval >= 300 and (not keepalive or not keepalive.is_alive()):
-        logging.warning("Database keepalive is enabled; it keeps Aiven active only while Render is awake")
-        _DATABASE_KEEPALIVE_STOP.clear()
-        keepalive = threading.Thread(target=_database_keepalive_loop, args=(interval,), daemon=True, name="aiven-keepalive")
-        keepalive.start()
-        app.state.database_keepalive_thread = keepalive
-
-
-@app.on_event("shutdown")
-def on_shutdown():
-    _DATABASE_KEEPALIVE_STOP.set()
 
 @app.get("/")
 def read_root():
