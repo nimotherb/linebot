@@ -110,7 +110,7 @@ export type AuditLogView = {
 };
 
 export type BootstrapData = {
-  mode?: 'public' | 'staff';
+  mode?: 'staff';
   user: AdminIdentity | null;
   staff_user?: StaffIdentity;
   appointments: RawAppointment[];
@@ -373,8 +373,6 @@ export class SpaApi {
   }
 
   bootstrap() { return this.request<BootstrapData>('/api/admin/bootstrap'); }
-
-  publicBootstrap() { return this.request<BootstrapData>('/api/public/bootstrap'); }
 
   publicBookingOptions() {
     return this.request<PublicBookingOptions>('/api/public/booking/options');

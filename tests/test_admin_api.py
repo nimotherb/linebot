@@ -298,19 +298,9 @@ def test_manager_can_unlink_staff_line_without_deleting_history(client):
         assert db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == "U-test-staff-line-binding").count() == 1
 
 
-def test_public_bootstrap_is_read_only_and_redacts_sensitive_fields(client):
+def test_legacy_public_backoffice_bootstrap_is_disabled(client):
     response = client.get("/api/public/bootstrap")
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["mode"] == "public"
-    assert payload["customers"] == []
-    assert payload["admin_users"] == []
-    if payload["appointments"]:
-        appointment = payload["appointments"][0]
-        assert appointment["customer_name"] == "已隱藏"
-        assert appointment["phone"] is None
-        assert appointment["total_amount"] == 0
-        assert appointment["notes"] is None
+    assert response.status_code == 404
 
 
 def test_staff_passwordless_session_only_returns_own_data(client):

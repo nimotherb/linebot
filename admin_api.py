@@ -1595,25 +1595,6 @@ def register_admin_api(
     def admin_health():
         return {"status": "ok", "service": "equalspa-admin-api", "time": _iso(now_taipei_naive())}
 
-    @app.get("/api/public/bootstrap")
-    def public_bootstrap(db: Session = Depends(get_db)):
-        appointments = db.query(Appointment).order_by(Appointment.start_time.desc()).limit(300).all()
-        shifts = db.query(Shift).filter(Shift.status == "active").order_by(Shift.start_time).limit(500).all()
-        shift_staff = _model_map(db, Staff, {item.staff_id for item in shifts})
-        return {
-            "mode": "public",
-            "user": None,
-            "appointments": appointment_dicts(db, appointments, public=True),
-            "staff": [{"id": item.id, "name": item.name, "category": item.category, "employment_status": item.employment_status, "line_connected": False} for item in db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.name).all()],
-            "shifts": [shift_dict(item) | {"staff_name": shift_staff[item.staff_id].name if item.staff_id in shift_staff else "未知"} for item in shifts],
-            "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()],
-            "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.active.is_(True), Promotion.deleted_at.is_(None)).order_by(Promotion.id).all()],
-            "rooms": [{"id": item.id, "name": item.name, "active": item.active} for item in db.query(Room).filter(Room.active.is_(True)).order_by(Room.id).all()],
-            "customers": [],
-            "admin_users": [],
-            "return_rule_sets": [],
-        }
-
     @app.get("/api/public/site-content")
     def public_site_content(db: Session = Depends(get_db)):
         item = db.query(SiteContent).filter(SiteContent.content_key == "official_site").first()
