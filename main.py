@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request, Response, BackgroundTasks
+from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, text
 from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship
 from dotenv import load_dotenv
@@ -7,6 +8,7 @@ import logging
 import secrets
 import threading
 import hashlib
+import time
 from datetime import datetime, date, timedelta
 import re
 from urllib.parse import parse_qs
@@ -1698,12 +1700,18 @@ def notify_booking_request_parties(booking_request, db: Session, *, origin: str 
 app = FastAPI(title="SPA 智能客服與預約系統")
 
 
+def _database_probe() -> int:
+    started_at = time.perf_counter()
+    with engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+    return round((time.perf_counter() - started_at) * 1000)
+
+
 def _database_keepalive_loop(interval_seconds: int) -> None:
     """Optional Aiven keepalive; this cannot prevent a Render instance sleeping."""
     while not _DATABASE_KEEPALIVE_STOP.wait(interval_seconds):
         try:
-            with engine.connect() as connection:
-                connection.execute(text("SELECT 1"))
+            _database_probe()
             logging.info("Database keepalive succeeded")
         except Exception:
             logging.exception("Database keepalive failed")
@@ -1819,6 +1827,30 @@ def read_root():
 @app.head("/")
 def read_root_head():
     return Response(status_code=200)
+
+
+@app.get("/api/health/db")
+def database_health():
+    """External POKE target that verifies both Render and Aiven MySQL."""
+    headers = {"Cache-Control": "no-store"}
+    try:
+        latency_ms = _database_probe()
+    except Exception:
+        logging.exception("External database health check failed")
+        return JSONResponse(
+            status_code=503,
+            headers=headers,
+            content={"status": "error", "service": "equalspa-api", "database": "unavailable"},
+        )
+    return JSONResponse(
+        headers=headers,
+        content={
+            "status": "ok",
+            "service": "equalspa-api",
+            "database": "reachable",
+            "latency_ms": latency_ms,
+        },
+    )
 
 @app.post("/webhook/customer")
 async def webhook_customer(request: Request, background_tasks: BackgroundTasks):

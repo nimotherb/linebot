@@ -81,6 +81,26 @@ def test_booking_availability_uses_bounded_query_count(client):
     assert len(statements) <= 5
 
 
+def test_external_poke_checks_database_once(client):
+    statements = []
+
+    def capture_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", capture_statement)
+    try:
+        response = client.get("/api/health/db")
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_statement)
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json()["status"] == "ok"
+    assert response.json()["database"] == "reachable"
+    assert len(statements) == 1
+    assert statements[0].strip().upper() == "SELECT 1"
+
+
 def test_login_is_required_and_bootstrap_seeds_two_rooms(client):
     assert client.get("/api/admin/bootstrap").status_code == 401
     headers = login(client)

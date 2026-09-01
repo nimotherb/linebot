@@ -1,0 +1,40 @@
+name: Keep Equal SPA API awake
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Avoid the top of the hour, when GitHub scheduled jobs are most likely to queue.
+    - cron: "3/10 * * * *"
+
+permissions: {}
+
+concurrency:
+  group: keep-equalspa-api-awake
+  cancel-in-progress: false
+
+jobs:
+  poke:
+    name: Check Render and Aiven MySQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      HEALTH_URL: https://linebot-3r2w.onrender.com/api/health/db
+    steps:
+      - name: POKE database health endpoint
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --location \
+            --connect-timeout 20 \
+            --max-time 120 \
+            --retry 2 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --header "Cache-Control: no-cache" \
+            --header "User-Agent: equalspa-github-poke/1.0" \
+            "${HEALTH_URL}"
+          echo
