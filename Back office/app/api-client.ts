@@ -110,7 +110,7 @@ export type AuditLogView = {
 };
 
 export type BootstrapData = {
-  mode?: 'public' | 'staff';
+  mode?: 'staff';
   user: AdminIdentity | null;
   staff_user?: StaffIdentity;
   appointments: RawAppointment[];
@@ -374,8 +374,6 @@ export class SpaApi {
 
   bootstrap() { return this.request<BootstrapData>('/api/admin/bootstrap'); }
 
-  publicBootstrap() { return this.request<BootstrapData>('/api/public/bootstrap'); }
-
   publicBookingOptions() {
     return this.request<PublicBookingOptions>('/api/public/booking/options');
   }
@@ -567,7 +565,7 @@ export class SpaApi {
           expected_version: expectedVersion
         })
       });
-      
+
       if (result.status === 409) {
         throw new Error('版本衝突：有其他人員剛剛修改了內容，請重新載入以獲取最新版本');
       }
@@ -575,7 +573,7 @@ export class SpaApi {
         throw new Error('權限不足：只有店長或系統管理員可以修改官網內容');
       }
       if (!result.ok) throw new Error('儲存草稿失敗');
-      
+
       return await result.json();
     } catch (error: unknown) {
       throw new Error(error instanceof Error ? error.message : '儲存草稿失敗');
@@ -600,7 +598,7 @@ export class SpaApi {
         throw new Error('版本衝突：草稿狀態已變更，請確認後再發布');
       }
       if (!result.ok) throw new Error('發布失敗');
-      
+
       return await result.json();
     } catch (error: unknown) {
       throw new Error(error instanceof Error ? error.message : '發布失敗');
