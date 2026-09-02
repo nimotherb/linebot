@@ -188,9 +188,13 @@ button { font: inherit; }
 .staff-portal-card > header strong { font-size: 19px; }
 .staff-portal-card .portal-rule { margin: 22px 22px 0; }
 .staff-portal-card .portal-week { padding: 0 22px 24px; }
-.public-shift-form { display: grid; grid-template-columns: 1.3fr 1fr 1fr auto; gap: 10px; align-items: end; margin: 18px 22px 22px; }
+.public-shift-form { display: grid; grid-template-columns: 1.2fr .8fr 1.2fr .8fr auto; gap: 10px; align-items: end; margin: 18px 22px 22px; }
 .public-shift-form label { display: grid; gap: 6px; color: #5f584d; font-size: 12px; font-weight: 700; }
-.public-shift-form input { min-width: 0; border: 1px solid #d9d0c0; border-radius: 9px; padding: 10px; background: #fff; font: inherit; }
+.public-shift-form input, .public-shift-form select { min-width: 0; border: 1px solid #d9d0c0; border-radius: 9px; padding: 10px; background: #fff; font: inherit; }
+
+.access-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.access-warning { border: 1px solid #d8a862; border-radius: 7px; padding: 6px 8px; background: #fffaf0; color: #8a5a19; font: inherit; font-size: 8px; font-weight: 800; cursor: pointer; }
+.access-warning.active { background: #8a5a19; color: white; }
 .public-shift { cursor: default; }
 .public-shift .danger-text:disabled { color: #9a9286; cursor: not-allowed; }
 
@@ -241,7 +245,7 @@ button { font: inherit; }
 .table-head, .table-row { display: grid; align-items: center; gap: 14px; }
 .appointment-table .table-head, .appointment-table .table-row { grid-template-columns: 1.25fr .85fr 1.05fr .7fr .65fr .75fr; }
 .customer-table .table-head, .customer-table .table-row { grid-template-columns: 1fr .8fr .8fr .55fr .8fr 1.15fr; }
-.users-table .table-head, .users-table .table-row { grid-template-columns: 1.2fr .75fr .6fr .7fr .75fr; min-width: 680px; }
+.users-table .table-head, .users-table .table-row { grid-template-columns: 1.2fr .7fr .55fr .6fr 1.35fr; min-width: 760px; }
 .access-danger { justify-self: start; padding: 7px 9px; border: 1px solid #edcfc9; border-radius: 8px; background: #fff4f1; color: #a04d43; font-size: 8px; font-weight: 800; cursor: pointer; }
 .access-danger:hover { background: #fde7e2; }
 .table-head { padding: 10px 14px; background: #f3f5f1; color: #7a8985; font-size: 9px; font-weight: 800; letter-spacing: .03em; }

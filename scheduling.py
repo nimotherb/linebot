@@ -13,7 +13,9 @@ from zoneinfo import ZoneInfo
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 SHIFT_LOCK_MINUTES = 90
-MIN_SHIFT_MINUTES = 120
+# There is intentionally no business minimum for a shift.  A positive period
+# is still required so malformed zero/negative ranges never reach MySQL.
+MIN_SHIFT_MINUTES = 0
 BOOKING_LEAD_MINUTES = 90
 CANCELLED_APPOINTMENT_STATUSES = {"cancelled", "已取消"}
 
@@ -64,8 +66,6 @@ def validate_shift_period(start: str | datetime, end: str | datetime) -> tuple[d
     end_dt = parse_local_datetime(end)
     if end_dt <= start_dt:
         raise ValueError("排班結束時間必須晚於開始時間")
-    if end_dt - start_dt < timedelta(minutes=MIN_SHIFT_MINUTES):
-        raise ValueError("排班至少需要 2 小時")
     return start_dt, end_dt
 
 

@@ -611,7 +611,7 @@ def build_root_admin_menu(identity=None):
                     {"type": "text", "text": "ROOT ADMIN", "weight": "bold", "color": "#FCD34D", "size": "xl"},
                     {"type": "text", "text": f"{display_name}・{role_label}", "color": "#E9D5FF", "size": "sm", "margin": "sm"},
                     {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "查看本日預約", "data": "action=admin_view"}},
-                    {"type": "button", "style": "primary", "color": "#312E81", "margin": "sm", "action": {"type": "uri", "label": "師傅管理／營運後台", "uri": ADMIN_DASHBOARD_URL}},
+                    {"type": "button", "style": "primary", "color": "#312E81", "margin": "sm", "action": {"type": "postback", "label": "查看／解除師傅 LINE", "data": "action=admin_staff&offset=0"}},
                     {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "登出管理員", "data": "action=admin_logout"}}
                 ]
             }
@@ -876,6 +876,66 @@ def build_unlink_staff_confirmation(staff):
     )
 
 
+def build_line_staff_binding_menu(db: Session, *, offset: int = 0, page_size: int = 9):
+    """Build small, text-only cards for viewing and unlinking staff LINE IDs."""
+    total = db.query(Staff).count()
+    offset = max(0, min(offset, max(0, total - 1)))
+    rows = db.query(Staff).order_by(Staff.name, Staff.id).offset(offset).limit(page_size).all()
+    bubbles = []
+    for staff in rows:
+        connected = bool(staff.line_user_id and not staff.line_user_id.startswith(("pending:", "seeded:")))
+        bubble = {
+            "type": "bubble",
+            "size": "micro",
+            "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                {"type": "text", "text": staff.name, "weight": "bold", "size": "lg", "wrap": True},
+                {"type": "text", "text": "LINE 已綁定" if connected else "LINE 未綁定", "size": "sm", "color": "#0F766E" if connected else "#9CA3AF"},
+            ]},
+        }
+        if connected:
+            bubble["footer"] = {"type": "box", "layout": "vertical", "contents": [
+                {"type": "button", "style": "primary", "color": "#D97706", "action": {"type": "postback", "label": "解除 LINE", "data": f"action=request_unlink_staff&staff_id={staff.id}"}},
+            ]}
+        bubbles.append(bubble)
+    navigation = []
+    if offset > 0:
+        navigation.append({"type": "button", "style": "secondary", "action": {"type": "postback", "label": "上一頁", "data": f"action=admin_staff&offset={max(0, offset - page_size)}"}})
+    if offset + page_size < total:
+        navigation.append({"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "postback", "label": "下一頁", "data": f"action=admin_staff&offset={offset + page_size}"}})
+    if navigation:
+        bubbles.append({
+            "type": "bubble",
+            "size": "micro",
+            "body": {"type": "box", "layout": "vertical", "contents": [
+                {"type": "text", "text": f"第 {offset + 1}–{min(offset + page_size, total)} 位／共 {total} 位", "size": "sm", "wrap": True, "align": "center"},
+            ]},
+            "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": navigation},
+        })
+    if not bubbles:
+        return TextSendMessage(text="目前沒有師傅資料。")
+    return FlexSendMessage(alt_text="師傅 LINE 綁定管理", contents={"type": "carousel", "contents": bubbles})
+
+
+def build_staff_accept_online_prompt(appointment_id: int, staff_name: str):
+    return FlexSendMessage(
+        alt_text="接單完成，請選擇是否下線",
+        contents={
+            "type": "bubble",
+            "header": {"type": "box", "layout": "vertical", "backgroundColor": "#123F37", "contents": [
+                {"type": "text", "text": "接單完成", "weight": "bold", "size": "xl", "color": "#FFFFFF"},
+            ]},
+            "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
+                {"type": "text", "text": f"{staff_name} 已接下訂單 AP-{appointment_id}。", "weight": "bold", "wrap": True},
+                {"type": "text", "text": "接單後是否要將「師傅在線」設為下線？正式班表不會因此取消。", "size": "sm", "color": "#6B7280", "wrap": True},
+            ]},
+            "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                {"type": "button", "style": "primary", "color": "#DC2626", "action": {"type": "postback", "label": "接單後下線", "data": "action=staff_set_online&online=0"}},
+                {"type": "button", "style": "secondary", "action": {"type": "postback", "label": "維持上線", "data": "action=staff_set_online&online=1"}},
+            ]},
+        },
+    )
+
+
 def build_staff_week_appointments(staff, db: Session):
     """Build a compact Flex carousel of this staff member's next seven days."""
     start = now_taipei_naive().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -993,8 +1053,11 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         return FlexSendMessage(alt_text="本日預約", contents={"type": "carousel", "contents": bubbles})
     
     elif action_name == "admin_staff":
-        # 舊聊天訊息中的按鈕仍可能被點擊；統一導向後台，避免大型 Flex 輪播失敗。
-        return TextSendMessage(text=f"師傅管理已改由營運後台操作：\n{ADMIN_DASHBOARD_URL}")
+        try:
+            offset = int(parse_qs(data).get("offset", ["0"])[0])
+        except (TypeError, ValueError):
+            offset = 0
+        return build_line_staff_binding_menu(db, offset=offset)
     
     elif action_name == "request_permanent_delete_staff":
         qs = parse_qs(data)
@@ -1663,9 +1726,15 @@ if handler_staff:
                 elif text in {"後台", "後臺", "排班"}:
                     reply_with_fallback(bot_staff_api, event.reply_token, build_staff_backend_link(staff, db), db=db, context="師傅 LINE 直登入連結")
                 elif text == "上線":
-                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="「師傅在線」已停用，請使用個人班表連結新增正式排班。"))
+                    staff.is_online = True
+                    staff.online_start_time = now_taipei_naive()
+                    db.commit()
+                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="已上線。這只代表目前可接單，不會替代正式排班。"))
                 elif text == "下線":
-                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="「師傅在線」已停用；如需取消班表，請使用個人班表連結，鎖定時段請洽店長。"))
+                    staff.is_online = False
+                    staff.online_start_time = None
+                    db.commit()
+                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="已下線。既有班表與已接訂單仍會保留。"))
                 elif text == "我的檔案":
                     profile_lines = ["【基本資料】", f"姓名：{staff.name}"]
                     if staff.height:
@@ -1693,7 +1762,7 @@ if handler_staff:
                             TextSendMessage(text=f"基本資料已一次更新完成：\n身高：{staff.height}\n體重：{staff.weight}\n角色：{staff.role}"),
                         )
                 else:
-                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n📋「預約」：查看未來一週自己的預約\n👤「我的檔案」：查看與更新資料\n📅「排班」或「後台」：開啟自己的後台\n🔧「root」：管理員需再輸入 PIN 綁定"
+                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n🟢「上線」／⚫「下線」：設定目前接單狀態\n📋「預約」：查看未來一週自己的預約\n👤「我的檔案」：查看與更新資料\n📅「排班」或「後台」：開啟自己的後台\n🔧「root」：管理員需再輸入 PIN 綁定"
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=guide_txt))
 
             except Exception:
@@ -1712,6 +1781,28 @@ if handler_staff:
             root_response = handle_root_action(data, user_id, db, is_staff_side=True)
             if root_response:
                 reply_with_fallback(bot_staff_api, event.reply_token, root_response, db=db, context="派單端管理員選單", admin=True)
+                return
+
+            if action_name == "staff_accept_order":
+                appointment_id = parse_qs(data).get("appointment_id", [None])[0]
+                staff = db.query(Staff).filter(Staff.line_user_id == user_id).first()
+                appointment = db.query(Appointment).filter(Appointment.id == int(appointment_id)).first() if appointment_id and staff else None
+                if not staff or not appointment or appointment.staff_id != staff.id:
+                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="找不到指派給你的這筆訂單。"))
+                    return
+                bot_staff_api.reply_message(event.reply_token, build_staff_accept_online_prompt(appointment.id, staff.name))
+                return
+
+            if action_name == "staff_set_online":
+                online = parse_qs(data).get("online", ["1"])[0] == "1"
+                staff = db.query(Staff).filter(Staff.line_user_id == user_id).first()
+                if not staff:
+                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="找不到已綁定的師傅帳號。"))
+                    return
+                staff.is_online = online
+                staff.online_start_time = now_taipei_naive() if online else None
+                db.commit()
+                bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="已維持上線，可繼續接單。" if online else "已下線；既有班表與訂單不受影響。"))
                 return
 
             if action_name == "confirm_staff_phone":
@@ -1762,21 +1853,31 @@ def notify_appointment_parties(
         return
     models = getattr(app.state, "admin_models", {})
     AdminUser = models.get("AdminUser")
-    service_message = FlexSendMessage(
+    management_message = FlexSendMessage(
         alt_text=f"{origin}・新訂單",
         contents=build_appointment_bubble(appointment, is_staff_notify=True, db=db, show_return=True),
     )
-    recipients: dict[str, str] = {}
+    assigned_staff_line_id = appointment.staff.line_user_id if appointment.staff and appointment.staff.line_user_id and not appointment.staff.line_user_id.startswith(("pending:", "seeded:")) else None
     if notify_management and AdminUser:
         for account in db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.line_user_id.isnot(None)).all():
-            recipients[account.line_user_id] = f"客服帳號 {account.username}"
-    if appointment.staff and appointment.staff.line_user_id and not appointment.staff.line_user_id.startswith(("pending:", "seeded:")):
-        recipients[appointment.staff.line_user_id] = f"師傅 {appointment.staff.name}"
-    for line_user_id, label in recipients.items():
+            if account.line_user_id == assigned_staff_line_id:
+                continue
+            try:
+                bot_staff_api.push_message(account.line_user_id, management_message)
+            except Exception:
+                logging.exception("派單推送失敗 recipient=客服帳號 %s appointment_id=%s", account.username, appointment.id)
+    if assigned_staff_line_id:
+        staff_bubble = build_appointment_bubble(appointment, is_staff_notify=True, db=db, show_return=True)
+        staff_bubble["footer"] = {"type": "box", "layout": "vertical", "contents": [
+            {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "postback", "label": "接單", "data": f"action=staff_accept_order&appointment_id={appointment.id}"}},
+        ]}
         try:
-            bot_staff_api.push_message(line_user_id, service_message)
+            bot_staff_api.push_message(
+                assigned_staff_line_id,
+                FlexSendMessage(alt_text=f"{origin}・新訂單", contents=staff_bubble),
+            )
         except Exception:
-            logging.exception("派單推送失敗 recipient=%s appointment_id=%s", label, appointment.id)
+            logging.exception("派單推送失敗 recipient=師傅 %s appointment_id=%s", appointment.staff.name, appointment.id)
 
 
 def notify_booking_request_parties(booking_request, db: Session, *, origin: str = "booking_web") -> None:
@@ -1823,7 +1924,10 @@ def on_startup():
             "ALTER TABLE staffs ADD COLUMN category VARCHAR(50);",
             "ALTER TABLE staffs ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active';",
             "ALTER TABLE staffs ADD COLUMN return_rule_set_id INTEGER;",
+            "ALTER TABLE staffs ADD COLUMN is_online BOOLEAN NOT NULL DEFAULT FALSE;",
+            "ALTER TABLE staffs ADD COLUMN online_start_time DATETIME NULL;",
             "ALTER TABLE admin_users ADD COLUMN line_user_id VARCHAR(255);",
+            "ALTER TABLE admin_users ADD COLUMN can_override_time_rules BOOLEAN NOT NULL DEFAULT FALSE;",
             "ALTER TABLE promotions ADD COLUMN description VARCHAR(500);",
             "ALTER TABLE service_plans ADD COLUMN deleted_at DATETIME NULL;",
             "ALTER TABLE promotions ADD COLUMN deleted_at DATETIME NULL;",

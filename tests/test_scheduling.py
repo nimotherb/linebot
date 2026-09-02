@@ -4,7 +4,6 @@ import pytest
 
 from scheduling import (
     BOOKING_LEAD_MINUTES,
-    MIN_SHIFT_MINUTES,
     appointment_end,
     periods_overlap,
     staff_may_change_shift,
@@ -26,14 +25,12 @@ def test_period_overlap_rules_allow_adjacent_bookings():
     assert periods_overlap(first_start, first_end, datetime(2026, 8, 22, 17, 0), datetime(2026, 8, 22, 18, 0))
 
 
-def test_shift_must_be_at_least_two_hours():
+def test_shift_has_no_minimum_and_can_cross_midnight():
     start = datetime(2026, 8, 22, 18, 0)
     with pytest.raises(ValueError):
-        validate_shift_period(start, start + timedelta(minutes=MIN_SHIFT_MINUTES - 1))
-    assert validate_shift_period(start, start + timedelta(minutes=MIN_SHIFT_MINUTES)) == (
-        start,
-        start + timedelta(minutes=MIN_SHIFT_MINUTES),
-    )
+        validate_shift_period(start, start)
+    assert validate_shift_period(start, start + timedelta(minutes=1)) == (start, start + timedelta(minutes=1))
+    assert validate_shift_period(start, datetime(2026, 8, 23, 2, 0)) == (start, datetime(2026, 8, 23, 2, 0))
 
 
 def test_staff_shift_lock_is_exactly_ninety_minutes():
