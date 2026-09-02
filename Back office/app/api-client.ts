@@ -13,6 +13,7 @@ export type AdminIdentity = {
   display_name: string;
   role: 'admin' | 'manager' | 'clerk';
   is_active?: boolean;
+  can_override_time_rules?: boolean;
 };
 
 export type StaffIdentity = { id: number; name: string; role: 'staff' };
@@ -62,6 +63,7 @@ type RawStaff = {
   category?: 'straight' | 'gay' | 'bisexual';
   employment_status: 'active' | 'retired';
   line_connected: boolean;
+  is_online?: boolean;
   return_rule_set_id?: number;
   photo_url?: string;
   height?: string;
@@ -74,7 +76,7 @@ type RawShift = {
   staff_name?: string;
   start_time: string;
   end_time: string;
-  source: 'staff_link' | 'admin' | 'manager';
+  source: 'staff_link' | 'admin' | 'manager' | 'clerk';
   locked: boolean;
 };
 
@@ -96,6 +98,7 @@ export type AdminUserView = {
   roleKey: AdminIdentity['role'];
   status: string;
   isActive: boolean;
+  canOverrideTimeRules: boolean;
   lastLogin: string;
 };
 
@@ -254,6 +257,7 @@ export const mapStaff = (item: RawStaff): StaffMember => ({
   category: categoryLabel(item.category),
   status: item.employment_status === 'retired' ? '暫時退役' : '在職',
   lineConnected: item.line_connected,
+  isOnline: item.is_online === true,
   privateProfile: true,
   returnRuleSetId: item.return_rule_set_id,
   photoUrl: resolveStaffPhotoUrl(item.photo_url),
@@ -271,8 +275,9 @@ export const mapShift = (item: RawShift): Shift => {
     staffId: String(item.staff_id),
     date: start.date,
     start: start.time,
+    endDate: end.date,
     end: end.time,
-    source: item.source === 'staff_link' ? '師傅連結' : item.source === 'manager' ? '店長' : 'Admin',
+    source: item.source === 'staff_link' ? '師傅連結' : item.source === 'manager' ? '店長' : item.source === 'clerk' ? '客服' : 'Admin',
     locked: item.locked,
   };
 };
@@ -317,6 +322,7 @@ export const mapAdminUser = (item: AdminIdentity): AdminUserView => ({
   roleKey: item.role,
   status: item.is_active === false ? '已停用' : '啟用',
   isActive: item.is_active !== false,
+  canOverrideTimeRules: item.can_override_time_rules === true,
   lastLogin: '—',
 });
 
@@ -511,6 +517,12 @@ export class SpaApi {
 
   deactivateUser(id: number) {
     return this.request<AdminIdentity>(`/api/admin/users/${id}`, { method: 'DELETE' });
+  }
+
+  updateUserPermissions(id: number, canOverrideTimeRules: boolean) {
+    return this.request<AdminIdentity>(`/api/admin/users/${id}/permissions`, {
+      method: 'PATCH', body: JSON.stringify({ can_override_time_rules: canOverrideTimeRules }),
+    });
   }
 
   publicSchedule(token: string) {

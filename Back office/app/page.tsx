@@ -86,7 +86,16 @@ const toMinutes = (clock: string) => {
   const [hours, minutes] = clock.split(':').map(Number);
   return hours * 60 + minutes;
 };
-const overlaps = (aStart: string, aEnd: string, bStart: string, bEnd: string) => toMinutes(aStart) < toMinutes(bEnd) && toMinutes(aEnd) > toMinutes(bStart);
+const CLOCK_OPTIONS = Array.from({ length: 48 }, (_, index) => {
+  const hour = String(Math.floor(index / 2)).padStart(2, '0');
+  const minute = index % 2 ? '30' : '00';
+  return `${hour}:${minute}`;
+});
+const shiftDurationMinutes = (shift: Shift) => Math.max(0, Math.round((
+  new Date(`${shift.endDate}T${shift.end}:00+08:00`).getTime()
+  - new Date(`${shift.date}T${shift.start}:00+08:00`).getTime()
+) / 60000));
+const shiftTimeLabel = (shift: Shift) => `${shift.start}–${shift.endDate === shift.date ? '' : `${shift.endDate.slice(5).replace('-', '/')} `}${shift.end}`;
 const staffPhotoDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
   if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) return reject(new Error('只接受 JPEG、PNG 或 WebP 圖片。'));
   if (file.size > 3 * 1024 * 1024) return reject(new Error('照片大小必須小於 3 MB。'));
@@ -154,11 +163,21 @@ function StatusPill({ status }: { status: string }) {
   return <span className={`status ${tone}`}>{status}</span>;
 }
 
+function ClockSelect({ name, defaultValue = '00:00' }: { name: string; defaultValue?: string }) {
+  return <select name={name} defaultValue={defaultValue} required>{CLOCK_OPTIONS.map((value) => <option key={value} value={value}>{value}</option>)}</select>;
+}
+
 export default function Home() {
   const todayIso = taipeiDateValue(new Date());
   const currentWeekDays = buildBusinessWeek(0);
   const followingWeekDays = buildBusinessWeek(1);
   const bookingDefault = nextBookableSlot();
+  const shiftEndDefault = (() => {
+    const value = new Date(`${bookingDefault.date}T${bookingDefault.time}:00+08:00`);
+    value.setMinutes(value.getMinutes() + 60);
+    const parts = taipeiParts(value);
+    return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}` };
+  })();
   const todayLabel = new Intl.DateTimeFormat('zh-TW', { timeZone: TAIPEI_TIME_ZONE, year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }).format(new Date());
   const [active, setActive] = useState<SectionId>('dashboard');
   const [role, setRole] = useState<'admin' | 'manager' | 'clerk' | 'staff' | 'viewer'>('viewer');
@@ -396,6 +415,8 @@ export default function Home() {
   const isViewer = appMode === 'unavailable';
   const isStaffUser = appMode === 'staff';
   const canManageAll = appMode === 'live' && (role === 'admin' || role === 'manager');
+  const canManageShifts = appMode === 'live' && ['admin', 'manager', 'clerk'].includes(role);
+  const canOverrideTimeRules = Boolean(identity?.can_override_time_rules);
   const canCreateUsers = appMode === 'live' && (role === 'admin' || role === 'manager');
   const canEditAppointments = appMode === 'live';
   const canCreateAppointments = appMode === 'live' || isStaffUser;
@@ -457,18 +478,21 @@ export default function Home() {
   const addShift = async (event: FormEvent<HTMLFormElement>, origin: 'admin' | 'staff') => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    const date = String(data.get('date'));
+    const startDate = String(data.get('startDate'));
+    const endDate = String(data.get('endDate'));
     const start = String(data.get('start'));
     const end = String(data.get('end'));
     const selectedMember = origin === 'staff' ? staff.find((item) => item.name === staffPortalName) : staff.find((item) => item.id === String(data.get('staff')));
     const staffName = origin === 'staff' ? staffPortalName : selectedMember?.name || '未指定';
-    if (toMinutes(end) - toMinutes(start) < 120) return notify('排班至少需要 2 小時。');
-    const startAt = new Date(`${date}T${start}:00+08:00`).getTime();
+    const startIso = `${startDate}T${start}:00`;
+    const endIso = `${endDate}T${end}:00`;
+    const startAt = new Date(`${startIso}+08:00`).getTime();
+    const endAt = new Date(`${endIso}+08:00`).getTime();
+    if (!Number.isFinite(startAt) || !Number.isFinite(endAt) || endAt <= startAt) return notify('排班結束時間必須晚於開始時間。');
     if (origin === 'staff' && startAt <= Date.now() + 90 * 60 * 1000) return notify('開始時間已進入 90 分鐘鎖定範圍，請聯絡店長。');
-    if (shifts.some((item) => item.staff === staffName && item.date === date && overlaps(item.start, item.end, start, end))) return notify(`${staffName} 在這段時間已有排班。`);
     if (appMode === 'staffLink' && origin === 'staff') {
       try {
-        const created = await new SpaApi().publicCreateShift(staffToken, { start_time: `${date}T${start}:00`, end_time: `${date}T${end}:00` });
+        const created = await new SpaApi().publicCreateShift(staffToken, { start_time: startIso, end_time: endIso });
         setShifts((current) => [...current, mapShift({ ...created, staff_name: staffPortalName })]);
         notify(`已新增 ${start}–${end} 排班。`);
       } catch (error) {
@@ -478,7 +502,7 @@ export default function Home() {
     }
     if (appMode === 'staff' && origin === 'staff') {
       try {
-        const created = await api.staffCreateShift({ start_time: `${date}T${start}:00`, end_time: `${date}T${end}:00` });
+        const created = await api.staffCreateShift({ start_time: startIso, end_time: endIso });
         setShifts((current) => [...current, mapShift(created)]);
         setModal(null);
         notify(`已新增 ${start}–${end} 排班。`);
@@ -489,7 +513,7 @@ export default function Home() {
     }
     if (appMode === 'live' && origin === 'admin') {
       try {
-        const created = await api.createShift({ staff_id: selectedMember?.apiId, start_time: `${date}T${start}:00`, end_time: `${date}T${end}:00` });
+        const created = await api.createShift({ staff_id: selectedMember?.apiId, start_time: startIso, end_time: endIso });
         setShifts((current) => [...current, mapShift(created)]);
         setModal(null);
         notify(`已新增 ${staffName} 的 ${start}–${end} 排班，並寫入 MySQL。`);
@@ -542,7 +566,7 @@ export default function Home() {
 
   const removeShift = async (shift: Shift, origin: 'admin' | 'staff', reason = '') => {
     if (origin === 'staff' && isShiftLocked(shift)) return notify('此班已鎖定，已提示聯絡店長處理。');
-    if (origin === 'admin' && isShiftLocked(shift) && !reason.trim()) return notify('強制撤銷鎖定班表時必須填寫原因。');
+    if (origin === 'admin' && isShiftLocked(shift) && !canOverrideTimeRules) return notify('此班已鎖定，請由店長、Admin 或具強制權限的客服處理。');
     if (appMode === 'staffLink' && origin === 'staff' && shift.apiId) {
       try {
         await new SpaApi().publicDeleteShift(staffToken, shift.apiId);
@@ -569,7 +593,7 @@ export default function Home() {
         await api.deleteShift(shift.apiId, reason);
         setShifts((current) => current.filter((item) => item.id !== shift.id));
         setModal(null);
-        notify(isShiftLocked(shift) ? '已強制撤銷並在 MySQL 留下稽核原因。' : '排班已撤銷。');
+        notify(isShiftLocked(shift) ? '已使用強制權限撤銷排班。' : '排班已撤銷。');
       } catch (error) {
         notify(error instanceof Error ? error.message : '撤銷排班失敗');
       }
@@ -794,7 +818,7 @@ export default function Home() {
 
   const permanentlyDeleteStaff = async (event: FormEvent<HTMLFormElement>, member: StaffMember) => {
     event.preventDefault();
-    if (!member.apiId || role !== 'admin') return notify('永久刪除只開放 Admin 使用。');
+    if (!member.apiId || !canManageAll) return notify('永久刪除只開放店長或 Admin 使用。');
     const data = new FormData(event.currentTarget);
     const reason = String(data.get('reason') || '').trim();
     try {
@@ -885,6 +909,7 @@ export default function Home() {
           username: String(data.get('username')),
           role: roleName === 'Admin' ? 'admin' : roleName === '店長' ? 'manager' : 'clerk',
           pin: String(data.get('pin')),
+          can_override_time_rules: roleName === '客服' && data.get('canOverrideTimeRules') === 'on',
         });
         setAdminUsers((current) => [...current, mapAdminUser(created)]);
         setModal(null);
@@ -908,6 +933,17 @@ export default function Home() {
       notify(`${user.displayName} 已停用，既有登入也已失效。`);
     } catch (error) {
       notify(error instanceof Error ? error.message : '停用帳號失敗');
+    }
+  };
+
+  const toggleTimeOverridePermission = async (user: (typeof adminUsers)[number]) => {
+    if (appMode !== 'live' || user.roleKey !== 'clerk' || !canCreateUsers) return;
+    try {
+      const updated = mapAdminUser(await api.updateUserPermissions(user.id, !user.canOverrideTimeRules));
+      setAdminUsers((current) => current.map((item) => item.id === updated.id ? updated : item));
+      notify(updated.canOverrideTimeRules ? `${user.displayName} 已可強制略過時間與撞期限制。` : `${user.displayName} 已恢復一般時間與撞期限制。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '更新客服強制權限失敗');
     }
   };
 
@@ -1006,7 +1042,7 @@ export default function Home() {
       <>
         <section className="rule-banner"><div><strong>90 分鐘鎖定規則</strong><span>師傅端距開始 90 分鐘內不可新增、修改或撤銷；店長與 Admin 可填寫原因強制處理。</span></div>{appMode === 'live' && <button onClick={() => navigateTo('staffPortal')}>預覽師傅畫面</button>}</section>
         <section className="panel roster-panel">
-          <div className="toolbar"><div className="segmented"><button className={week === 'current' ? 'active' : ''} onClick={() => setWeek('current')}>本週</button><button className={week === 'next' ? 'active' : ''} onClick={() => setWeek('next')}>下週</button></div><div className="filter-note"><strong>{rosterStaff.length}</strong><span>{appMode === 'live' ? '位師傅（全部）' : '位在職師傅'}</span></div><div className="toolbar-spacer" />{appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('shifts')}>⇩ 匯出班表</button>}{(canManageAll || isStaffUser) && <button className="primary-button" onClick={() => setModal({ type: 'shift', origin: isStaffUser ? 'staff' : 'admin' })}>＋ 新增排班</button>}</div>
+          <div className="toolbar"><div className="segmented"><button className={week === 'current' ? 'active' : ''} onClick={() => setWeek('current')}>本週</button><button className={week === 'next' ? 'active' : ''} onClick={() => setWeek('next')}>下週</button></div><div className="filter-note"><strong>{rosterStaff.length}</strong><span>{appMode === 'live' ? '位師傅（全部）' : '位在職師傅'}</span></div><div className="toolbar-spacer" />{appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('shifts')}>⇩ 匯出班表</button>}{(canManageShifts || isStaffUser) && <button className="primary-button" onClick={() => setModal({ type: 'shift', origin: isStaffUser ? 'staff' : 'admin' })}>＋ 新增排班</button>}</div>
           <div className="roster-grid" style={{ gridTemplateColumns: `120px repeat(${days.length}, minmax(112px, 1fr))` }}>
             <div className="roster-corner">師傅</div>
             {days.map((day) => <div className={day.date === todayIso ? 'roster-day today' : 'roster-day'} key={day.date}><strong>{day.day}</strong><span>{day.label}</span></div>)}
@@ -1015,12 +1051,12 @@ export default function Home() {
                 <div className="roster-name"><span className="staff-avatar">{member.name.slice(0, 1)}</span><div><strong>{member.name}</strong><small>{member.category.replace('師傅', '')}</small></div></div>
                 {days.map((day) => {
                   const dayShifts = shifts.filter((item) => (item.staffId ? item.staffId === member.id : item.staff === member.name) && item.date === day.date);
-                  return <div className="roster-cell" key={day.date}>{dayShifts.map((shift) => <button className={isShiftLocked(shift) ? 'shift-card locked' : 'shift-card'} key={shift.id} onClick={() => (canManageAll || isStaffUser) && setModal({ type: 'shiftDetail', id: shift.id, origin: isStaffUser ? 'staff' : 'admin' })}><strong>{shift.start}–{shift.end}</strong><small>{isShiftLocked(shift) ? '已鎖定' : shift.source}</small></button>)}</div>;
+                  return <div className="roster-cell" key={day.date}>{dayShifts.map((shift) => <button className={isShiftLocked(shift) ? 'shift-card locked' : 'shift-card'} key={shift.id} onClick={() => (canManageShifts || isStaffUser) && setModal({ type: 'shiftDetail', id: shift.id, origin: isStaffUser ? 'staff' : 'admin' })}><strong>{shiftTimeLabel(shift)}</strong><small>{isShiftLocked(shift) && !canOverrideTimeRules ? '已鎖定' : shift.source}</small></button>)}</div>;
                 })}
               </div>
             ))}
           </div>
-          <div className="legend"><span><i className="legend-dot normal" />可調整</span><span><i className="legend-dot locked" />90 分鐘內鎖定</span><span>排班最短 2 小時</span></div>
+          <div className="legend"><span><i className="legend-dot normal" />可調整／可跨日</span><span><i className="legend-dot locked" />一般帳號於 90 分鐘內鎖定</span><span>排班沒有最低時數</span></div>
         </section>
       </>
     );
@@ -1051,12 +1087,12 @@ export default function Home() {
       <div className="staff-card-grid">{staff.map((member) => <article className={member.status === '暫時退役' ? 'staff-card retired' : 'staff-card'} key={member.id}>
         <header>{member.photoUrl ? <img className="large-avatar staff-photo" src={member.photoUrl} alt={`${member.name}師傅`} /> : <span className="large-avatar">{member.name.slice(0, 1)}</span>}<StatusPill status={member.status} /></header>
         <h3>{member.name}</h3><p>{member.category}・{[member.height && `${member.height} cm`, member.weight && `${member.weight} kg`].filter(Boolean).join('・') || member.id}</p>
-        <div className="staff-meta"><span>{member.lineConnected ? 'LINE 已串接' : 'LINE 待串接'}</span><span>{isViewer || isStaffUser ? '公開基本資料' : '私密資料已分離'}</span></div>
+        <div className="staff-meta"><span>{member.lineConnected ? 'LINE 已串接' : 'LINE 待串接'}</span><span>{member.isOnline ? '目前上線' : '目前下線'}</span><span>{isViewer || isStaffUser ? '公開基本資料' : '私密資料已分離'}</span></div>
         {canManageAll && returnRuleSets.length > 0 && <label className="staff-rule-select">回帳表<select value={member.returnRuleSetId || returnRuleSets[0]?.id || ''} onChange={(event) => assignReturnRuleSet(member, Number(event.target.value))}>{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label>}
-        {canManageAll && <div className="staff-card-actions"><button className="text-button" onClick={() => setModal({ type: 'staffEdit', id: member.id })}>資料／照片</button><button className="text-button" onClick={() => toggleStaffStatus(member)}>{member.status === '在職' ? '暫時退役' : '恢復在職'}</button>{member.lineConnected && <button className="text-button" onClick={() => unlinkStaffLine(member)}>解除 LINE</button>}{role === 'admin' && <button className="danger-text" onClick={() => setModal({ type: 'staffDelete', id: member.id })}>永久刪除</button>}</div>}
+        {canManageAll && <div className="staff-card-actions"><button className="text-button" onClick={() => setModal({ type: 'staffEdit', id: member.id })}>資料／照片</button><button className="text-button" onClick={() => toggleStaffStatus(member)}>{member.status === '在職' ? '暫時退役' : '恢復在職'}</button>{member.lineConnected && <button className="text-button" onClick={() => unlinkStaffLine(member)}>解除 LINE</button>}<button className="danger-text" onClick={() => setModal({ type: 'staffDelete', id: member.id })}>永久刪除</button></div>}
       </article>)}</div>
       {staff.length === 0 && <div className="empty-state">資料庫目前沒有師傅資料。</div>}
-      {sensitiveVisible && <div className="privacy-note"><strong>健康資訊不顯示於此畫面</strong><span>私密欄位存放在獨立加密資料表，且不包含在一般匯出中。永久刪除只開放 Admin，且有歷史訂單、班表或回帳時會被阻止。</span></div>}
+      {sensitiveVisible && <div className="privacy-note"><strong>健康資訊不顯示於此畫面</strong><span>私密欄位存放在獨立資料表，且不包含在一般匯出中。店長與 Admin 可永久刪除；有歷史訂單、班表或回帳時系統仍會阻止。</span></div>}
     </section>
   );
 
@@ -1088,20 +1124,20 @@ export default function Home() {
               <span><strong>{user.role}</strong></span>
               <span><StatusPill status={user.status} /></span>
               <span><strong>{user.lastLogin}</strong></span>
-              <span>{canDeactivate ? <button className="access-danger" onClick={() => deactivateAdminUser(user)}>停用權限</button> : <small>{user.isActive ? '不可操作' : '已移除'}</small>}</span>
+              <span className="access-actions">{user.roleKey === 'clerk' && user.isActive && <button className={user.canOverrideTimeRules ? 'access-warning active' : 'access-warning'} onClick={() => toggleTimeOverridePermission(user)}>{user.canOverrideTimeRules ? '關閉強制時間權限' : '開啟強制時間權限'}</button>}{canDeactivate ? <button className="access-danger" onClick={() => deactivateAdminUser(user)}>停用權限</button> : <small>{user.isActive ? (user.roleKey === 'clerk' ? '' : '不可操作') : '已移除'}</small>}</span>
             </div>;
           })}
         </div>
       </section>
       <aside className="panel security-card"><p className="eyebrow">LOGIN SECURITY</p><h2>數字 PIN 安全設定</h2><ul><li>PIN 只保存 Argon2 雜湊</li><li>連續錯誤 5 次鎖定 15 分鐘</li><li>Bearer 工作階段 8 小時到期</li><li>停用後立即撤銷既有登入</li></ul><div className="security-footnote">停用採保留紀錄的安全刪除，不會破壞訂單與稽核資料。</div></aside>
-      <section className="panel permission-panel"><div className="panel-heading"><div><p className="eyebrow">ROLE MATRIX</p><h2>權限對照</h2></div></div><div className="permission-grid"><strong>功能</strong><strong>Admin</strong><strong>店長</strong><strong>客服</strong>{['預約與結帳', '新增／撤銷排班', '新增／退役員工', '修改價格優惠', '新增帳號', '停用客服帳號', '系統與稽核'].flatMap((label, index) => [<span key={`${label}-label`}>{label}</span>, <b key={`${label}-admin`}>✓</b>, <b key={`${label}-manager`}>{index === 6 ? '查看' : index === 4 ? '限客服' : '✓'}</b>, <b className="limited" key={`${label}-clerk`}>{index < 2 ? '部分' : '—'}</b>])}</div></section>
+      <section className="panel permission-panel"><div className="panel-heading"><div><p className="eyebrow">ROLE MATRIX</p><h2>權限對照</h2></div></div><div className="permission-grid"><strong>功能</strong><strong>Admin</strong><strong>店長</strong><strong>客服</strong>{['預約與結帳', '新增／撤銷排班', '略過時間與撞期限制', '新增／退役／永久刪除員工', '修改價格優惠', '新增帳號', '停用客服帳號', '系統與稽核'].flatMap((label, index) => [<span key={`${label}-label`}>{label}</span>, <b key={`${label}-admin`}>✓</b>, <b key={`${label}-manager`}>{index === 7 ? '查看' : index === 5 ? '限客服' : '✓'}</b>, <b className="limited" key={`${label}-clerk`}>{index === 2 ? '可個別開啟' : index < 2 ? '部分' : '—'}</b>])}</div></section>
     </div>
   );
 
   const renderStaffPortal = () => {
     const previewStaff = staff.find((item) => item.status === '在職');
     const previewShifts = previewStaff ? shifts.filter((item) => item.staffId === previewStaff.id) : [];
-    return <div className="portal-layout"><section className="phone-preview"><header><span className="brand-seal">E</span><div><small>伊果 SPA 師傅班表</small><strong>{previewStaff ? `${previewStaff.name}，辛苦了` : '尚無在職師傅'}</strong></div><span className="link-badge">資料庫預覽</span></header><div className="portal-rule"><strong>排班提醒</strong><span>開始前 90 分鐘內不可自行變更；需要協助請聯絡店長。</span></div><div className="portal-week"><div className="portal-week-head"><strong>我的班表</strong></div>{previewShifts.map((shift) => <div className="portal-shift" key={shift.id}><span><strong>{shift.date.slice(5).replace('-', '/')}</strong><small>{shift.date === todayIso ? '今天' : '已排班'}</small></span><div><strong>{shift.start}–{shift.end}</strong><small>共 {(toMinutes(shift.end) - toMinutes(shift.start)) / 60} 小時</small></div><StatusPill status={isShiftLocked(shift) ? '已鎖定' : '可調整'} /></div>)}{previewShifts.length === 0 && <div className="empty-state">此師傅目前沒有班表。</div>}</div></section><aside className="panel portal-notes"><p className="eyebrow">SIGNED LINE LINK</p><h2>LINE 安全登入，不是公開網址</h2><p>由 LINE Bot 傳送每位師傅自己的不可猜測登入連結，只能看到與修改自己的班表。</p><div><strong>可查看</strong><span>自己的本週／下週班表</span></div><div><strong>可操作</strong><span>新增至少 2 小時的班、撤銷未鎖定班</span></div><div><strong>看不到</strong><span>其他師傅、客戶電話、健康資料、營收</span></div></aside></div>;
+    return <div className="portal-layout"><section className="phone-preview"><header><span className="brand-seal">E</span><div><small>伊果 SPA 師傅班表</small><strong>{previewStaff ? `${previewStaff.name}，辛苦了` : '尚無在職師傅'}</strong></div><span className="link-badge">資料庫預覽</span></header><div className="portal-rule"><strong>排班提醒</strong><span>排班可跨日且沒有最低時數；開始前 90 分鐘內不可自行變更。</span></div><div className="portal-week"><div className="portal-week-head"><strong>我的班表</strong></div>{previewShifts.map((shift) => <div className="portal-shift" key={shift.id}><span><strong>{shift.date.slice(5).replace('-', '/')}</strong><small>{shift.date === todayIso ? '今天' : '已排班'}</small></span><div><strong>{shiftTimeLabel(shift)}</strong><small>共 {Number((shiftDurationMinutes(shift) / 60).toFixed(2))} 小時</small></div><StatusPill status={isShiftLocked(shift) ? '已鎖定' : '可調整'} /></div>)}{previewShifts.length === 0 && <div className="empty-state">此師傅目前沒有班表。</div>}</div></section><aside className="panel portal-notes"><p className="eyebrow">SIGNED LINE LINK</p><h2>LINE 安全登入，不是公開網址</h2><p>由 LINE Bot 傳送每位師傅自己的不可猜測登入連結，只能看到與修改自己的班表。</p><div><strong>可查看</strong><span>自己的本週／下週班表</span></div><div><strong>可操作</strong><span>新增任意長度、可跨日的班；撤銷未鎖定班</span></div><div><strong>看不到</strong><span>其他師傅、客戶電話、健康資料、營收</span></div></aside></div>;
   };
 
   const renderActiveSection = () => {
@@ -1129,7 +1165,7 @@ export default function Home() {
   }
 
   if (appMode === 'staffLink') {
-    return <main className="staff-standalone"><section className="staff-portal-card"><header><span className="brand-seal">E</span><div><small>伊果 SPA 師傅班表</small><strong>{staffPortalName}，辛苦了</strong></div><span className="link-badge">專屬連結</span></header><div className="portal-rule"><strong>排班提醒</strong><span>每段至少 2 小時；開始前 90 分鐘內不可自行新增或撤銷，請聯絡店長。</span></div>{staffPortalError ? <div className="auth-error">{staffPortalError}</div> : <><form className="public-shift-form" onSubmit={(event) => addShift(event, 'staff')}><label>日期<input name="date" type="date" min={todayIso} defaultValue={bookingDefault.date} required /></label><label>開始<input name="start" type="time" defaultValue={bookingDefault.time} required /></label><label>結束<input name="end" type="time" required /></label><button className="primary-button" type="submit">新增排班</button></form><div className="portal-week"><div className="portal-week-head"><strong>我的班表</strong><span>{shifts.length} 段</span></div>{shifts.map((shift) => <article className="portal-shift public-shift" key={shift.id}><span><strong>{shift.date.slice(5).replace('-', '/')}</strong><small>{isShiftLocked(shift) ? '已鎖定' : '可調整'}</small></span><div><strong>{shift.start}–{shift.end}</strong><small>共 {(toMinutes(shift.end) - toMinutes(shift.start)) / 60} 小時</small></div><button className="danger-text" disabled={isShiftLocked(shift)} onClick={() => removeShift(shift, 'staff')}>{isShiftLocked(shift) ? '洽店長' : '撤銷'}</button></article>)}{shifts.length === 0 && <div className="empty-state">本週與下週尚未排班。</div>}</div></>}</section>{toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}</main>;
+    return <main className="staff-standalone"><section className="staff-portal-card"><header><span className="brand-seal">E</span><div><small>伊果 SPA 師傅班表</small><strong>{staffPortalName}，辛苦了</strong></div><span className="link-badge">專屬連結</span></header><div className="portal-rule"><strong>排班提醒</strong><span>可跨日且沒有最低時數；開始前 90 分鐘內不可自行新增或撤銷，請聯絡店長。</span></div>{staffPortalError ? <div className="auth-error">{staffPortalError}</div> : <><form className="public-shift-form" onSubmit={(event) => addShift(event, 'staff')}><label>開始日期<input name="startDate" type="date" min={todayIso} defaultValue={bookingDefault.date} required /></label><label>開始時間<ClockSelect name="start" defaultValue={bookingDefault.time} /></label><label>結束日期<input name="endDate" type="date" min={todayIso} defaultValue={shiftEndDefault.date} required /></label><label>結束時間<ClockSelect name="end" defaultValue={shiftEndDefault.time} /></label><button className="primary-button" type="submit">新增排班</button></form><div className="portal-week"><div className="portal-week-head"><strong>我的班表</strong><span>{shifts.length} 段</span></div>{shifts.map((shift) => <article className="portal-shift public-shift" key={shift.id}><span><strong>{shift.date.slice(5).replace('-', '/')}</strong><small>{isShiftLocked(shift) ? '已鎖定' : '可調整'}</small></span><div><strong>{shiftTimeLabel(shift)}</strong><small>共 {Number((shiftDurationMinutes(shift) / 60).toFixed(2))} 小時</small></div><button className="danger-text" disabled={isShiftLocked(shift)} onClick={() => removeShift(shift, 'staff')}>{isShiftLocked(shift) ? '洽店長' : '撤銷'}</button></article>)}{shifts.length === 0 && <div className="empty-state">本週與下週尚未排班。</div>}</div></>}</section>{toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}</main>;
   }
 
   return (
@@ -1151,15 +1187,15 @@ export default function Home() {
 
       {modal?.type === 'account' && <Modal title="登入資訊" subtitle="師傅只使用手機 ID；客服與管理者使用帳號及 PIN。" onClose={() => setModal(null)} wide><div className="account-login-grid"><form className="modal-form account-login-card" onSubmit={login}><p className="eyebrow">MANAGEMENT</p><h3>客服／店長／Admin</h3><label>登入帳號<input name="username" required autoCapitalize="none" autoComplete="username" placeholder="例如：admin" /></label><label>數字 PIN<input name="pin" required type="password" inputMode="numeric" pattern="[0-9]+" minLength={4} autoComplete="current-password" /></label><button className="primary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '管理帳號登入'}</button></form><form className="modal-form account-login-card" onSubmit={loginStaff}><p className="eyebrow">STAFF</p><h3>師傅手機 ID 登入</h3><label>手機 ID<input name="staffPhone" required inputMode="tel" pattern="09[0-9]{8}" autoComplete="tel" placeholder="09xxxxxxxx" /></label><button className="secondary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '以員工身分進入'}</button></form></div>{loginError && <div className="auth-error modal-auth-error">{loginError}</div>}<div className="form-note">從 LINE Bot 開啟師傅後台時會以安全連結直接登入，不會再出現登入畫面。</div></Modal>}
 
-      {modal?.type === 'appointment' && <Modal title="新增預約" subtitle="所有入口最少提前 90 分鐘，並檢查師傅與房間衝突。" onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={addAppointment}><div className="form-grid two"><label>客戶姓名<input name="customer" required placeholder="例如：王先生" /></label><label>手機號碼<input name="phone" required inputMode="numeric" pattern="09[0-9]{8}" placeholder="09xxxxxxxx" /></label><label>日期<input name="date" type="date" min={todayIso} defaultValue={bookingDefault.date} required /></label><label>開始時間<input name="start" type="time" defaultValue={bookingDefault.time} required /></label><label>服務方案<select name="serviceId" defaultValue={plans.find((item) => item.code === 'C')?.id}>{plans.filter((item) => item.active).map((plan) => <option value={plan.id} key={plan.id}>{plan.code}・{plan.name}｜{plan.duration} 分｜{formatCurrency(plan.price)}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue="0"><option value="0">不使用優惠</option>{promotions.filter((item) => item.active && item.kind.includes('折扣')).map((item) => <option key={item.id} value={item.apiId}>{item.name}｜{item.kind === '百分比折扣' ? `${item.value}%` : `折 ${formatCurrency(item.value)}`}</option>)}</select></label><label>指派師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label>場地／房間<select name="room" defaultValue={rooms[0]?.name}>{rooms.map((room) => <option key={room.id}>{room.name}</option>)}<option>外出場地</option><option>待確認</option></select></label><label className="span-two">客服備註<textarea name="note" rows={3} placeholder="不公開給客戶的內部備註" /></label></div><div className="form-note">例如 09:00 當下最早可預約 10:30；後端也會阻止重疊或過近的時間。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">建立預約</button></footer></form></Modal>}
+      {modal?.type === 'appointment' && <Modal title="新增預約" subtitle={canOverrideTimeRules ? '目前帳號可略過提前時間及師傅／房間撞期限制。' : '一般帳號最少提前 90 分鐘，並檢查師傅與房間衝突。'} onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={addAppointment}><div className="form-grid two"><label>客戶姓名<input name="customer" required placeholder="例如：王先生" /></label><label>手機號碼<input name="phone" required inputMode="numeric" pattern="09[0-9]{8}" placeholder="09xxxxxxxx" /></label><label>日期<input name="date" type="date" min={canOverrideTimeRules ? undefined : todayIso} defaultValue={bookingDefault.date} required /></label><label>開始時間<input name="start" type="time" defaultValue={bookingDefault.time} required /></label><label>服務方案<select name="serviceId" defaultValue={plans.find((item) => item.code === 'C')?.id}>{plans.filter((item) => item.active).map((plan) => <option value={plan.id} key={plan.id}>{plan.code}・{plan.name}｜{plan.duration} 分｜{formatCurrency(plan.price)}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue="0"><option value="0">不使用優惠</option>{promotions.filter((item) => item.active && item.kind.includes('折扣')).map((item) => <option key={item.id} value={item.apiId}>{item.name}｜{item.kind === '百分比折扣' ? `${item.value}%` : `折 ${formatCurrency(item.value)}`}</option>)}</select></label><label>指派師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label>場地／房間<select name="room" defaultValue={rooms[0]?.name}>{rooms.map((room) => <option key={room.id}>{room.name}</option>)}<option>外出場地</option><option>待確認</option></select></label><label className="span-two">客服備註<textarea name="note" rows={3} placeholder="不公開給客戶的內部備註" /></label></div><div className="form-note">{canOverrideTimeRules ? '這筆訂單會以管理強制權限建立，仍會留下稽核紀錄。' : '例如 09:00 當下最早可預約 10:30；後端也會阻止重疊或過近的時間。'}</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">建立預約</button></footer></form></Modal>}
 
       {modal?.type === 'appointmentDetail' && selectedAppointment && <Modal title={selectedAppointment.id} subtitle={`${selectedAppointment.date}　${selectedAppointment.start}–${selectedAppointment.end}`} onClose={() => setModal(null)}><div className="detail-stack"><div className="detail-hero"><div><span>客戶</span><strong>{selectedAppointment.customer}</strong><small>{selectedAppointment.customerSerial ? `${selectedAppointment.customerSerial}（流水）・` : ''}{selectedAppointment.phone}</small></div><StatusPill status={selectedAppointment.status} /></div><dl><div><dt>師傅</dt><dd>{selectedAppointment.staff}</dd></div><div><dt>服務方案</dt><dd>{selectedAppointment.service}</dd></div><div><dt>優惠</dt><dd>{selectedAppointment.promotionName || '未使用'}</dd></div><div><dt>場地</dt><dd>{selectedAppointment.location}・{selectedAppointment.room}</dd></div><div><dt>應收金額</dt><dd>{isViewer ? '敏感資訊已隱藏' : formatCurrency(selectedAppointment.total)}</dd></div>{!isViewer && <div><dt>師傅應回帳</dt><dd>{formatCurrency(selectedAppointment.expectedReturn || 0)}</dd></div>}<div><dt>付款狀態</dt><dd>{isViewer ? '已隱藏' : selectedAppointment.payment}</dd></div></dl>{!isViewer && selectedAppointment.note && <div className="detail-note"><strong>客服備註</strong><p>{selectedAppointment.note}</p></div>}<div className="status-actions">{canEditAppointments && <button onClick={() => setModal({ type: 'appointmentEdit', id: selectedAppointment.id })}>編輯整張訂單</button>}{canEditAppointments && selectedAppointment.status === '已確認' && <button onClick={() => updateAppointmentStatus(selectedAppointment, '已報到')}>標記報到</button>}{(canEditAppointments || isStaffUser) && ['已確認', '已報到', '服務中'].includes(selectedAppointment.status) && <button onClick={() => updateAppointmentStatus(selectedAppointment, '待結帳')}>服務完成</button>}{canEditAppointments && selectedAppointment.status === '待結帳' && <button onClick={() => setModal({ type: 'checkout', id: selectedAppointment.id })}>開始結帳</button>}{canEditAppointments && <button className="danger-text" onClick={() => updateAppointmentStatus(selectedAppointment, '已取消')}>取消預約</button>}</div></div></Modal>}
 
       {modal?.type === 'appointmentEdit' && selectedAppointment && <Modal title={`編輯 ${selectedAppointment.id}`} subtitle={canManageAll ? '店長與 Admin 可修改整張訂單所有欄位。' : '客服可調整預約與服務內容，金額需由店長或 Admin 處理。'} onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={(event) => saveAppointmentEdit(event, selectedAppointment)}><div className="form-grid two"><label>客戶姓名<input name="customer" defaultValue={selectedAppointment.customer} required /></label><label>手機號碼<input name="phone" defaultValue={selectedAppointment.phone} required /></label><label>日期<input name="date" type="date" defaultValue={selectedAppointment.date} required /></label><label>開始時間<input name="start" type="time" defaultValue={selectedAppointment.start} required /></label><label>服務方案<select name="serviceId" defaultValue={selectedAppointment.serviceId}>{plans.map((plan) => <option key={plan.id} value={plan.apiId}>{plan.code}・{plan.name}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue={selectedAppointment.promotionId || '0'}><option value="0">不使用優惠</option>{promotions.map((promotion) => <option key={promotion.id} value={promotion.apiId}>{promotion.name}</option>)}</select></label><label>指派師傅<select name="staffId" defaultValue={selectedAppointment.staffId}>{staff.filter((item) => item.status === '在職').map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label><label>場地／房間<select name="room" defaultValue={selectedAppointment.room}>{rooms.map((room) => <option key={room.id}>{room.name}</option>)}<option>外出場地</option><option>待確認</option></select></label><label>訂單狀態<select name="status" defaultValue={selectedAppointment.status}>{['待確認', '已確認', '已報到', '服務中', '待結帳', '已完成', '已取消'].map((status) => <option key={status}>{status}</option>)}</select></label>{canManageAll && <><label>原價<input name="basePrice" type="number" min="0" defaultValue={selectedAppointment.basePrice || 0} /></label><label>折扣<input name="discountAmount" type="number" min="0" defaultValue={selectedAppointment.discountAmount || 0} /></label><label>加價<input name="extraAmount" type="number" min="0" defaultValue={selectedAppointment.extraAmount || 0} /></label><label>訂單總額<input name="totalAmount" type="number" min="0" defaultValue={selectedAppointment.total} /></label></>}<label className="span-two">客服備註<textarea name="note" rows={3} defaultValue={selectedAppointment.note || ''} /></label><label className="span-two">修改原因<input name="reason" placeholder="例如：客戶改期、人工修正優惠" /></label></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存訂單</button></footer></form></Modal>}
 
-      {modal?.type === 'shift' && <Modal title={modal.origin === 'staff' ? '新增我的排班' : '新增師傅排班'} subtitle="每段至少 2 小時；師傅端需距開始時間超過 90 分鐘。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => addShift(event, modal.origin)}><div className="form-grid">{modal.origin === 'admin' && <label>師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<label>日期<input name="date" type="date" min={todayIso} defaultValue={bookingDefault.date} required /></label><div className="form-grid two"><label>開始<input name="start" type="time" defaultValue={bookingDefault.time} required /></label><label>結束<input name="end" type="time" required /></label></div></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">確認排班</button></footer></form></Modal>}
+      {modal?.type === 'shift' && <Modal title={modal.origin === 'staff' ? '新增我的排班' : '新增師傅排班'} subtitle={modal.origin === 'staff' || !canOverrideTimeRules ? '可跨日且沒有最低時數；一般帳號需遵守 90 分鐘鎖定與撞期規則。' : '可跨日且沒有最低時數；目前帳號可略過時間與撞期限制。'} onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => addShift(event, modal.origin)}><div className="form-grid">{modal.origin === 'admin' && <label>師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<div className="form-grid two"><label>開始日期<input name="startDate" type="date" min={modal.origin === 'staff' || !canOverrideTimeRules ? todayIso : undefined} defaultValue={bookingDefault.date} required /></label><label>開始時間<ClockSelect name="start" defaultValue={bookingDefault.time} /></label><label>結束日期<input name="endDate" type="date" defaultValue={shiftEndDefault.date} required /></label><label>結束時間<ClockSelect name="end" defaultValue={shiftEndDefault.time} /></label></div></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">確認排班</button></footer></form></Modal>}
 
-      {modal?.type === 'shiftDetail' && selectedShift && <Modal title={`${selectedShift.staff} 的排班`} subtitle={`${selectedShift.date}　${selectedShift.start}–${selectedShift.end}`} onClose={() => setModal(null)}><div className="detail-stack"><div className="detail-hero"><div><span>建立來源</span><strong>{selectedShift.source}</strong><small>共 {(toMinutes(selectedShift.end) - toMinutes(selectedShift.start)) / 60} 小時</small></div><StatusPill status={isShiftLocked(selectedShift) ? '已鎖定' : '可調整'} /></div>{isShiftLocked(selectedShift) && <div className="locked-message">此班已進入開始前 90 分鐘範圍。師傅不能自行撤銷，店長或 Admin 強制處理時必須留下原因。</div>}{modal.origin === 'staff' ? <button className="danger-button full" onClick={() => removeShift(selectedShift, 'staff')}>{isShiftLocked(selectedShift) ? '聯絡店長處理' : '撤銷這段排班'}</button> : <form onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget); removeShift(selectedShift, 'admin', String(data.get('reason') || '')); }}><label className="field-label">{isShiftLocked(selectedShift) ? '強制撤銷原因' : '撤銷備註'}<textarea name="reason" rows={3} placeholder={isShiftLocked(selectedShift) ? '必填，例如：師傅臨時請假' : '選填'} /></label><button className="danger-button full" type="submit">{isShiftLocked(selectedShift) ? '強制撤銷並記錄' : '撤銷排班'}</button></form>}</div></Modal>}
+      {modal?.type === 'shiftDetail' && selectedShift && <Modal title={`${selectedShift.staff} 的排班`} subtitle={`${selectedShift.date} ${selectedShift.start} 至 ${selectedShift.endDate} ${selectedShift.end}`} onClose={() => setModal(null)}><div className="detail-stack"><div className="detail-hero"><div><span>建立來源</span><strong>{selectedShift.source}</strong><small>共 {Number((shiftDurationMinutes(selectedShift) / 60).toFixed(2))} 小時</small></div><StatusPill status={isShiftLocked(selectedShift) && !canOverrideTimeRules ? '已鎖定' : '可調整'} /></div>{isShiftLocked(selectedShift) && !canOverrideTimeRules && <div className="locked-message">此班已進入開始前 90 分鐘範圍。請由店長、Admin 或具強制權限的客服處理。</div>}{modal.origin === 'staff' ? <button className="danger-button full" onClick={() => removeShift(selectedShift, 'staff')}>{isShiftLocked(selectedShift) ? '聯絡店長處理' : '撤銷這段排班'}</button> : <form onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget); removeShift(selectedShift, 'admin', String(data.get('reason') || '')); }}><label className="field-label">撤銷備註<textarea name="reason" rows={3} placeholder="選填，例如：師傅臨時請假" /></label><button className="danger-button full" type="submit">撤銷排班</button></form>}</div></Modal>}
 
       {modal?.type === 'checkout' && selectedAppointment && <Modal title="訂單結帳" subtitle={`${selectedAppointment.id}・${selectedAppointment.customer}`} onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => finishCheckout(event, selectedAppointment.id)}><div className="receipt"><div><span>{selectedAppointment.service}</span><strong>{formatCurrency(selectedAppointment.basePrice || selectedAppointment.total)}</strong></div><div><span>{selectedAppointment.promotionName || '優惠折扣'}</span><strong>− {formatCurrency(selectedAppointment.discountAmount || 0)}</strong></div><div><span>其他加價</span><strong>＋ {formatCurrency(selectedAppointment.extraAmount || 0)}</strong></div><div className="receipt-total"><span>應收總額</span><strong>{formatCurrency(selectedAppointment.total)}</strong></div><div><span>師傅應回帳</span><strong>{formatCurrency(selectedAppointment.expectedReturn || 0)}</strong></div></div><label>付款方式<select name="paymentMethod" defaultValue="現金"><option>現金</option><option>轉帳</option></select></label><label>結帳備註<textarea name="note" rows={3} placeholder="例如：現金由師傅代收，待第三人確認回帳" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>稍後處理</button><button className="primary-button" type="submit">確認完成訂單</button></footer></form></Modal>}
 
@@ -1173,13 +1209,13 @@ export default function Home() {
 
       {modal?.type === 'staff' && <Modal title="新增員工" subtitle="照片可貼網址或直接上傳；健康資訊不會出現在公開資料或一般匯出。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={addStaff}><label>姓名／稱呼<input name="name" required /></label><label>手機 ID<input name="phone" inputMode="tel" placeholder="師傅手機 ID 登入使用" /></label><label>師傅分類<select name="category"><option>直男師傅</option><option>圈內師傅</option><option>雙性師傅</option></select></label><label>公開照片網址<input name="photoUrl" type="url" placeholder="https://..." /></label><label>或從電腦上傳照片<input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label><div className="form-note">若同時填網址並選擇檔案，會以上傳檔案為準；限 JPEG、PNG、WebP，最大 3 MB。</div><label>回帳表<select name="returnRuleSetId">{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label><label>LINE User ID<input name="lineUserId" placeholder="可稍後由 LINE Bot 自動綁定" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立員工</button></footer></form></Modal>}
 
-      {modal?.type === 'staffEdit' && (() => { const member = staff.find((item) => item.id === modal.id); return member ? <Modal title={`編輯 ${member.name}`} subtitle="公開照片可貼網址或從電腦上傳。永久刪除不會用來取代暫時退役。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => saveStaffProfile(event, member)}><label>姓名／稱呼<input name="name" defaultValue={member.name} required /></label><label>師傅分類<select name="category" defaultValue={member.category}><option>直男師傅</option><option>圈內師傅</option><option>雙性師傅</option></select></label>{member.photoUrl && <img className="staff-edit-preview" src={member.photoUrl} alt={`${member.name}目前公開照片`} />}<label>公開照片網址<input name="photoUrl" type="url" defaultValue={member.photoUrl || ''} placeholder="https://..." /></label><label>或從電腦上傳新照片<input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label><div className="form-note">選擇新檔案時會覆蓋網址欄位的照片。限 JPEG、PNG、WebP，最大 3 MB。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button>{role === 'admin' && <button type="button" className="danger-button" onClick={() => setModal({ type: 'staffDelete', id: member.id })}>永久刪除</button>}<button className="primary-button">儲存公開資料</button></footer></form></Modal> : null; })()}
+      {modal?.type === 'staffEdit' && (() => { const member = staff.find((item) => item.id === modal.id); return member ? <Modal title={`編輯 ${member.name}`} subtitle="公開照片可貼網址或從電腦上傳。永久刪除不會用來取代暫時退役。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => saveStaffProfile(event, member)}><label>姓名／稱呼<input name="name" defaultValue={member.name} required /></label><label>師傅分類<select name="category" defaultValue={member.category}><option>直男師傅</option><option>圈內師傅</option><option>雙性師傅</option></select></label>{member.photoUrl && <img className="staff-edit-preview" src={member.photoUrl} alt={`${member.name}目前公開照片`} />}<label>公開照片網址<input name="photoUrl" type="url" defaultValue={member.photoUrl || ''} placeholder="https://..." /></label><label>或從電腦上傳新照片<input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label><div className="form-note">選擇新檔案時會覆蓋網址欄位的照片。限 JPEG、PNG、WebP，最大 3 MB。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button>{canManageAll && <button type="button" className="danger-button" onClick={() => setModal({ type: 'staffDelete', id: member.id })}>永久刪除</button>}<button className="primary-button">儲存公開資料</button></footer></form></Modal> : null; })()}
 
       {modal?.type === 'staffDelete' && (() => { const member = staff.find((item) => item.id === modal.id); return member ? <Modal title={`永久刪除 ${member.name}`} subtitle="這項操作無法復原，系統會先檢查是否存在營運歷史。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => permanentlyDeleteStaff(event, member)}><div className="locked-message">永久刪除會移除 LINE 綁定、登入連結與私密資料。若已有預約、排班、付款或回帳紀錄，系統會拒絕刪除；這種情況請使用「暫時退役」。</div><label>刪除原因<input name="reason" required minLength={3} maxLength={500} placeholder="例如：重複建立的錯誤帳戶" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="danger-button" type="submit">確認永久刪除</button></footer></form></Modal> : null; })()}
 
       {modal?.type === 'bookingRequest' && selectedBookingRequest && <Modal title={`處理 ${selectedBookingRequest.request_id}`} subtitle="這是預約通知；儲存修改不會成立訂單，按確認後才會建立正式訂單。" onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={(event) => saveBookingRequest(event, selectedBookingRequest)}><div className="form-grid two"><label>客戶名稱<input name="customerName" defaultValue={selectedBookingRequest.customer_name} required /></label><label>手機號碼<input name="phone" defaultValue={selectedBookingRequest.phone} pattern="09[0-9]{8}" required /></label><label>預約時間<input name="startTime" type="datetime-local" defaultValue={selectedBookingRequest.start_time.slice(0, 16)} required /></label><label>指定師傅<select name="staffId" defaultValue={selectedBookingRequest.staff_id || ''}><option value="">未指定</option>{staff.filter((item) => item.status === '在職').map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label><label>服務方案<select name="servicePlanId" defaultValue={selectedBookingRequest.service_plan_id}>{plans.filter((item) => item.active).map((item) => <option key={item.id} value={item.apiId}>{item.code}・{item.name}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue={selectedBookingRequest.promotion_id || ''}><option value="">不使用優惠</option>{promotions.filter((item) => item.active).map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label></div><label>客戶備註<textarea name="notes" rows={3} defaultValue={selectedBookingRequest.notes || ''} /></label><label>客服處理備註<textarea name="reviewNote" rows={2} defaultValue={selectedBookingRequest.review_note || ''} /></label><footer className="modal-actions"><button type="button" className="danger-button" onClick={() => cancelBookingRequest(selectedBookingRequest)}>取消通知</button><button className="secondary-button" type="submit">儲存修改</button><button className="primary-button" type="button" onClick={() => confirmBookingRequest(selectedBookingRequest)}>確認並成立訂單</button></footer></form></Modal>}
 
-      {modal?.type === 'user' && canCreateUsers && <Modal title="新增後台使用者" subtitle={role === 'manager' ? '店長只能新增客服（管理）帳號。' : 'Admin 可新增 Admin、店長或客服帳號。'} onClose={() => setModal(null)}><form className="modal-form" onSubmit={addAdminUser}><label>顯示名稱<input name="displayName" required /></label><label>登入帳號<input name="username" required autoCapitalize="none" /></label>{role === 'manager' ? <label>角色<input name="role" value="客服" disabled /></label> : <label>角色<select name="role"><option>Admin</option><option>店長</option><option>客服</option></select></label>}<label>初始數字 PIN<input name="pin" required inputMode="numeric" pattern="[0-9]+" minLength={4} maxLength={12} type="password" placeholder="至少 4 位" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立帳號</button></footer></form></Modal>}
+      {modal?.type === 'user' && canCreateUsers && <Modal title="新增後台使用者" subtitle={role === 'manager' ? '店長只能新增客服（管理）帳號。' : 'Admin 可新增 Admin、店長或客服帳號。'} onClose={() => setModal(null)}><form className="modal-form" onSubmit={addAdminUser}><label>顯示名稱<input name="displayName" required /></label><label>登入帳號<input name="username" required autoCapitalize="none" /></label>{role === 'manager' ? <label>角色<input name="role" value="客服" disabled /></label> : <label>角色<select name="role"><option>Admin</option><option>店長</option><option>客服</option></select></label>}<label>初始數字 PIN<input name="pin" required inputMode="numeric" pattern="[0-9]+" minLength={4} maxLength={12} type="password" placeholder="至少 4 位" /></label><label className="checkbox-row"><input name="canOverrideTimeRules" type="checkbox" />若角色為客服，允許略過預約、排班的時間與撞期限制</label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立帳號</button></footer></form></Modal>}
       {modal?.type === 'customer' && selectedCustomer && <Modal title={`編輯 ${selectedCustomer.name}`} subtitle="VIP 是流水；真正的客戶 ID 是手機號碼，同一客戶可保存多支。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={saveCustomer}><label>客戶流水<input value={selectedCustomer.vipSerial} disabled /></label><label>客戶名稱<input name="displayName" defaultValue={selectedCustomer.name} required placeholder="可由後台建立或採用 LINE 顯示名稱" /></label><label>客戶 ID（手機號碼）<textarea name="phones" rows={4} defaultValue={selectedCustomer.phones.join('\n')} required placeholder={"0912345678\n0987654321"} /></label><div className="form-note">每行一支手機；第一支是主要聯絡號碼。每支手機只能屬於一位客戶。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存客戶資料</button></footer></form></Modal>}
     </main>
   );

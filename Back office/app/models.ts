@@ -48,6 +48,7 @@ export type StaffMember = {
   category: '直男師傅' | '圈內師傅' | '雙性師傅';
   status: '在職' | '暫時退役';
   lineConnected: boolean;
+  isOnline: boolean;
   privateProfile: boolean;
   returnRuleSetId?: number;
   photoUrl?: string;
@@ -62,8 +63,9 @@ export type Shift = {
   staffId?: string;
   date: string;
   start: string;
+  endDate: string;
   end: string;
-  source: '師傅連結' | '店長' | 'Admin';
+  source: '師傅連結' | '客服' | '店長' | 'Admin';
   locked?: boolean;
 };
 

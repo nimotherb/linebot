@@ -84,6 +84,11 @@ class AdminUserCreateIn(BaseModel):
     display_name: str = Field(min_length=1, max_length=120)
     pin: str = Field(min_length=4, max_length=32, pattern=r"^\d+$")
     role: Literal["admin", "manager", "clerk"] = "clerk"
+    can_override_time_rules: bool = False
+
+
+class AdminUserPermissionIn(BaseModel):
+    can_override_time_rules: bool
 
 
 class AppointmentCreateIn(BaseModel):
@@ -373,6 +378,7 @@ def register_admin_api(
         pin_hash = Column(String(255), nullable=False)
         role = Column(String(30), nullable=False, default="clerk")
         line_user_id = Column(String(255), unique=True, nullable=True, index=True)
+        can_override_time_rules = Column(Boolean, nullable=False, default=False)
         is_active = Column(Boolean, nullable=False, default=True)
         failed_attempts = Column(Integer, nullable=False, default=0)
         locked_until = Column(DateTime, nullable=True)
@@ -985,7 +991,21 @@ def register_admin_api(
         return dependency
 
     def serialize_admin(user) -> dict[str, Any]:
-        return {"id": user.id, "username": user.username, "display_name": user.display_name, "role": user.role, "is_active": user.is_active}
+        return {
+            "id": user.id,
+            "username": user.username,
+            "display_name": user.display_name,
+            "role": user.role,
+            "is_active": user.is_active,
+            "can_override_time_rules": user.role in {"admin", "manager"} or bool(getattr(user, "can_override_time_rules", False)),
+        }
+
+    def actor_can_override_time_rules(actor, db: Session) -> bool:
+        if getattr(actor, "role", None) in {"admin", "manager"}:
+            return True
+        actor_id = getattr(actor, "id", None)
+        account = db.query(AdminUser).filter(AdminUser.id == actor_id).first() if actor_id else None
+        return bool(account and (account.role in {"admin", "manager"} or account.can_override_time_rules))
 
     def line_admin_identity(line_user_id: str, db: Session):
         user = db.query(AdminUser).filter(AdminUser.line_user_id == line_user_id, AdminUser.is_active.is_(True), AdminUser.role.in_(["admin", "manager"])).first()
@@ -1060,6 +1080,8 @@ def register_admin_api(
             "category": getattr(item, "category", None),
             "employment_status": getattr(item, "employment_status", "active"),
             "line_connected": not item.line_user_id.startswith(("pending:", "seeded:")) if item.line_user_id else False,
+            "is_online": bool(getattr(item, "is_online", False)),
+            "online_start_time": _iso(getattr(item, "online_start_time", None)),
             "height": item.height,
             "weight": item.weight,
             "photo_url": getattr(item, "photo_url", None),
@@ -1434,7 +1456,8 @@ def register_admin_api(
             return item, appointment, True
         if item.status != "pending":
             raise HTTPException(status_code=409, detail="這筆預約通知已處理")
-        if item.start_time <= now_taipei_naive():
+        override_time_rules = actor_can_override_time_rules(actor, db)
+        if not override_time_rules and item.start_time <= now_taipei_naive():
             raise HTTPException(status_code=422, detail="預約時間已過，請先修改時間")
         plan = db.query(ServicePlan).filter(ServicePlan.id == item.service_plan_id, ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).first()
         if not plan:
@@ -1444,10 +1467,10 @@ def register_admin_api(
             staff_obj = db.query(Staff).filter(Staff.id == item.requested_staff_id, Staff.employment_status == "active").first()
             if not staff_obj:
                 raise HTTPException(status_code=422, detail="原指定師傅已停用，請先修改預約通知")
-            conflict = staff_appointment_conflict(db, staff_obj.id, item.start_time, item.end_time)
+            conflict = None if override_time_rules else staff_appointment_conflict(db, staff_obj.id, item.start_time, item.end_time)
             if conflict:
                 raise HTTPException(status_code=409, detail=f"指定師傅與訂單 AP-{conflict.id} 時間重疊，請先修改")
-        customer_conflict = db.query(Appointment).filter(
+        customer_conflict = None if override_time_rules else db.query(Appointment).filter(
             Appointment.user_id == item.user_id,
             Appointment.start_time == item.start_time,
             Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES),
@@ -2022,17 +2045,19 @@ def register_admin_api(
             if not promotion:
                 raise HTTPException(status_code=404, detail="找不到啟用中的優惠")
         start_dt = parse_local_datetime(payload.start_time)
-        try:
-            validate_booking_start(start_dt)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        override_time_rules = actor_can_override_time_rules(actor, db)
+        if not override_time_rules:
+            try:
+                validate_booking_start(start_dt)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         end_dt = appointment_end(start_dt, plan.duration_minutes)
 
         if payload.staff_id:
             staff_obj = db.query(Staff).filter(Staff.id == payload.staff_id).with_for_update().first()
             if not staff_obj or getattr(staff_obj, "employment_status", "active") != "active":
                 raise HTTPException(status_code=404, detail="找不到可排班師傅")
-            conflict = staff_appointment_conflict(db, payload.staff_id, start_dt, end_dt)
+            conflict = None if override_time_rules else staff_appointment_conflict(db, payload.staff_id, start_dt, end_dt)
             if conflict:
                 raise HTTPException(status_code=409, detail=f"師傅與訂單 AP-{conflict.id} 時間重疊")
 
@@ -2042,7 +2067,7 @@ def register_admin_api(
             room = db.query(Room).filter(Room.id == payload.room_id, Room.active.is_(True)).with_for_update().first()
             if not room:
                 raise HTTPException(status_code=404, detail="找不到房間")
-            conflict = room_appointment_conflict(db, payload.room_id, start_dt, end_dt)
+            conflict = None if override_time_rules else room_appointment_conflict(db, payload.room_id, start_dt, end_dt)
             if conflict:
                 raise HTTPException(status_code=409, detail=f"房間與訂單 AP-{conflict.id} 時間重疊")
 
@@ -2055,7 +2080,7 @@ def register_admin_api(
         elif not getattr(customer, "display_name", None):
             customer.display_name = payload.customer_name
         customer = db.query(User).filter(User.id == customer.id).with_for_update().first()
-        duplicate = db.query(Appointment).filter(
+        duplicate = None if override_time_rules else db.query(Appointment).filter(
             Appointment.user_id == customer.id,
             Appointment.start_time == start_dt,
             Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES),
@@ -2244,7 +2269,8 @@ def register_admin_api(
             if not promotion:
                 raise HTTPException(status_code=404, detail="找不到啟用中的優惠")
         start_dt = parse_local_datetime(payload.start_time) if payload.start_time else appointment.start_time
-        if payload.start_time is not None:
+        override_time_rules = actor_can_override_time_rules(actor, db)
+        if payload.start_time is not None and not override_time_rules:
             try:
                 validate_booking_start(start_dt)
             except ValueError as exc:
@@ -2253,9 +2279,9 @@ def register_admin_api(
         end_dt = appointment_end(start_dt, duration)
         staff_id = payload.staff_id if "staff_id" in changes else appointment.staff_id
         room_id = payload.room_id if "room_id" in changes else (detail.room_id if detail else None)
-        if staff_id and staff_appointment_conflict(db, staff_id, start_dt, end_dt, appointment.id):
+        if not override_time_rules and staff_id and staff_appointment_conflict(db, staff_id, start_dt, end_dt, appointment.id):
             raise HTTPException(status_code=409, detail="師傅時間重疊")
-        if room_id and room_appointment_conflict(db, room_id, start_dt, end_dt, appointment.id):
+        if not override_time_rules and room_id and room_appointment_conflict(db, room_id, start_dt, end_dt, appointment.id):
             raise HTTPException(status_code=409, detail="房間時間重疊")
         appointment.start_time = start_dt
         appointment.end_time = end_dt
@@ -2312,12 +2338,15 @@ def register_admin_api(
         return result
 
     @app.post("/api/admin/shifts", status_code=201)
-    def create_shift(payload: ShiftCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+    def create_shift(payload: ShiftCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
         start_dt, end_dt = validate_shift_period(payload.start_time, payload.end_time)
+        override_time_rules = actor_can_override_time_rules(actor, db)
         staff_obj = db.query(Staff).filter(Staff.id == payload.staff_id).with_for_update().first()
         if not staff_obj or getattr(staff_obj, "employment_status", "active") != "active":
             raise HTTPException(status_code=404, detail="找不到在職師傅")
-        if shift_conflict(db, payload.staff_id, start_dt, end_dt):
+        if not override_time_rules and not staff_may_change_shift(start_dt):
+            raise HTTPException(status_code=422, detail="開始時間已進入 90 分鐘鎖定範圍，請聯絡店長或開啟客服強制權限")
+        if not override_time_rules and shift_conflict(db, payload.staff_id, start_dt, end_dt):
             raise HTTPException(status_code=409, detail="此師傅的排班時間重疊")
         item = Shift(staff_id=payload.staff_id, start_time=start_dt, end_time=end_dt, source=actor.role, created_by_user_id=actor.id)
         db.add(item)
@@ -2327,13 +2356,13 @@ def register_admin_api(
         return shift_dict(item) | {"staff_name": staff_obj.name}
 
     @app.delete("/api/admin/shifts/{shift_id}")
-    def delete_shift(shift_id: int, reason: str | None = Query(default=None, max_length=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+    def delete_shift(shift_id: int, reason: str | None = Query(default=None, max_length=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
         item = db.query(Shift).filter(Shift.id == shift_id, Shift.status == "active").with_for_update().first()
         if not item:
             raise HTTPException(status_code=404, detail="找不到排班")
         locked = not staff_may_change_shift(item.start_time)
-        if locked and not reason:
-            raise HTTPException(status_code=422, detail="鎖定班表必須填寫強制撤銷原因")
+        if locked and not actor_can_override_time_rules(actor, db):
+            raise HTTPException(status_code=422, detail="此班已鎖定，請由店長、Admin 或具強制權限的客服處理")
         item.status = "cancelled"
         item.change_reason = reason
         audit(db, actor, "cancel", "shift", item.id, reason=reason, before=shift_dict(item))
@@ -2623,7 +2652,7 @@ def register_admin_api(
         staff_id: int,
         reason: str = Query(min_length=3, max_length=500),
         db: Session = Depends(get_db),
-        actor=Depends(require_roles("admin")),
+        actor=Depends(require_roles("admin", "manager")),
     ):
         return permanently_delete_staff(staff_id, db, actor_id=actor.id, reason=reason)
 
@@ -2773,10 +2802,34 @@ def register_admin_api(
             raise HTTPException(status_code=403, detail="店長只能新增客服帳號")
         if db.query(AdminUser).filter(AdminUser.username == payload.username.lower()).first():
             raise HTTPException(status_code=409, detail="登入帳號已存在")
-        item = AdminUser(username=payload.username.lower(), display_name=payload.display_name, role=payload.role, pin_hash=password_hash.hash(payload.pin))
+        item = AdminUser(
+            username=payload.username.lower(),
+            display_name=payload.display_name,
+            role=payload.role,
+            pin_hash=password_hash.hash(payload.pin),
+            can_override_time_rules=payload.can_override_time_rules if payload.role == "clerk" else False,
+        )
         db.add(item)
         db.flush()
         audit(db, actor, "create", "admin_user", item.id, after=serialize_admin(item))
+        db.commit()
+        return serialize_admin(item)
+
+    @app.patch("/api/admin/users/{user_id}/permissions")
+    def update_admin_user_permissions(
+        user_id: int,
+        payload: AdminUserPermissionIn,
+        db: Session = Depends(get_db),
+        actor=Depends(require_roles("admin", "manager")),
+    ):
+        item = db.query(AdminUser).filter(AdminUser.id == user_id).with_for_update().first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到後台帳號")
+        if item.role != "clerk":
+            raise HTTPException(status_code=422, detail="這個開關只適用客服帳號")
+        before = serialize_admin(item)
+        item.can_override_time_rules = payload.can_override_time_rules
+        audit(db, actor, "update_permissions", "admin_user", item.id, before=before, after=serialize_admin(item))
         db.commit()
         return serialize_admin(item)
 
@@ -2888,7 +2941,7 @@ def register_admin_api(
             query = query.filter(Shift.end_time > parse_local_datetime(start))
         if end:
             query = query.filter(Shift.start_time < parse_local_datetime(end))
-        return {"staff": {"id": staff_obj.id, "name": staff_obj.name}, "rules": {"minimum_hours": 2, "lock_minutes": 90}, "shifts": [shift_dict(item) for item in query.order_by(Shift.start_time).all()]}
+        return {"staff": {"id": staff_obj.id, "name": staff_obj.name}, "rules": {"minimum_hours": 0, "lock_minutes": 90}, "shifts": [shift_dict(item) for item in query.order_by(Shift.start_time).all()]}
 
     @app.post("/api/staff/schedule/{token}", status_code=201)
     def public_staff_create_shift(token: str, payload: PublicShiftCreateIn, db: Session = Depends(get_db)):

@@ -15,7 +15,7 @@ os.environ["ADMIN_INITIAL_PIN"] = "123456"
 os.environ["MANAGER_INITIAL_PIN"] = "654321"
 os.environ["CUSTOMER_SERIAL_START"] = "4800"
 
-from main import Base, SessionLocal, Staff, User, app, build_booking_web_message, build_staff_bubble, build_staff_week_appointments, engine, now_taipei_naive, on_startup, parse_staff_profile_text, public_https_url  # noqa: E402
+from main import Base, SessionLocal, Staff, User, app, build_booking_web_message, build_line_staff_binding_menu, build_staff_bubble, build_staff_week_appointments, engine, now_taipei_naive, on_startup, parse_staff_profile_text, public_https_url  # noqa: E402
 from identifiers import customer_serial  # noqa: E402
 
 
@@ -40,6 +40,16 @@ def test_line_booking_uses_one_small_web_entry_without_postbacks():
     assert all(action.type == "uri" for action in actions)
     assert actions[0].uri.startswith("https://")
     assert "booking" in actions[0].uri
+
+
+def test_line_root_staff_binding_menu_is_text_only_and_paginated(client):
+    with SessionLocal() as db:
+        message = build_line_staff_binding_menu(db)
+    assert message.alt_text == "師傅 LINE 綁定管理"
+    assert message.contents.type == "carousel"
+    assert len(message.contents.contents) <= 10
+    assert all(getattr(item, "hero", None) is None for item in message.contents.contents)
+    assert all(getattr(item.body.contents[0], "text", "") for item in message.contents.contents)
 
 
 def test_staff_profile_parser_requires_one_complete_strict_update():
@@ -149,8 +159,7 @@ def test_staff_photo_upload_and_safe_permanent_delete(client):
     assert public_photo.status_code == 200
     assert public_photo.headers["content-type"] == "image/png"
 
-    assert client.delete(f"/api/admin/staff/{staff_id}", headers=manager_headers, params={"reason": "權限測試"}).status_code == 403
-    deleted = client.delete(f"/api/admin/staff/{staff_id}", headers=admin_headers, params={"reason": "照片刪除測試"})
+    deleted = client.delete(f"/api/admin/staff/{staff_id}", headers=manager_headers, params={"reason": "店長永久刪除測試"})
     assert deleted.status_code == 200, deleted.text
     assert client.get(uploaded.json()["photo_url"]).status_code == 404
 
@@ -178,6 +187,13 @@ def test_staff_photo_upload_and_safe_permanent_delete(client):
 
 def test_appointment_end_and_staff_room_conflicts(client):
     headers = login(client)
+    created_clerk = client.post(
+        "/api/admin/users",
+        headers=headers,
+        json={"username": "conflict-clerk", "display_name": "clerk", "pin": "112233", "role": "clerk"},
+    )
+    assert created_clerk.status_code == 201, created_clerk.text
+    clerk_headers = login(client, "conflict-clerk", "112233")
     bootstrap = client.get("/api/admin/bootstrap", headers=headers).json()
     ninety_minute_plan = next(item for item in bootstrap["services"] if item["duration_minutes"] == 90)
     room = bootstrap["rooms"][0]
@@ -200,7 +216,7 @@ def test_appointment_end_and_staff_room_conflicts(client):
         "room_id": room["id"],
         "location_type": "onsite",
     }
-    first = client.post("/api/admin/appointments", headers=headers, json=payload)
+    first = client.post("/api/admin/appointments", headers=clerk_headers, json=payload)
     assert first.status_code == 201, first.text
     assert first.json()["end_time"] == (start_at + timedelta(minutes=90)).isoformat(timespec="minutes")
     assert first.json()["customer_serial"] == "VIP-4800"
@@ -212,7 +228,7 @@ def test_appointment_end_and_staff_room_conflicts(client):
 
     staff_conflict = client.post(
         "/api/admin/appointments",
-        headers=headers,
+        headers=clerk_headers,
         json={**payload, "phone": "0922222222", "start_time": overlap_at.isoformat(timespec="seconds"), "room_id": bootstrap["rooms"][1]["id"]},
     )
     assert staff_conflict.status_code == 409
@@ -220,11 +236,17 @@ def test_appointment_end_and_staff_room_conflicts(client):
 
     room_conflict = client.post(
         "/api/admin/appointments",
-        headers=headers,
+        headers=clerk_headers,
         json={**payload, "phone": "0933333333", "start_time": overlap_at.isoformat(timespec="seconds"), "staff_id": None},
     )
     assert room_conflict.status_code == 409
     assert "房間" in room_conflict.json()["detail"]
+    admin_override = client.post(
+        "/api/admin/appointments",
+        headers=headers,
+        json={**payload, "phone": "0944444444", "start_time": overlap_at.isoformat(timespec="seconds")},
+    )
+    assert admin_override.status_code == 201, admin_override.text
 
 
 def test_manager_can_only_create_clerk_accounts(client):
@@ -243,6 +265,34 @@ def test_manager_can_only_create_clerk_accounts(client):
     )
     assert allowed_clerk.status_code == 201
     clerk_id = allowed_clerk.json()["id"]
+    assert allowed_clerk.json()["can_override_time_rules"] is False
+    staff_id = client.get("/api/admin/bootstrap", headers=manager_headers).json()["staff"][0]["id"]
+    cross_day = client.post(
+        "/api/admin/shifts",
+        headers=manager_headers,
+        json={"staff_id": staff_id, "start_time": "2099-01-01T23:30:00", "end_time": "2099-01-02T00:15:00"},
+    )
+    assert cross_day.status_code == 201, cross_day.text
+    clerk_headers = login(client, "frontdesk", "112233")
+    blocked_overlap = client.post(
+        "/api/admin/shifts",
+        headers=clerk_headers,
+        json={"staff_id": staff_id, "start_time": "2099-01-01T23:45:00", "end_time": "2099-01-02T00:05:00"},
+    )
+    assert blocked_overlap.status_code == 409
+    enabled = client.patch(
+        f"/api/admin/users/{clerk_id}/permissions",
+        headers=manager_headers,
+        json={"can_override_time_rules": True},
+    )
+    assert enabled.status_code == 200, enabled.text
+    assert enabled.json()["can_override_time_rules"] is True
+    forced_overlap = client.post(
+        "/api/admin/shifts",
+        headers=clerk_headers,
+        json={"staff_id": staff_id, "start_time": "2099-01-01T23:45:00", "end_time": "2099-01-02T00:05:00"},
+    )
+    assert forced_overlap.status_code == 201, forced_overlap.text
     removed = client.delete(f"/api/admin/users/{clerk_id}", headers=manager_headers)
     assert removed.status_code == 200
     assert removed.json()["is_active"] is False
