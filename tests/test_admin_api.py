@@ -142,10 +142,29 @@ def test_staff_photo_upload_and_safe_permanent_delete(client):
     created = client.post(
         "/api/admin/staff",
         headers=admin_headers,
-        json={"name": "待刪除師傅", "category": "gay", "photo_url": "https://example.com/portrait.jpg"},
+        json={
+            "name": "待刪除師傅",
+            "category": "gay",
+            "photo_url": "https://example.com/portrait.jpg",
+            "height": "178",
+            "weight": "72",
+            "role": "攻守兼備",
+        },
     )
     assert created.status_code == 201, created.text
-    staff_id = created.json()["id"]
+    created_profile = created.json()
+    staff_id = created_profile["id"]
+    assert (created_profile["height"], created_profile["weight"], created_profile["role"]) == ("178", "72", "攻守兼備")
+    public_profile = next(item for item in client.get("/api/public/therapists").json() if item["id"] == staff_id)
+    assert (public_profile["height"], public_profile["weight"], public_profile["role"]) == ("178", "72", "攻守兼備")
+
+    updated = client.patch(
+        f"/api/admin/staff/{staff_id}",
+        headers=admin_headers,
+        json={"height": "180", "weight": "75", "role": "攻擊手"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert (updated.json()["height"], updated.json()["weight"], updated.json()["role"]) == ("180", "75", "攻擊手")
 
     png_data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZfN0AAAAASUVORK5CYII="
     uploaded = client.put(

@@ -14,6 +14,9 @@ export type StaffProfile = {
   category: 'straight' | 'gay' | 'bisexual';
   employment_status: 'active' | 'retired';
   photo_url?: string | null;
+  height?: string | null;
+  weight?: string | null;
+  role?: '攻擊手' | '守備方' | '無特定' | '攻守兼備' | null;
 };
 export type SiteDraft = {
   home: { subtitle: string; support: string };
@@ -59,6 +62,7 @@ export type SiteAdminApi = {
 
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com').replace(/\/$/, '');
 const categoryLabels: Record<StaffProfile['category'], string> = { straight: '直男師傅', gay: '圈內師傅', bisexual: '雙性師傅' };
+const staffRoles = ['攻擊手', '守備方', '無特定', '攻守兼備'] as const;
 const resolvePhotoUrl = (value?: string | null) => value?.startsWith('/') ? `${API_BASE_URL}${value}` : value || '';
 const readPhoto = (file: File) => new Promise<string>((resolve, reject) => {
   if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) return reject(new Error('只接受 JPEG、PNG 或 WebP 圖片。'));
@@ -380,6 +384,9 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
         name: String(data.get('name')).trim(),
         category: String(data.get('category')),
         photo_url: String(data.get('photoUrl') || '').trim() || null,
+        height: String(data.get('height') || '').trim() || null,
+        weight: String(data.get('weight') || '').trim() || null,
+        role: String(data.get('role') || '').trim() || null,
       });
       const file = data.get('photoFile');
       if (file instanceof File && file.size > 0) profile = await api.uploadStaffPhoto(profile.id, await readPhoto(file));
@@ -403,6 +410,9 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
         name: String(data.get('name')).trim(),
         category: String(data.get('category')),
         photo_url: String(data.get('photoUrl') || '').trim() || null,
+        height: String(data.get('height') || '').trim() || null,
+        weight: String(data.get('weight') || '').trim() || null,
+        role: String(data.get('role') || '').trim() || null,
       });
       const file = data.get('photoFile');
       if (file instanceof File && file.size > 0) updated = await api.uploadStaffPhoto(profile.id, await readPhoto(file));
@@ -493,16 +503,19 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
         </div>}
 
         {active === 'therapists' && <div className="studio-form-grid">
-          <div className="studio-form-card"><small>CATALOG</small><h3>師傅目錄設定</h3><Field label="目錄介紹" value={draft.therapists.intro} onChange={(intro) => markChanged({ ...draft, therapists: { ...draft.therapists, intro } })} multiline /><label className="studio-range"><span>自動輪播速度</span><input type="range" min="24" max="80" value={draft.therapists.carouselSpeed} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, carouselSpeed: Number(event.target.value) } })} /><b>{draft.therapists.carouselSpeed} 秒</b></label><label className="studio-check"><input type="checkbox" checked={draft.therapists.showMeasurements} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, showMeasurements: event.target.checked } })} />公開顯示身高與體重</label></div>
+          <div className="studio-form-card"><small>CATALOG</small><h3>師傅目錄設定</h3><Field label="目錄介紹" value={draft.therapists.intro} onChange={(intro) => markChanged({ ...draft, therapists: { ...draft.therapists, intro } })} multiline /><label className="studio-range"><span>自動輪播速度</span><input type="range" min="24" max="80" value={draft.therapists.carouselSpeed} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, carouselSpeed: Number(event.target.value) } })} /><b>{draft.therapists.carouselSpeed} 秒</b></label><label className="studio-check"><input type="checkbox" checked={draft.therapists.showMeasurements} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, showMeasurements: event.target.checked } })} />公開顯示身高、體重與角色</label></div>
           <div className="studio-form-card studio-category-copy"><small>CATEGORY COPY</small><h3>三類師傅簡介</h3><p>這三段文字會顯示在每位師傅的資料卡內，可依不同分類調整語氣。</p><Field label="直男師傅簡介" value={draft.therapists.straightIntro} onChange={(straightIntro) => markChanged({ ...draft, therapists: { ...draft.therapists, straightIntro } })} multiline /><Field label="圈內師傅簡介" value={draft.therapists.communityIntro} onChange={(communityIntro) => markChanged({ ...draft, therapists: { ...draft.therapists, communityIntro } })} multiline /><Field label="雙性師傅簡介" value={draft.therapists.bisexualIntro} onChange={(bisexualIntro) => markChanged({ ...draft, therapists: { ...draft.therapists, bisexualIntro } })} multiline /></div>
-          <div className="studio-form-card studio-upload-card"><small>LIVE DIRECTORY</small><h3>公開名單</h3><div className="upload-placeholder"><span>{staffProfiles.filter((item) => item.employment_status === 'active').length}</span><b>位在職師傅</b><p>名單與照片直接保存到 MySQL；暫時退役會保留所有歷史資料並停止公開。</p></div><p className="privacy-note">健康資訊只留在營運後台，不會出現在官網編輯器或公開頁面。</p></div>
+          <div className="studio-form-card studio-upload-card"><small>LIVE DIRECTORY</small><h3>公開名單</h3><div className="upload-placeholder"><span>{staffProfiles.filter((item) => item.employment_status === 'active').length}</span><b>位在職師傅</b><p>名單、身高、體重、角色與照片直接保存到 MySQL；LINE Bot 或此編輯器更新後會同步顯示。</p></div><p className="privacy-note">健康資訊只留在營運後台，不會出現在官網編輯器或公開頁面。</p></div>
           <section className="studio-form-card studio-staff-manager">
             <header><div><small>THERAPIST PROFILES</small><h3>新增、照片與退役管理</h3><p>照片可貼網址或從電腦上傳。上傳檔案限 JPEG、PNG、WebP，最大 3 MB。</p></div><button type="button" onClick={() => setShowNewStaff((current) => !current)}>{showNewStaff ? '取消新增' : '＋ 新增師傅'}</button></header>
-            {showNewStaff && <form className="studio-new-staff" onSubmit={createStaffProfile}><label><span>姓名／稱呼</span><input name="name" required /></label><label><span>分類</span><select name="category" defaultValue="gay"><option value="straight">直男師傅</option><option value="gay">圈內師傅</option><option value="bisexual">雙性師傅</option></select></label><label><span>照片網址</span><input name="photoUrl" type="url" placeholder="https://..." /></label><label><span>或上傳照片</span><input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label><button type="submit" disabled={staffBusy}>建立師傅</button></form>}
+            {showNewStaff && <form className="studio-new-staff" onSubmit={createStaffProfile}><label><span>姓名／稱呼</span><input name="name" required /></label><label><span>分類</span><select name="category" defaultValue="gay"><option value="straight">直男師傅</option><option value="gay">圈內師傅</option><option value="bisexual">雙性師傅</option></select></label><label><span>身高（cm）</span><input name="height" inputMode="numeric" pattern="[0-9]{3}" placeholder="例：178" /></label><label><span>體重（kg）</span><input name="weight" inputMode="numeric" pattern="[0-9]{2,3}" placeholder="例：72" /></label><label><span>角色</span><select name="role" defaultValue=""><option value="">尚未設定</option>{staffRoles.map((role) => <option key={role} value={role}>{role}</option>)}</select></label><label className="wide"><span>照片網址</span><input name="photoUrl" type="url" placeholder="https://..." /></label><label className="wide"><span>或上傳照片</span><input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label><button type="submit" disabled={staffBusy}>建立師傅</button></form>}
             <div className="studio-staff-grid">{staffProfiles.map((profile) => <form className={profile.employment_status === 'retired' ? 'studio-staff-card retired' : 'studio-staff-card'} key={profile.id} onSubmit={(event) => saveStaffProfile(event, profile)}>
               <div className="studio-staff-photo">{profile.photo_url ? <img src={resolvePhotoUrl(profile.photo_url)} alt={`${profile.name}公開照片`} /> : <span>{profile.name.slice(0, 1)}</span>}<em>{profile.employment_status === 'active' ? '在職' : '暫時退役'}</em></div>
               <label><span>姓名</span><input name="name" defaultValue={profile.name} required /></label>
               <label><span>分類</span><select name="category" defaultValue={profile.category}>{Object.entries(categoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <label><span>身高（cm）</span><input name="height" inputMode="numeric" pattern="[0-9]{3}" defaultValue={profile.height || ''} placeholder="例：178" /></label>
+              <label><span>體重（kg）</span><input name="weight" inputMode="numeric" pattern="[0-9]{2,3}" defaultValue={profile.weight || ''} placeholder="例：72" /></label>
+              <label className="wide"><span>角色</span><select name="role" defaultValue={profile.role || ''}><option value="">尚未設定</option>{staffRoles.map((role) => <option key={role} value={role}>{role}</option>)}</select></label>
               <label className="wide"><span>照片網址</span><input name="photoUrl" type="url" defaultValue={resolvePhotoUrl(profile.photo_url)} placeholder="https://..." /></label>
               <label className="wide"><span>或上傳新照片</span><input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label>
               <footer><button type="submit" disabled={staffBusy}>儲存資料</button><button type="button" disabled={staffBusy} onClick={() => toggleStaffProfile(profile)}>{profile.employment_status === 'active' ? '暫時退役' : '恢復在職'}</button>{userRole === 'admin' && <button className="danger" type="button" disabled={staffBusy} onClick={() => deleteStaffProfile(profile)}>永久刪除</button>}</footer>

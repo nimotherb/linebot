@@ -737,7 +737,7 @@ button { font: inherit; }
 .therapist-product-copy { padding: 26px; }
 .therapist-product-copy > small { font-size: 8px; letter-spacing: .18em; }
 .therapist-product-copy h3 { margin: 12px 0 28px; font-size: 32px; font-weight: 300; }
-.therapist-product-copy dl { display: grid; grid-template-columns: 1fr 1fr; margin: 0; border-top: 1px solid rgba(7,50,43,.14); }
+.therapist-product-copy dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; border-top: 1px solid rgba(7,50,43,.14); }
 .therapist-product-copy dl div { padding: 13px 0; border-bottom: 1px solid rgba(7,50,43,.14); }
 .therapist-product-copy dt { margin-bottom: 5px; font-size: 7px; letter-spacing: .14em; opacity: .55; }
 .therapist-product-copy dd { margin: 0; font-size: 11px; }
@@ -1018,8 +1018,9 @@ button { font: inherit; }
 .studio-staff-manager > header h3 { margin-bottom: 8px; }
 .studio-staff-manager > header p { max-width: 46em; margin: 0; font-size: 9px; line-height: 1.7; opacity: .6; }
 .studio-staff-manager > header button, .studio-new-staff > button, .studio-staff-card footer button { padding: 9px 12px; border: 1px solid rgba(7,50,43,.15); border-radius: 10px; background: rgba(255,255,255,.65); color: inherit; cursor: pointer; font-size: 8px; font-weight: 700; }
-.studio-new-staff { display: grid; grid-template-columns: 1fr 1fr 1.5fr 1.2fr auto; align-items: end; gap: 10px; margin-bottom: 20px; padding: 16px; border: 1px solid rgba(178,119,20,.2); border-radius: 17px; background: rgba(231,186,99,.1); }
+.studio-new-staff { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: 10px; margin-bottom: 20px; padding: 16px; border: 1px solid rgba(178,119,20,.2); border-radius: 17px; background: rgba(231,186,99,.1); }
 .studio-new-staff label, .studio-staff-card label { display: grid; gap: 6px; font-size: 8px; }
+.studio-new-staff label.wide { grid-column: span 2; }
 .studio-new-staff input, .studio-new-staff select, .studio-staff-card input, .studio-staff-card select { width: 100%; min-height: 38px; padding: 8px 9px; border: 1px solid rgba(7,50,43,.12); border-radius: 9px; background: rgba(250,250,247,.8); color: inherit; font: inherit; font-size: 9px; }
 .studio-staff-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; }
 .studio-staff-card { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; padding: 14px; border: 1px solid rgba(7,50,43,.1); border-radius: 17px; background: rgba(248,249,245,.72); }
