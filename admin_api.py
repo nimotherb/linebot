@@ -241,6 +241,9 @@ class StaffCreateIn(BaseModel):
     phone: str | None = Field(default=None, max_length=50)
     return_rule_set_id: int | None = None
     photo_url: str | None = Field(default=None, max_length=1000)
+    height: str | None = Field(default=None, max_length=20)
+    weight: str | None = Field(default=None, max_length=20)
+    role: Literal["攻擊手", "守備方", "無特定", "攻守兼備"] | None = None
 
 
 class StaffStatusIn(BaseModel):
@@ -254,6 +257,9 @@ class StaffPatchIn(BaseModel):
     category: Literal["straight", "gay", "bisexual"] | None = None
     return_rule_set_id: int | None = None
     photo_url: str | None = Field(default=None, max_length=1000)
+    height: str | None = Field(default=None, max_length=20)
+    weight: str | None = Field(default=None, max_length=20)
+    role: Literal["攻擊手", "守備方", "無特定", "攻守兼備"] | None = None
 
 
 class StaffPhotoIn(BaseModel):
@@ -663,6 +669,14 @@ def register_admin_api(
             cleaned = "0" + cleaned[4:]
         if not re.fullmatch(r"09\d{8}", cleaned):
             raise HTTPException(status_code=422, detail="手機號碼必須是 09 開頭的 10 碼數字")
+        return cleaned
+
+    def normalize_staff_measurement(value: str | None, *, label: str, minimum: int, maximum: int) -> str | None:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            return None
+        if not re.fullmatch(r"\d{2,3}", cleaned) or not minimum <= int(cleaned) <= maximum:
+            raise HTTPException(status_code=422, detail=f"{label}請填 {minimum} 到 {maximum} 的整數")
         return cleaned
 
     def unique_staff_phone(db: Session, value: str, *, exclude_staff_id: int | None = None) -> str:
@@ -1646,6 +1660,7 @@ def register_admin_api(
             "category": item.category,
             "height": item.height,
             "weight": item.weight,
+            "role": item.role,
             "photo_url": item.photo_url,
         } for item in items]
 
@@ -2575,6 +2590,9 @@ def register_admin_api(
             employment_status="active",
             return_rule_set_id=payload.return_rule_set_id,
             photo_url=photo_url or None,
+            height=normalize_staff_measurement(payload.height, label="身高", minimum=100, maximum=250),
+            weight=normalize_staff_measurement(payload.weight, label="體重", minimum=30, maximum=250),
+            role=payload.role,
         )
         db.add(item)
         db.flush()
@@ -2595,6 +2613,10 @@ def register_admin_api(
             if photo_url and not photo_url.startswith(("https://", "http://", "/api/public/staff/")):
                 raise HTTPException(status_code=422, detail="照片網址必須以 https:// 或 http:// 開頭；本機照片請使用上傳功能")
             changes["photo_url"] = photo_url or None
+        if "height" in changes:
+            changes["height"] = normalize_staff_measurement(changes["height"], label="身高", minimum=100, maximum=250)
+        if "weight" in changes:
+            changes["weight"] = normalize_staff_measurement(changes["weight"], label="體重", minimum=30, maximum=250)
         if "return_rule_set_id" in changes and changes["return_rule_set_id"] is not None:
             if not db.query(ReturnRuleSet).filter(ReturnRuleSet.id == changes["return_rule_set_id"], ReturnRuleSet.active.is_(True)).first():
                 raise HTTPException(status_code=404, detail="找不到回帳表")
