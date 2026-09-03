@@ -15,7 +15,7 @@ os.environ["ADMIN_INITIAL_PIN"] = "123456"
 os.environ["MANAGER_INITIAL_PIN"] = "654321"
 os.environ["CUSTOMER_SERIAL_START"] = "4800"
 
-from main import Base, SessionLocal, Staff, User, app, build_booking_web_message, build_line_staff_binding_menu, build_staff_bubble, build_staff_week_appointments, engine, now_taipei_naive, on_startup, parse_staff_profile_text, public_https_url  # noqa: E402
+from main import Base, SessionLocal, Staff, User, app, build_booking_web_message, build_line_staff_binding_menu, build_staff_bubble, build_staff_week_appointments, engine, now_taipei_naive, on_startup, parse_staff_profile_text, public_https_url, repair_legacy_staff_profile_fields  # noqa: E402
 from identifiers import customer_serial  # noqa: E402
 
 
@@ -63,6 +63,16 @@ def test_staff_profile_parser_requires_one_complete_strict_update():
         parse_staff_profile_text("身高=156\n體重=60")
     with pytest.raises(ValueError):
         parse_staff_profile_text("身高=156\n體重=60\n角色=攻擊方")
+
+
+def test_legacy_staff_profile_text_is_split_without_touching_valid_data():
+    legacy = Staff(line_user_id="seeded:legacy-profile", name="舊資料", height="180\n體重 74\n角色 攻守兼備", weight=None, role=None)
+    assert repair_legacy_staff_profile_fields(legacy) is True
+    assert (legacy.height, legacy.weight, legacy.role) == ("180", "74", "攻守兼備")
+
+    valid = Staff(line_user_id="seeded:valid-profile", name="正確資料", height="178", weight="72", role="攻擊手")
+    assert repair_legacy_staff_profile_fields(valid) is False
+    assert (valid.height, valid.weight, valid.role) == ("178", "72", "攻擊手")
 
 
 def test_relative_staff_photo_is_converted_to_line_safe_https_url():
