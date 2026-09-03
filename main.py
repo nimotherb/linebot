@@ -281,7 +281,7 @@ def parse_staff_profile_text(value: str) -> dict[str, str]:
 
     def extract(label: str, pattern: str) -> str:
         matches = re.findall(
-            rf"(?<!\S){re.escape(label)}\s*(?:[:：=]\s*|\s+)({pattern})(?=\s|$)",
+            rf"(?<!\S){re.escape(label)}\s*(?:[:：=]\s*)?({pattern})(?=\s|$)",
             normalized,
         )
         if len(matches) != 1:
@@ -315,8 +315,10 @@ def repair_legacy_staff_profile_fields(staff) -> bool:
     except ValueError:
         return False
     staff.height = profile["height"]
-    staff.weight = profile["weight"]
-    staff.role = profile["role"]
+    if not (staff.weight or "").strip():
+        staff.weight = profile["weight"]
+    if not (staff.role or "").strip():
+        staff.role = profile["role"]
     return True
 
 

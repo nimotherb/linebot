@@ -71,6 +71,16 @@ def test_legacy_staff_profile_text_is_split_without_touching_valid_data():
     assert repair_legacy_staff_profile_fields(legacy) is True
     assert (legacy.height, legacy.weight, legacy.role) == ("180", "74", "攻守兼備")
 
+    partially_repaired = Staff(
+        line_user_id="seeded:partially-repaired-profile",
+        name="部分已修正",
+        height="157\n體重53\n角色 守備方",
+        weight="56",
+        role=None,
+    )
+    assert repair_legacy_staff_profile_fields(partially_repaired) is True
+    assert (partially_repaired.height, partially_repaired.weight, partially_repaired.role) == ("157", "56", "守備方")
+
     valid = Staff(line_user_id="seeded:valid-profile", name="正確資料", height="178", weight="72", role="攻擊手")
     assert repair_legacy_staff_profile_fields(valid) is False
     assert (valid.height, valid.weight, valid.role) == ("178", "72", "攻擊手")
