@@ -1,4 +1,4 @@
-export type AppointmentStatus = '待確認' | '已確認' | '已報到' | '服務中' | '待結帳' | '已完成' | '已取消';
+export type AppointmentStatus = '待確認' | '已確認' | '已完成';
 
 export type ServicePlan = {
   id: string;
@@ -74,6 +74,7 @@ export type Customer = {
   id: string;
   apiId?: number;
   vipSerial: string;
+  grade: 'SSR' | 'SR' | 'R' | 'N';
   name: string;
   lineName: string;
   phone: string;

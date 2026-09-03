@@ -60,6 +60,7 @@ export default function SiteAdminPortal() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [manageUsers, setManageUsers] = useState(false);
+  const [manageProfile, setManageProfile] = useState(false);
   const [users, setUsers] = useState<AdminIdentity[]>([]);
   const [usersBusy, setUsersBusy] = useState(false);
 
@@ -117,11 +118,11 @@ export default function SiteAdminPortal() {
     listServices: () => request<ServiceRecord[]>('/api/admin/services'),
     createService: (payload: Record<string, unknown>) => request<ServiceRecord>('/api/admin/services', { method: 'POST', body: JSON.stringify(payload) }),
     updateService: (id: number, payload: Record<string, unknown>) => request<ServiceRecord>(`/api/admin/services/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
-    deleteService: (id: number) => request<{ ok: boolean; history_preserved: boolean }>(`/api/admin/services/${id}?reason=${encodeURIComponent('官網編輯器刪除方案')}`, { method: 'DELETE' }),
+    deleteService: (id: number) => request<{ ok: boolean }>(`/api/admin/services/${id}?reason=${encodeURIComponent('官網編輯器永久刪除方案')}`, { method: 'DELETE' }),
     listPromotions: () => request<PromotionRecord[]>('/api/admin/promotions'),
     createPromotion: (payload: Record<string, unknown>) => request<PromotionRecord>('/api/admin/promotions', { method: 'POST', body: JSON.stringify(payload) }),
     updatePromotion: (id: number, payload: Record<string, unknown>) => request<PromotionRecord>(`/api/admin/promotions/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
-    deletePromotion: (id: number) => request<{ ok: boolean; history_preserved: boolean }>(`/api/admin/promotions/${id}?reason=${encodeURIComponent('官網編輯器刪除優惠')}`, { method: 'DELETE' }),
+    deletePromotion: (id: number) => request<{ ok: boolean }>(`/api/admin/promotions/${id}?reason=${encodeURIComponent('官網編輯器永久刪除優惠')}`, { method: 'DELETE' }),
     listStaff: () => request<StaffProfile[]>('/api/admin/staff'),
     createStaff: (payload: Record<string, unknown>) => request<StaffProfile>('/api/admin/staff', { method: 'POST', body: JSON.stringify(payload) }),
     updateStaff: (id: number, payload: Record<string, unknown>) => request<StaffProfile>(`/api/admin/staff/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
@@ -163,7 +164,7 @@ export default function SiteAdminPortal() {
   };
 
   const openUserManager = async () => {
-    if (user?.role !== 'admin') return;
+    if (!user || !['admin', 'manager'].includes(user.role)) return;
     setManageUsers(true);
     setUsersBusy(true);
     setError('');
@@ -178,7 +179,7 @@ export default function SiteAdminPortal() {
 
   const createUser = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (user?.role !== 'admin') return;
+    if (!user || !['admin', 'manager'].includes(user.role)) return;
     setUsersBusy(true);
     setError('');
     const data = new FormData(event.currentTarget);
@@ -188,7 +189,7 @@ export default function SiteAdminPortal() {
         body: JSON.stringify({
           display_name: String(data.get('display_name')).trim(),
           username: String(data.get('username')).trim().toLowerCase(),
-          role: String(data.get('role')),
+          role: user.role === 'manager' ? 'clerk' : String(data.get('role')),
           pin: String(data.get('pin')),
         }),
       });
@@ -197,6 +198,49 @@ export default function SiteAdminPortal() {
       notify(`已建立 ${created.display_name} 的登入帳戶。`);
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : '帳戶建立失敗。');
+    } finally {
+      setUsersBusy(false);
+    }
+  };
+
+  const updateOwnAccount = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const newPin = String(data.get('new_pin') || '');
+    if (newPin && newPin !== String(data.get('confirm_pin') || '')) {
+      setError('兩次輸入的新 PIN 不一致。');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await request('/api/admin/auth/me', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          current_pin: String(data.get('current_pin')),
+          display_name: String(data.get('display_name')).trim(),
+          username: String(data.get('username')).trim(),
+          new_pin: newPin || undefined,
+        }),
+      });
+      clearSession();
+      notify('帳密已更新，請重新登入。');
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : '帳密更新失敗。');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteUser = async (item: AdminIdentity) => {
+    if (!user || item.id === user.id || !window.confirm(`確定永久刪除 ${item.display_name}？`)) return;
+    setUsersBusy(true);
+    try {
+      await request(`/api/admin/users/${item.id}`, { method: 'DELETE' });
+      setUsers((current) => current.filter((entry) => entry.id !== item.id));
+      notify(`${item.display_name} 已永久刪除。`);
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : '刪除帳戶失敗。');
     } finally {
       setUsersBusy(false);
     }
@@ -227,24 +271,26 @@ export default function SiteAdminPortal() {
     <aside className="studio-session-card">
       <span>{user.display_name.slice(0, 1).toUpperCase()}</span>
       <div><b>{user.display_name}</b><small>{roleLabel(user.role)} · @{user.username}</small></div>
-      {user.role === 'admin' && <button type="button" onClick={openUserManager}>帳戶管理</button>}
+      <button type="button" onClick={() => { setManageProfile(true); setError(''); }}>我的帳密</button>
+      <button type="button" onClick={openUserManager}>帳戶管理</button>
       <button type="button" onClick={logout}>登出</button>
     </aside>
     {notice && <div className="studio-toast" role="status">{notice}</div>}
-    {manageUsers && user.role === 'admin' && <div className="studio-account-overlay" role="dialog" aria-modal="true" aria-labelledby="account-manager-title">
+    {manageProfile && <div className="studio-account-overlay" role="dialog" aria-modal="true" aria-labelledby="profile-manager-title"><section className="studio-account-modal"><header><div><small>MY ACCOUNT</small><h2 id="profile-manager-title">修改我的帳密</h2><p>修改完成後會登出，請以新資料重新登入。</p></div><button type="button" onClick={() => { setManageProfile(false); setError(''); }} aria-label="關閉帳密設定">×</button></header><form className="studio-profile-form" onSubmit={updateOwnAccount}><label>顯示名稱<input name="display_name" defaultValue={user.display_name} required /></label><label>登入帳號<input name="username" defaultValue={user.username} required /></label><label>目前 PIN<input name="current_pin" type="password" inputMode="numeric" required minLength={4} /></label><label>新 PIN（可留空）<input name="new_pin" type="password" inputMode="numeric" minLength={4} /></label><label>再次輸入新 PIN<input name="confirm_pin" type="password" inputMode="numeric" minLength={4} /></label>{error && <p className="studio-login-error" role="alert">{error}</p>}<button type="submit" disabled={busy}>{busy ? '更新中…' : '更新帳密'}</button></form></section></div>}
+    {manageUsers && <div className="studio-account-overlay" role="dialog" aria-modal="true" aria-labelledby="account-manager-title">
       <section className="studio-account-modal">
-        <header><div><small>ADMIN ONLY</small><h2 id="account-manager-title">登入帳戶管理</h2><p>只有 Admin 可以新增帳戶。PIN 只會以安全雜湊保存。</p></div><button type="button" onClick={() => { setManageUsers(false); setError(''); }} aria-label="關閉帳戶管理">×</button></header>
+        <header><div><small>ACCESS CONTROL</small><h2 id="account-manager-title">登入帳戶管理</h2><p>{user.role === 'manager' ? '店長可新增客服帳戶。' : 'Admin 可新增各類帳戶。'} PIN 只會以安全雜湊保存。</p></div><button type="button" onClick={() => { setManageUsers(false); setError(''); }} aria-label="關閉帳戶管理">×</button></header>
         <div className="studio-account-layout">
           <form onSubmit={createUser}>
             <h3>新增使用帳戶</h3>
             <label>顯示名稱<input name="display_name" required /></label>
             <label>登入帳號<input name="username" required autoCapitalize="none" pattern="[a-zA-Z0-9._-]+" minLength={3} /></label>
-            <label>帳戶角色<select name="role" defaultValue="clerk"><option value="clerk">客服</option><option value="manager">店長</option><option value="admin">Admin</option></select></label>
+            <label>帳戶角色{user.role === 'manager' ? <input value="客服" disabled /> : <select name="role" defaultValue="clerk"><option value="clerk">客服</option><option value="manager">店長</option><option value="admin">Admin</option></select>}</label>
             <label>初始數字 PIN<input name="pin" required type="password" inputMode="numeric" pattern="[0-9]+" minLength={4} maxLength={32} /></label>
             {error && <p className="studio-login-error" role="alert">{error}</p>}
             <button type="submit" disabled={usersBusy}>{usersBusy ? '處理中…' : '建立帳戶'}</button>
           </form>
-          <div className="studio-account-list"><h3>現有帳戶</h3>{usersBusy && users.length === 0 ? <p>讀取中…</p> : users.map((item) => <article key={item.id}><span>{item.display_name.slice(0, 1).toUpperCase()}</span><div><b>{item.display_name}</b><small>@{item.username} · {roleLabel(item.role)}</small></div><em>{item.is_active ? '啟用中' : '已停用'}</em></article>)}</div>
+          <div className="studio-account-list"><h3>現有帳戶</h3>{usersBusy && users.length === 0 ? <p>讀取中…</p> : users.map((item) => <article key={item.id}><span>{item.display_name.slice(0, 1).toUpperCase()}</span><div><b>{item.display_name}</b><small>@{item.username} · {roleLabel(item.role)}</small></div>{item.id !== user.id && (user.role === 'admin' || item.role === 'clerk') ? <button type="button" onClick={() => deleteUser(item)}>永久刪除</button> : <em>{item.id === user.id ? '目前帳號' : '不可操作'}</em>}</article>)}</div>
         </div>
       </section>
     </div>}

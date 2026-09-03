@@ -30,6 +30,7 @@ type ModalState =
   | { type: 'shift'; origin: 'admin' | 'staff' }
   | { type: 'shiftDetail'; id: string; origin: 'admin' | 'staff' }
   | { type: 'checkout'; id: string }
+  | { type: 'serviceCreate' }
   | { type: 'service'; id: string }
   | { type: 'promotion' }
   | { type: 'promotionEdit'; id: string }
@@ -42,6 +43,8 @@ type ModalState =
   | { type: 'user' }
   | { type: 'account' }
   | null;
+
+type BulkEntity = 'appointments' | 'booking_requests' | 'shifts' | 'customers' | 'staff' | 'services' | 'promotions' | 'rooms' | 'venues' | 'users' | 'audit_logs';
 
 const navGroups: { label: string; items: { id: SectionId; label: string; glyph: string }[] }[] = [
   {
@@ -70,8 +73,8 @@ const headings: Record<SectionId, { eyebrow: string; title: string; description:
   dashboard: { eyebrow: 'TODAY', title: '歡迎回到伊果SPA', description: '目前登入：員工' },
   appointments: { eyebrow: 'APPOINTMENTS', title: '預約管理', description: '建立、搜尋、改期與人工修正預約。' },
   schedule: { eyebrow: 'WEEKLY ROSTER', title: '師傅排班', description: '本週與下週班表，距開始 90 分鐘後鎖定。' },
-  operations: { eyebrow: 'SERVICE FLOW', title: '現場進度', description: '從報到、服務中到待結帳的即時看板。' },
-  checkout: { eyebrow: 'CHECKOUT', title: '結帳與回帳', description: '現金與轉帳紀錄，完成後保留稽核軌跡。' },
+  operations: { eyebrow: 'SERVICE FLOW', title: '訂單進度', description: '待確認、已確認與已完成三種狀態。' },
+  checkout: { eyebrow: 'CHECKOUT', title: '完成訂單', description: '記錄現金或轉帳；按完成即視為回帳完成。' },
   customers: { eyebrow: 'CUSTOMERS', title: '客戶管理', description: 'LINE 顯示名稱、電話、歷史紀錄與客服備註。' },
   staff: { eyebrow: 'TEAM', title: '員工管理', description: '員工建檔、公開照片、暫時退役與永久刪除。' },
   services: { eyebrow: 'PRICING', title: '服務與優惠', description: '方案價格、期間與附加費都可隨時調整。' },
@@ -118,8 +121,8 @@ const taipeiDateValue = (date: Date) => {
 const buildBusinessWeek = (weekOffset: number, reference = new Date()) => {
   const parts = taipeiParts(reference);
   const localDate = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)));
-  const daysSinceSaturday = (localDate.getUTCDay() + 1) % 7;
-  localDate.setUTCDate(localDate.getUTCDate() - daysSinceSaturday + weekOffset * 7);
+  const daysSinceMonday = (localDate.getUTCDay() + 6) % 7;
+  localDate.setUTCDate(localDate.getUTCDate() - daysSinceMonday + weekOffset * 7);
   const dayNames = ['日', '一', '二', '三', '四', '五', '六'];
   return Array.from({ length: 7 }, (_, index) => {
     const day = new Date(localDate);
@@ -159,7 +162,7 @@ function Modal({ title, subtitle, children, onClose, wide = false }: { title: st
 }
 
 function StatusPill({ status }: { status: string }) {
-  const tone = status === '服務中' ? 'live' : status === '待結帳' ? 'warning' : status === '已完成' || status === '已付款' ? 'done' : status === '已取消' || status === '已停用' ? 'muted-status' : 'confirmed';
+  const tone = status === '待確認' ? 'warning' : status === '已完成' || status === '已付款' ? 'done' : status === '已停用' ? 'muted-status' : 'confirmed';
   return <span className={`status ${tone}`}>{status}</span>;
 }
 
@@ -191,11 +194,15 @@ export default function Home() {
   const [adminUsers, setAdminUsers] = useState<ReturnType<typeof mapAdminUser>[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogView[]>([]);
   const [rooms, setRooms] = useState<{ id: number; name: string }[]>([]);
+  const [venues, setVenues] = useState<NonNullable<BootstrapData['venues']>>([]);
   const [modal, setModal] = useState<ModalState>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [appointmentSearch, setAppointmentSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('全部');
   const [customerSearch, setCustomerSearch] = useState('');
+  const [staffCategoryFilter, setStaffCategoryFilter] = useState<'全部' | StaffMember['category']>('全部');
+  const [staffPage, setStaffPage] = useState(1);
+  const [selectedIds, setSelectedIds] = useState<Partial<Record<BulkEntity, number[]>>>({});
   const [week, setWeek] = useState<'current' | 'next'>('current');
   const [appMode, setAppMode] = useState<'checking' | 'unavailable' | 'login' | 'live' | 'staff' | 'staffLink'>('checking');
   const [connectionError, setConnectionError] = useState('');
@@ -234,6 +241,7 @@ export default function Home() {
     setStaff(data.staff.map(mapStaff));
     setPromotions(data.promotions.map(mapPromotion));
     setRooms(data.rooms.map((room) => ({ id: room.id, name: room.name })));
+    setVenues(data.venues || []);
     setCustomers((data.customers || []).map(mapCustomer));
     setAdminUsers((data.admin_users || []).map(mapAdminUser));
     setReturnRuleSets(data.return_rule_sets || []);
@@ -405,8 +413,8 @@ export default function Home() {
     window.setTimeout(() => setToast(null), 3200);
   };
 
-  const todayAppointments = appointments.filter((item) => item.date === todayIso && item.status !== '已取消');
-  const pendingCheckout = appointments.filter((item) => item.status === '待結帳');
+  const todayAppointments = appointments.filter((item) => item.date === todayIso);
+  const pendingCheckout = appointments.filter((item) => item.status === '已確認');
   const completedRevenue = todayAppointments.filter((item) => item.status === '已完成' || item.payment === '已付款').reduce((sum, item) => sum + item.total, 0);
   const selectedAppointment = modal && 'id' in modal ? appointments.find((item) => item.id === modal.id) : undefined;
   const selectedShift = modal && 'id' in modal ? shifts.find((item) => item.id === modal.id) : undefined;
@@ -437,6 +445,49 @@ export default function Home() {
     return !query || [customer.vipSerial, customer.name, customer.lineName, ...customer.phones].some((value) => value.toLowerCase().includes(query));
   }), [customerSearch, customers]);
 
+  const filteredStaff = useMemo(() => staff.filter((member) => staffCategoryFilter === '全部' || member.category === staffCategoryFilter), [staff, staffCategoryFilter]);
+  const staffPageCount = Math.max(1, Math.ceil(filteredStaff.length / 10));
+  const pagedStaff = filteredStaff.slice((staffPage - 1) * 10, staffPage * 10);
+  useEffect(() => { setStaffPage((current) => Math.min(current, staffPageCount)); }, [staffPageCount]);
+  useEffect(() => { setStaffPage(1); }, [staffCategoryFilter]);
+
+  const toggleSelected = (entity: BulkEntity, id: number) => {
+    setSelectedIds((current) => {
+      const ids = current[entity] || [];
+      return { ...current, [entity]: ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id] };
+    });
+  };
+
+  const setPageSelected = (entity: BulkEntity, ids: number[], checked: boolean) => {
+    setSelectedIds((current) => {
+      const existing = current[entity] || [];
+      return { ...current, [entity]: checked ? Array.from(new Set([...existing, ...ids])) : existing.filter((id) => !ids.includes(id)) };
+    });
+  };
+
+  const bulkDeleteSelected = async (entity: BulkEntity, label: string) => {
+    const ids = selectedIds[entity] || [];
+    if (!ids.length) return notify(`請先勾選要刪除的${label}。`);
+    const reason = window.prompt(`將永久刪除 ${ids.length} 筆${label}，請輸入刪除原因：`, '後台批量整理');
+    if (!reason?.trim() || !window.confirm(`確定永久刪除已勾選的 ${ids.length} 筆${label}？此操作無法復原。`)) return;
+    try {
+      await api.bulkDelete(entity, ids, reason.trim());
+      const data = await api.bootstrap();
+      applyBootstrap(data, 'live');
+      setSelectedIds((current) => ({ ...current, [entity]: [] }));
+      notify(`已永久刪除 ${ids.length} 筆${label}。`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : `批量刪除${label}失敗`);
+    }
+  };
+
+  const BulkTools = ({ entity, ids, label }: { entity: BulkEntity; ids: number[]; label: string }) => {
+    if (!canManageAll || ids.length === 0) return null;
+    const selected = selectedIds[entity] || [];
+    const allChecked = ids.every((id) => selected.includes(id));
+    return <div className="bulk-tools"><label><input type="checkbox" checked={allChecked} onChange={(event) => setPageSelected(entity, ids, event.target.checked)} />全選本頁</label><span>已選 {selected.length} 筆</span><button className="danger-button" type="button" disabled={!selected.length} onClick={() => bulkDeleteSelected(entity, label)}>永久刪除所選</button></div>;
+  };
+
   const addAppointment = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -451,6 +502,7 @@ export default function Home() {
     if (appMode === 'live' || appMode === 'staff') {
       try {
         const roomRecord = rooms.find((item) => item.name === room);
+        const venueRecord = venues.find((item) => item.name === room);
         const payload = {
           customer_name: String(data.get('customer')),
           phone: String(data.get('phone')),
@@ -458,8 +510,9 @@ export default function Home() {
           start_time: `${date}T${start}:00`,
           staff_id: selectedStaffMember.apiId,
           room_id: roomRecord?.id,
+          venue_id: venueRecord?.id,
           promotion_id: Number(data.get('promotionId') || 0) || null,
-          location_type: roomRecord ? 'onsite' : room === '外出場地' ? 'external' : 'pending',
+          location_type: roomRecord ? 'onsite' : venueRecord ? 'external' : 'pending',
           notes: String(data.get('note') || ''),
         };
         const created = appMode === 'staff' ? await api.staffCreateAppointment(payload) : await api.createAppointment(payload);
@@ -544,6 +597,57 @@ export default function Home() {
     notify('目前未連線至資料庫，不能修改方案。');
   };
 
+  const addService = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    try {
+      const created = await api.createService({
+        code: String(data.get('code') || '').trim(),
+        name: String(data.get('name') || '').trim(),
+        duration_minutes: Number(data.get('duration')),
+        price: Number(data.get('price')),
+        description: String(data.get('description') || ''),
+        location_type: data.get('location') === '外出' ? 'external' : 'onsite',
+        can_choose_staff: data.get('canChooseStaff') === 'on',
+      });
+      setPlans((current) => [...current, mapService(created)]);
+      setModal(null);
+      notify('新方案已同步到後台、官網編輯器與預約系統。');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '新增方案失敗');
+    }
+  };
+
+  const createRoomPrompt = async () => {
+    const name = window.prompt('新增房間名稱：', '新房間')?.trim();
+    if (!name) return;
+    try { const created = await api.createRoom(name); setRooms((current) => [...current, created]); notify('房間已新增。'); }
+    catch (error) { notify(error instanceof Error ? error.message : '新增房間失敗'); }
+  };
+
+  const editRoomPrompt = async (room: { id: number; name: string }) => {
+    const name = window.prompt('修改房間名稱：', room.name)?.trim();
+    if (!name || name === room.name) return;
+    try { const updated = await api.updateRoom(room.id, { name }); setRooms((current) => current.map((item) => item.id === room.id ? updated : item)); notify('房間已更新。'); }
+    catch (error) { notify(error instanceof Error ? error.message : '更新房間失敗'); }
+  };
+
+  const createVenuePrompt = async () => {
+    const name = window.prompt('新增場地名稱：', '外租旅館')?.trim();
+    if (!name) return;
+    const address = window.prompt('場地地址（可留空）：', '')?.trim() || '';
+    try { const created = await api.createVenue({ name, address, active: true }); setVenues((current) => [...current, created]); notify('場地已新增。'); }
+    catch (error) { notify(error instanceof Error ? error.message : '新增場地失敗'); }
+  };
+
+  const editVenuePrompt = async (venue: NonNullable<BootstrapData['venues']>[number]) => {
+    const name = window.prompt('修改場地名稱：', venue.name)?.trim();
+    if (!name) return;
+    const address = window.prompt('修改場地地址（可留空）：', venue.address || '')?.trim() || '';
+    try { const updated = await api.updateVenue(venue.id, { name, address, active: venue.active }); setVenues((current) => current.map((item) => item.id === venue.id ? updated : item)); notify('場地已更新。'); }
+    catch (error) { notify(error instanceof Error ? error.message : '更新場地失敗'); }
+  };
+
   const finishCheckout = async (event: FormEvent<HTMLFormElement>, id: string) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -555,7 +659,7 @@ export default function Home() {
         const updated = mapAppointment(result.appointment);
         setAppointments((current) => current.map((item) => item.id === id ? updated : item));
         setModal(null);
-        notify(paymentMethod === '現金' ? '訂單完成；現金回帳等待第三人確認。' : '訂單完成；轉帳已記錄。');
+        notify('訂單已完成，付款與回帳同步記錄。');
       } catch (error) {
         notify(error instanceof Error ? error.message : '結帳失敗');
       }
@@ -616,17 +720,6 @@ export default function Home() {
   };
 
   const updateAppointmentStatus = async (appointment: Appointment, status: Appointment['status']) => {
-    if (appMode === 'staff' && appointment.apiId && status === '待結帳') {
-      try {
-        const updated = await api.staffCompleteAppointment(appointment.apiId);
-        setAppointments((current) => current.map((item) => item.id === appointment.id ? mapAppointment(updated) : item));
-        setModal(null);
-        notify('已標記服務完成，交由客服結帳。');
-      } catch (error) {
-        notify(error instanceof Error ? error.message : '完成訂單失敗');
-      }
-      return;
-    }
     if (appMode === 'live' && appointment.apiId) {
       try {
         const updated = await api.updateAppointment(appointment.apiId, { status });
@@ -647,6 +740,7 @@ export default function Home() {
     const data = new FormData(event.currentTarget);
     const roomName = String(data.get('room'));
     const roomRecord = rooms.find((item) => item.name === roomName);
+    const venueRecord = venues.find((item) => item.name === roomName);
     const payload: Record<string, unknown> = {
       customer_name: String(data.get('customer')),
       phone: String(data.get('phone')),
@@ -655,7 +749,8 @@ export default function Home() {
       promotion_id: Number(data.get('promotionId') || 0),
       staff_id: Number(data.get('staffId')),
       room_id: roomRecord?.id || null,
-      location_type: roomRecord ? 'onsite' : roomName === '外出場地' ? 'external' : 'pending',
+      venue_id: venueRecord?.id || null,
+      location_type: roomRecord ? 'onsite' : venueRecord ? 'external' : 'pending',
       status: String(data.get('status')),
       notes: String(data.get('note') || ''),
       force_reason: String(data.get('reason') || ''),
@@ -685,6 +780,7 @@ export default function Home() {
       const updated = await api.updateCustomer(selectedCustomer.apiId, {
         display_name: String(data.get('displayName') || '').trim(),
         phones,
+        customer_grade: String(data.get('customerGrade') || 'N') as Customer['grade'],
       });
       const mapped = mapCustomer(updated);
       setCustomers((current) => current.map((item) => item.id === selectedCustomer.id ? mapped : item));
@@ -901,6 +997,32 @@ export default function Home() {
     }
   };
 
+  const saveOwnAccount = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!identity) return;
+    const data = new FormData(event.currentTarget);
+    const newPin = String(data.get('newPin') || '');
+    const confirmPin = String(data.get('confirmPin') || '');
+    if (newPin && newPin !== confirmPin) return notify('兩次輸入的新 PIN 不一致。');
+    try {
+      await api.updateOwnAccount({
+        current_pin: String(data.get('currentPin') || ''),
+        username: String(data.get('username') || '').trim(),
+        display_name: String(data.get('displayName') || '').trim(),
+        new_pin: newPin || undefined,
+      });
+      window.sessionStorage.removeItem('equalspa-admin-token');
+      setModal(null);
+      setToken('');
+      setIdentity(null);
+      setRole('viewer');
+      setAppMode('login');
+      notify('帳密已更新，請使用新資料重新登入。');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '帳密更新失敗');
+    }
+  };
+
   const saveReturnRule = async (event: FormEvent<HTMLFormElement>, setId: number, ruleId: number) => {
     event.preventDefault();
     if (!canManageAll) return;
@@ -945,15 +1067,15 @@ export default function Home() {
 
   const deactivateAdminUser = async (user: (typeof adminUsers)[number]) => {
     if (!user.isActive || appMode !== 'live') return;
-    const allowed = role === 'admin' || (role === 'manager' && user.roleKey === 'clerk');
-    if (!allowed || user.id === identity?.id) return notify('你沒有權限停用這個帳號。');
-    if (!window.confirm(`確定要停用 ${user.displayName}（@${user.username}）的後台權限嗎？`)) return;
+    const allowed = role === 'admin' || role === 'manager';
+    if (!allowed || user.id === identity?.id) return notify('你沒有權限刪除這個帳號。');
+    if (!window.confirm(`確定要永久刪除 ${user.displayName}（@${user.username}）嗎？`)) return;
     try {
-      const updated = mapAdminUser(await api.deactivateUser(user.id));
-      setAdminUsers((current) => current.map((item) => item.id === updated.id ? updated : item));
-      notify(`${user.displayName} 已停用，既有登入也已失效。`);
+      await api.deactivateUser(user.id);
+      setAdminUsers((current) => current.filter((item) => item.id !== user.id));
+      notify(`${user.displayName} 已永久刪除，既有登入也已失效。`);
     } catch (error) {
-      notify(error instanceof Error ? error.message : '停用帳號失敗');
+      notify(error instanceof Error ? error.message : '刪除帳號失敗');
     }
   };
 
@@ -969,13 +1091,13 @@ export default function Home() {
   };
 
   const renderDashboard = () => {
-    const inService = todayAppointments.filter((item) => item.status === '服務中');
-    const todayPendingCheckout = todayAppointments.filter((item) => item.status === '待結帳');
+    const confirmedToday = todayAppointments.filter((item) => item.status === '已確認');
+    const completedToday = todayAppointments.filter((item) => item.status === '已完成');
     const pendingVenue = todayAppointments.filter((item) => item.location === '待確認' || item.room === '待確認');
     const metrics = [
-      { label: '今日預約', value: String(todayAppointments.length), note: `含 ${inService.length} 筆進行中` },
-      { label: '服務中', value: String(inService.length), note: `${inService.filter((item) => item.location === '店內').length} 間房使用中` },
-      { label: '待結帳', value: String(todayPendingCheckout.length), note: isViewer ? '金額已隱藏' : `共 ${formatCurrency(todayPendingCheckout.reduce((sum, item) => sum + item.total, 0))}` },
+      { label: '今日預約', value: String(todayAppointments.length), note: `含 ${confirmedToday.length} 筆已確認` },
+      { label: '已確認', value: String(confirmedToday.length), note: `${confirmedToday.filter((item) => item.location === '店內').length} 筆店內服務` },
+      { label: '已完成', value: String(completedToday.length), note: isViewer ? '金額已隱藏' : `共 ${formatCurrency(completedToday.reduce((sum, item) => sum + item.total, 0))}` },
       sensitiveVisible
         ? { label: '今日營收', value: completedRevenue.toLocaleString('zh-TW'), note: '依已完成訂單計算', currency: true }
         : isStaffUser
@@ -1005,14 +1127,14 @@ export default function Home() {
         </div>
         <aside className="right-column">
           <section className="panel room-panel">
-            <div className="panel-heading compact"><div><p className="eyebrow">ROOM STATUS</p><h2>空間使用</h2></div><span className="room-count">{inService.filter((item) => item.location === '店內').length} / {rooms.length}</span></div>
-            {rooms.map((room) => { const appointment = inService.find((item) => item.room === room.name); return <div className={appointment ? 'room-card occupied' : 'room-card'} key={room.id}><span>{room.name}</span><strong>{appointment ? `${appointment.staff}・服務中` : '目前空房'}</strong><small>{appointment ? `預計 ${appointment.end} 結束` : '等待預約'}</small></div>; })}
+            <div className="panel-heading compact"><div><p className="eyebrow">ROOM STATUS</p><h2>今日房間安排</h2></div><span className="room-count">{confirmedToday.filter((item) => item.location === '店內').length} / {rooms.length}</span></div>
+            {rooms.map((room) => { const appointment = confirmedToday.find((item) => item.room === room.name); return <div className={appointment ? 'room-card occupied' : 'room-card'} key={room.id}><span>{room.name}</span><strong>{appointment ? `${appointment.staff}・已確認` : '尚無安排'}</strong><small>{appointment ? `${appointment.start}–${appointment.end}` : '等待預約'}</small></div>; })}
             {rooms.length === 0 && <div className="empty-state">資料庫尚未建立房間資料。</div>}
             {pendingVenue.length > 0 && <div className="notice">今天有 {pendingVenue.length} 筆預約尚未分配場地，請由客服確認。</div>}
           </section>
           <section className="panel action-panel">
             <p className="eyebrow">NEEDS ATTENTION</p><h2>需要處理</h2>
-            <button onClick={() => sensitiveVisible ? navigateTo('checkout') : notify('帳務資訊需使用客服、店長或 Admin 帳號登入。')}><span className="action-number">{pendingCheckout.length}</span><div><strong>待結帳訂單</strong><small>{sensitiveVisible ? '現金或轉帳待確認' : '帳務內容已隱藏'}</small></div><b>→</b></button>
+            <button onClick={() => sensitiveVisible ? navigateTo('checkout') : notify('帳務資訊需使用客服、店長或 Admin 帳號登入。')}><span className="action-number">{pendingCheckout.length}</span><div><strong>可完成訂單</strong><small>{sensitiveVisible ? '記錄付款後直接完成' : '帳務內容已隱藏'}</small></div><b>→</b></button>
             <button onClick={() => navigateTo('appointments')}><span className="action-number amber">{pendingVenue.length}</span><div><strong>場地待確認</strong><small>{pendingVenue.length ? '請開啟預約明細處理' : '目前沒有待確認場地'}</small></div><b>→</b></button>
           </section>
         </aside>
@@ -1024,9 +1146,10 @@ export default function Home() {
     <div className="appointments-layout">
     {appMode === 'live' && <section className="panel table-panel booking-request-panel">
       <div className="panel-heading"><div><p className="eyebrow">REVIEW QUEUE</p><h2>待確認預約通知</h2></div><span className="subtle-label">{bookingRequests.filter((item) => item.status === 'pending').length} 筆待處理</span></div>
+      <BulkTools entity="booking_requests" ids={bookingRequests.filter((item) => item.status === 'pending').map((item) => item.id)} label="預約通知" />
       <div className="booking-request-list">
         {bookingRequests.filter((item) => item.status === 'pending').map((item) => <article className="booking-request-card" key={item.id}>
-          <div><strong>{item.request_id}・{item.customer_name}</strong><small>{item.start_time.replace('T', ' ').slice(0, 16)}・{item.staff_name}・{item.service_name}</small><span>這是預約通知，尚未占用師傅或房間。</span></div>
+          <label className="selection-check"><input type="checkbox" checked={(selectedIds.booking_requests || []).includes(item.id)} onChange={() => toggleSelected('booking_requests', item.id)} /><span>選取</span></label><div><strong>{item.request_id}・{item.customer_name}</strong><small>{item.start_time.replace('T', ' ').slice(0, 16)}・{item.staff_name}・{item.service_name}</small><span>這是預約通知，尚未占用師傅或房間。</span></div>
           <div className="booking-request-actions"><button className="primary-button" onClick={() => confirmBookingRequest(item)}>確認</button><button className="secondary-button" onClick={() => setModal({ type: 'bookingRequest', id: item.id })}>修改</button><button className="danger-button" onClick={() => cancelBookingRequest(item)}>取消</button></div>
         </article>)}
         {bookingRequests.every((item) => item.status !== 'pending') && <div className="empty-state">目前沒有待確認的預約通知。</div>}
@@ -1035,20 +1158,21 @@ export default function Home() {
     <section className="panel table-panel">
       <div className="toolbar">
         <div className="search-box"><span>⌕</span><input value={appointmentSearch} onChange={(event) => setAppointmentSearch(event.target.value)} placeholder="搜尋訂單、客戶、電話或師傅" /></div>
-        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>{['全部', '待確認', '已確認', '已報到', '服務中', '待結帳', '已完成', '已取消'].map((status) => <option key={status}>{status}</option>)}</select>
+        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>{['全部', '待確認', '已確認', '已完成'].map((status) => <option key={status}>{status}</option>)}</select>
         {appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('appointments')}>⇩ 匯出</button>}
       </div>
+      <BulkTools entity="appointments" ids={filteredAppointments.flatMap((item) => item.apiId ? [item.apiId] : [])} label="預約／訂單" />
       <div className="data-table appointment-table">
         <div className="table-head"><span>時間／訂單</span><span>客戶</span><span>師傅／方案</span><span>場地</span><span>狀態</span><span>金額</span></div>
         {filteredAppointments.map((item) => (
-          <button className="table-row" key={item.id} onClick={() => setModal({ type: 'appointmentDetail', id: item.id })}>
-            <span><strong>{item.date.slice(5)}　{item.start}–{item.end}</strong><small>{item.id}</small></span>
+          <div className="table-row interactive" role="button" tabIndex={0} key={item.id} onClick={() => setModal({ type: 'appointmentDetail', id: item.id })}>
+            <span><label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={!!item.apiId && (selectedIds.appointments || []).includes(item.apiId)} onChange={() => item.apiId && toggleSelected('appointments', item.apiId)} /><span>選取</span></label><strong>{item.date.slice(5)}　{item.start}–{item.end}</strong><small>{item.id}</small></span>
             <span><strong>{item.customer}</strong><small>{item.phone}</small></span>
             <span><strong>{item.staff}</strong><small>{item.service}</small></span>
             <span><strong>{item.location}</strong><small>{item.room}</small></span>
             <span><StatusPill status={item.status} /></span>
             <span><strong>{isViewer ? '—' : formatCurrency(item.total)}</strong><small>{isViewer ? '敏感資訊已隱藏' : item.payment}</small></span>
-          </button>
+          </div>
         ))}
       </div>
       {filteredAppointments.length === 0 && <div className="empty-state">沒有符合條件的預約。</div>}
@@ -1059,11 +1183,14 @@ export default function Home() {
   const renderSchedule = () => {
     const days = week === 'current' ? currentWeekDays : followingWeekDays;
     const rosterStaff = appMode === 'live' ? staff : staff.filter((item) => item.status === '在職');
+    const visibleDates = new Set(days.map((item) => item.date));
+    const visibleShiftIds = shifts.filter((item) => visibleDates.has(item.date)).flatMap((item) => item.apiId ? [item.apiId] : []);
     return (
       <>
         <section className="rule-banner"><div><strong>90 分鐘鎖定規則</strong><span>師傅端距開始 90 分鐘內不可新增、修改或撤銷；店長與 Admin 可填寫原因強制處理。</span></div>{appMode === 'live' && <button onClick={() => navigateTo('staffPortal')}>預覽師傅畫面</button>}</section>
         <section className="panel roster-panel">
           <div className="toolbar"><div className="segmented"><button className={week === 'current' ? 'active' : ''} onClick={() => setWeek('current')}>本週</button><button className={week === 'next' ? 'active' : ''} onClick={() => setWeek('next')}>下週</button></div><div className="filter-note"><strong>{rosterStaff.length}</strong><span>{appMode === 'live' ? '位師傅（全部）' : '位在職師傅'}</span></div><div className="toolbar-spacer" />{appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('shifts')}>⇩ 匯出班表</button>}{(canManageShifts || isStaffUser) && <button className="primary-button" onClick={() => setModal({ type: 'shift', origin: isStaffUser ? 'staff' : 'admin' })}>＋ 新增排班</button>}</div>
+          <BulkTools entity="shifts" ids={visibleShiftIds} label="排班" />
           <div className="roster-grid" style={{ gridTemplateColumns: `120px repeat(${days.length}, minmax(112px, 1fr))` }}>
             <div className="roster-corner">師傅</div>
             {days.map((day) => <div className={day.date === todayIso ? 'roster-day today' : 'roster-day'} key={day.date}><strong>{day.day}</strong><span>{day.label}</span></div>)}
@@ -1072,7 +1199,7 @@ export default function Home() {
                 <div className="roster-name"><span className="staff-avatar">{member.name.slice(0, 1)}</span><div><strong>{member.name}</strong><small>{member.category.replace('師傅', '')}</small></div></div>
                 {days.map((day) => {
                   const dayShifts = shifts.filter((item) => (item.staffId ? item.staffId === member.id : item.staff === member.name) && item.date === day.date);
-                  return <div className="roster-cell" key={day.date}>{dayShifts.map((shift) => <button className={isShiftLocked(shift) ? 'shift-card locked' : 'shift-card'} key={shift.id} onClick={() => (canManageShifts || isStaffUser) && setModal({ type: 'shiftDetail', id: shift.id, origin: isStaffUser ? 'staff' : 'admin' })}><strong>{shiftTimeLabel(shift)}</strong><small>{isShiftLocked(shift) && !canOverrideTimeRules ? '已鎖定' : shift.source}</small></button>)}</div>;
+                  return <div className="roster-cell" key={day.date}>{dayShifts.map((shift) => <button className={isShiftLocked(shift) ? 'shift-card locked' : 'shift-card'} key={shift.id} onClick={() => (canManageShifts || isStaffUser) && setModal({ type: 'shiftDetail', id: shift.id, origin: isStaffUser ? 'staff' : 'admin' })}>{canManageAll && shift.apiId && <label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={(selectedIds.shifts || []).includes(shift.apiId)} onChange={() => toggleSelected('shifts', shift.apiId!)} /><span>選取</span></label>}<strong>{shiftTimeLabel(shift)}</strong><small>{isShiftLocked(shift) && !canOverrideTimeRules ? '已鎖定' : shift.source}</small></button>)}</div>;
                 })}
               </div>
             ))}
@@ -1084,41 +1211,47 @@ export default function Home() {
   };
 
   const renderOperations = () => {
-    const columns = ['已確認', '已報到', '服務中', '待結帳'];
-    return <div className="kanban">{columns.map((status) => <section className="kanban-column" key={status}><header><div><strong>{status}</strong><span>{appointments.filter((item) => item.status === status).length}</span></div>{status === '服務中' && <small>房間 {appointments.filter((item) => item.status === '服務中' && item.location === '店內').length} / {rooms.length}</small>}</header><div className="kanban-list">{appointments.filter((item) => item.status === status).map((item) => <button className="kanban-card" key={item.id} onClick={() => setModal({ type: 'appointmentDetail', id: item.id })}><span className="kanban-time">{item.start}–{item.end}</span><strong>{item.customer}・{item.staff}</strong><small>{item.service}</small><small>{item.room}</small></button>)}{appointments.filter((item) => item.status === status).length === 0 && <div className="kanban-empty">目前沒有項目</div>}</div></section>)}</div>;
+    const columns = ['待確認', '已確認', '已完成'];
+    return <><BulkTools entity="appointments" ids={appointments.flatMap((item) => item.apiId ? [item.apiId] : [])} label="訂單" /><div className="kanban">{columns.map((status) => <section className="kanban-column" key={status}><header><div><strong>{status}</strong><span>{appointments.filter((item) => item.status === status).length}</span></div></header><div className="kanban-list">{appointments.filter((item) => item.status === status).map((item) => <button className="kanban-card" key={item.id} onClick={() => setModal({ type: 'appointmentDetail', id: item.id })}><label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={!!item.apiId && (selectedIds.appointments || []).includes(item.apiId)} onChange={() => item.apiId && toggleSelected('appointments', item.apiId)} /><span>選取</span></label><span className="kanban-time">{item.start}–{item.end}</span><strong>{item.customer}・{item.staff}</strong><small>{item.service}</small><small>{item.room}</small></button>)}{appointments.filter((item) => item.status === status).length === 0 && <div className="kanban-empty">目前沒有項目</div>}</div></section>)}</div></>;
   };
 
   const renderCheckout = () => (
     <div className="checkout-stack">
       <div className="checkout-layout">
-        <section className="panel checkout-list"><div className="panel-heading"><div><p className="eyebrow">WAITING</p><h2>待結帳訂單</h2></div><span className="room-count">{pendingCheckout.length}</span></div>{pendingCheckout.map((item) => <button className="checkout-row" key={item.id} onClick={() => setModal({ type: 'checkout', id: item.id })}><div><span>{item.end} 完成</span><strong>{item.customer}</strong><small>{item.id}・{item.staff}</small></div><div><strong>{formatCurrency(item.total)}</strong><small>{item.service}</small></div><b>開始結帳 →</b></button>)}{pendingCheckout.length === 0 && <div className="empty-state">目前沒有待結帳訂單。</div>}</section>
-        <aside className="panel settlement-card"><p className="eyebrow">CASH SETTLEMENT</p><h2>現金回帳</h2><div className="settlement-amount"><span>目前待回帳</span><strong>{formatCurrency(appointments.filter((item) => item.returnStatus === 'pending').reduce((sum, item) => sum + (item.expectedReturn || 0), 0))}</strong></div>{appointments.filter((item) => (item.expectedReturn || 0) > 0).slice(0, 4).map((item) => <div className="settlement-item" key={item.id}><span>{item.staff}</span><strong>{formatCurrency(item.expectedReturn || 0)}</strong><StatusPill status={item.returnStatus === 'confirmed' ? '已完成' : '待確認'} /></div>)}<button className="secondary-button full" onClick={() => notify('第三人確認後會記錄確認人與時間。')}>查看全部回帳紀錄</button></aside>
+        <section className="panel checkout-list"><div className="panel-heading"><div><p className="eyebrow">CONFIRMED</p><h2>可完成訂單</h2></div><span className="room-count">{pendingCheckout.length}</span></div>{pendingCheckout.map((item) => <button className="checkout-row" key={item.id} onClick={() => setModal({ type: 'checkout', id: item.id })}><div><span>{item.end} 預計結束</span><strong>{item.customer}</strong><small>{item.id}・{item.staff}</small></div><div><strong>{formatCurrency(item.total)}</strong><small>{item.service}</small></div><b>記錄付款並完成 →</b></button>)}{pendingCheckout.length === 0 && <div className="empty-state">目前沒有可完成的訂單。</div>}</section>
+        <aside className="panel settlement-card"><p className="eyebrow">SIMPLE FLOW</p><h2>完成即回帳</h2><p>選擇現金或轉帳並按下「確認完成訂單」後，狀態會直接改為已完成，也視為已回帳。</p></aside>
       </div>
-      <section className="panel return-rules-panel"><div className="panel-heading"><div><p className="eyebrow">STAFF RETURNS</p><h2>師傅回帳表</h2></div><span className="subtle-label">可在後台調整並指派給師傅</span></div><div className="return-rule-grid">{returnRuleSets.map((set) => <article className="return-rule-card" key={set.id}><header><strong>{set.name}</strong><span>{set.active ? '啟用' : '停用'}</span></header><div className="return-rule-row head"><span>方案</span><span>回帳</span><span>時數</span></div>{set.rules.filter((rule) => rule.active).map((rule) => <button className="return-rule-row" key={rule.id} onClick={() => canManageAll && setModal({ type: 'returnRule', setId: set.id, ruleId: rule.id })}><span>{rule.name}</span><strong>{formatCurrency(rule.amount)}</strong><span>{Number((rule.duration_minutes / 60).toFixed(2))}</span></button>)}</article>)}</div></section>
     </div>
   );
 
   const renderCustomers = () => (
-    <section className="panel table-panel"><div className="toolbar"><div className="search-box"><span>⌕</span><input value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="搜尋客戶名稱、手機或 VIP 流水" /></div><button className="secondary-button" onClick={() => exportCsv('customers')}>⇩ 匯出客戶</button></div><div className="data-table customer-table"><div className="table-head"><span>客戶名稱</span><span>客戶流水</span><span>客戶 ID（手機）</span><span>到訪</span><span>累計消費</span><span>最近到訪</span></div>{filteredCustomers.map((customer) => <button className="table-row customer-edit-row" key={customer.id} onClick={() => setModal({ type: 'customer', id: customer.id })}><span><strong>{customer.name}</strong><small>名稱可由後台或 LINE 建立</small></span><span><strong>{customer.vipSerial}</strong><small>僅為流水號</small></span><span><strong>{customer.phones.join('、') || '未提供'}</strong><small>{customer.phones.length > 1 ? `${customer.phones.length} 支手機` : '唯一客戶 ID'}</small></span><span><strong>{customer.visits} 次</strong></span><span><strong>{formatCurrency(customer.spent)}</strong></span><span><strong>{customer.lastVisit}</strong><small>{customer.note}</small></span></button>)}</div></section>
+    <section className="panel table-panel"><div className="toolbar"><div className="search-box"><span>⌕</span><input value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="搜尋名稱、手機或內部識別" /></div><button className="secondary-button" onClick={() => exportCsv('customers')}>⇩ 匯出客戶</button></div><BulkTools entity="customers" ids={filteredCustomers.flatMap((item) => item.apiId ? [item.apiId] : [])} label="客戶" /><div className="data-table customer-table"><div className="table-head"><span>客戶名稱</span><span>內部識別</span><span>手機 ID</span><span>到訪</span><span>累計消費</span><span>最近到訪</span></div>{filteredCustomers.map((customer) => <div className="table-row customer-edit-row interactive" role="button" tabIndex={0} key={customer.id} onClick={() => setModal({ type: 'customer', id: customer.id })}><span><label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={!!customer.apiId && (selectedIds.customers || []).includes(customer.apiId)} onChange={() => customer.apiId && toggleSelected('customers', customer.apiId)} /><span>選取</span></label><strong>{customer.name}</strong><small>名稱可由後台或 LINE 建立</small></span><span><strong>{customer.vipSerial}</strong><small>僅限內部管理查看</small></span><span><strong>{customer.phones.join('、') || '未提供'}</strong><small>{customer.phones.length > 1 ? `${customer.phones.length} 支手機` : '主要手機'}</small></span><span><strong>{customer.visits} 次</strong></span><span><strong>{formatCurrency(customer.spent)}</strong></span><span><strong>{customer.lastVisit}</strong><small>{customer.note}</small></span></div>)}</div></section>
   );
 
   const renderStaff = () => (
     <section className="panel table-panel">
-      <div className="toolbar"><div className="filter-note"><strong>{staff.filter((item) => item.status === '在職').length}</strong><span>位在職師傅</span></div><div className="toolbar-spacer" />{canManageAll && <button className="primary-button" onClick={() => setModal({ type: 'staff' })}>＋ 新增員工</button>}</div>
-      <div className="staff-card-grid">{staff.map((member) => <article className={member.status === '暫時退役' ? 'staff-card retired' : 'staff-card'} key={member.id}>
-        <header>{member.photoUrl ? <img className="large-avatar staff-photo" src={member.photoUrl} alt={`${member.name}師傅`} /> : <span className="large-avatar">{member.name.slice(0, 1)}</span>}<StatusPill status={member.status} /></header>
+      <div className="toolbar"><select value={staffCategoryFilter} onChange={(event) => setStaffCategoryFilter(event.target.value as typeof staffCategoryFilter)}><option>全部</option><option>直男師傅</option><option>圈內師傅</option><option>雙性師傅</option></select><div className="filter-note"><strong>{filteredStaff.length}</strong><span>位符合篩選</span></div><div className="toolbar-spacer" />{canManageAll && <button className="primary-button" onClick={() => setModal({ type: 'staff' })}>＋ 新增員工</button>}</div>
+      <BulkTools entity="staff" ids={pagedStaff.flatMap((item) => item.apiId ? [item.apiId] : [])} label="師傅" />
+      <div className="staff-card-grid">{pagedStaff.map((member) => <article className={member.status === '暫時退役' ? 'staff-card retired' : 'staff-card'} key={member.id}>
+        <header>{member.photoUrl ? <img className="large-avatar staff-photo" src={member.photoUrl} alt={`${member.name}師傅`} /> : <span className="large-avatar">{member.name.slice(0, 1)}</span>}<label className="selection-check"><input type="checkbox" checked={!!member.apiId && (selectedIds.staff || []).includes(member.apiId)} onChange={() => member.apiId && toggleSelected('staff', member.apiId)} /><span>選取</span></label><StatusPill status={member.status} /></header>
         <h3>{member.name}</h3><p>{member.category}・{[member.height && `${member.height} cm`, member.weight && `${member.weight} kg`, member.role].filter(Boolean).join('・') || member.id}</p>
         <div className="staff-meta"><span>{member.lineConnected ? 'LINE 已串接' : 'LINE 待串接'}</span><span>{member.isOnline ? '目前上線' : '目前下線'}</span><span>{isViewer || isStaffUser ? '公開基本資料' : '私密資料已分離'}</span></div>
         {canManageAll && returnRuleSets.length > 0 && <label className="staff-rule-select">回帳表<select value={member.returnRuleSetId || returnRuleSets[0]?.id || ''} onChange={(event) => assignReturnRuleSet(member, Number(event.target.value))}>{returnRuleSets.filter((set) => set.active).map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label>}
         {canManageAll && <div className="staff-card-actions"><button className="text-button" onClick={() => setModal({ type: 'staffEdit', id: member.id })}>資料／照片</button><button className="text-button" onClick={() => toggleStaffStatus(member)}>{member.status === '在職' ? '暫時退役' : '恢復在職'}</button>{member.lineConnected && <button className="text-button" onClick={() => unlinkStaffLine(member)}>解除 LINE</button>}<button className="danger-text" onClick={() => setModal({ type: 'staffDelete', id: member.id })}>永久刪除</button></div>}
       </article>)}</div>
-      {staff.length === 0 && <div className="empty-state">資料庫目前沒有師傅資料。</div>}
-      {sensitiveVisible && <div className="privacy-note"><strong>健康資訊不顯示於此畫面</strong><span>私密欄位存放在獨立資料表，且不包含在一般匯出中。店長與 Admin 可永久刪除；有歷史訂單、班表或回帳時系統仍會阻止。</span></div>}
+      {filteredStaff.length > 0 && <div className="pagination"><button disabled={staffPage <= 1} onClick={() => setStaffPage((page) => page - 1)}>上一頁</button><span>第 {staffPage} / {staffPageCount} 頁・每頁 10 位</span><button disabled={staffPage >= staffPageCount} onClick={() => setStaffPage((page) => page + 1)}>下一頁</button></div>}
+      {filteredStaff.length === 0 && <div className="empty-state">資料庫目前沒有符合條件的師傅資料。</div>}
+      {sensitiveVisible && <div className="privacy-note"><strong>健康資訊不顯示於此畫面</strong><span>私密欄位存放在獨立資料表，且不包含在一般匯出中。永久刪除師傅後，歷史訂單只保留當時的師傅名稱。</span></div>}
     </section>
   );
 
   const renderServices = () => (
-    <div className="services-layout"><section className="panel"><div className="panel-heading"><div><p className="eyebrow">SERVICE PLANS</p><h2>服務方案</h2></div><span className="subtle-label">{plans.filter((item) => item.active).length} 項啟用</span></div><div className="plan-grid">{plans.map((plan) => <article className={plan.active ? 'plan-card' : 'plan-card inactive'} key={plan.id}><header><span>{plan.code}</span><small>{plan.location}</small></header><h3>{plan.name}</h3><p>{plan.duration} 分鐘</p><strong>{formatCurrency(plan.price)}</strong><footer><span>{plan.canChooseStaff ? '可指定師傅' : '不指定優惠'}</span>{canManageAll && <button onClick={() => setModal({ type: 'service', id: plan.id })}>編輯</button>}</footer></article>)}</div></section><section className="panel"><div className="panel-heading"><div><p className="eyebrow">PROMOTIONS</p><h2>優惠與附加費</h2></div>{canManageAll && <button className="secondary-button" onClick={() => setModal({ type: 'promotion' })}>＋ 新增規則</button>}</div><div className="promotion-list">{promotions.map((promotion) => <article key={promotion.id}><span className="promo-icon">{promotion.kind.includes('折扣') ? '−' : '＋'}</span><div><strong>{promotion.name}</strong><small>{promotion.kind}・{promotion.period}</small></div><b>{promotion.kind === '百分比折扣' ? `${promotion.value}%` : formatCurrency(promotion.value)}</b><StatusPill status={promotion.active ? '啟用' : '停用'} />{canManageAll && <button className="text-button" onClick={() => setModal({ type: 'promotionEdit', id: promotion.id })}>編輯</button>}</article>)}</div></section></div>
+    <div className="services-layout">
+      <section className="panel"><div className="panel-heading"><div><p className="eyebrow">SERVICE PLANS</p><h2>服務方案</h2></div>{canManageAll && <button className="secondary-button" onClick={() => setModal({ type: 'serviceCreate' })}>＋ 新增方案</button>}</div><BulkTools entity="services" ids={plans.flatMap((item) => item.apiId ? [item.apiId] : [])} label="服務方案" /><div className="plan-grid">{plans.map((plan) => <article className={plan.active ? 'plan-card' : 'plan-card inactive'} key={plan.id}><label className="selection-check"><input type="checkbox" checked={!!plan.apiId && (selectedIds.services || []).includes(plan.apiId)} onChange={() => plan.apiId && toggleSelected('services', plan.apiId)} /><span>選取</span></label><header><span>{plan.code}</span><small>{plan.location}</small></header><h3>{plan.name}</h3><p>{plan.duration} 分鐘</p><strong>{formatCurrency(plan.price)}</strong><footer><span>{plan.canChooseStaff ? '可指定師傅' : '不指定優惠'}</span>{canManageAll && <button onClick={() => setModal({ type: 'service', id: plan.id })}>編輯</button>}</footer></article>)}</div></section>
+      <section className="panel"><div className="panel-heading"><div><p className="eyebrow">PROMOTIONS</p><h2>優惠與附加費</h2></div>{canManageAll && <button className="secondary-button" onClick={() => setModal({ type: 'promotion' })}>＋ 新增規則</button>}</div><BulkTools entity="promotions" ids={promotions.flatMap((item) => item.apiId ? [item.apiId] : [])} label="優惠／附加費" /><div className="promotion-list">{promotions.map((promotion) => <article key={promotion.id}><label className="selection-check"><input type="checkbox" checked={!!promotion.apiId && (selectedIds.promotions || []).includes(promotion.apiId)} onChange={() => promotion.apiId && toggleSelected('promotions', promotion.apiId)} /><span>選取</span></label><span className="promo-icon">{promotion.kind.includes('折扣') ? '−' : '＋'}</span><div><strong>{promotion.name}</strong><small>{promotion.kind}・{promotion.period}</small></div><b>{promotion.kind === '百分比折扣' ? `${promotion.value}%` : formatCurrency(promotion.value)}</b><StatusPill status={promotion.active ? '啟用' : '停用'} />{canManageAll && <button className="text-button" onClick={() => setModal({ type: 'promotionEdit', id: promotion.id })}>編輯</button>}</article>)}</div></section>
+      <section className="panel"><div className="panel-heading"><div><p className="eyebrow">ROOMS</p><h2>店內房間</h2></div>{canManageAll && <button className="secondary-button" onClick={createRoomPrompt}>＋ 新增房間</button>}</div><BulkTools entity="rooms" ids={rooms.map((item) => item.id)} label="房間" /><div className="settings-list">{rooms.map((room) => <article key={room.id}><label className="selection-check"><input type="checkbox" checked={(selectedIds.rooms || []).includes(room.id)} onChange={() => toggleSelected('rooms', room.id)} /><span>選取</span></label><div><strong>{room.name}</strong><small>店內房間</small></div>{canManageAll && <button className="text-button" onClick={() => editRoomPrompt(room)}>編輯</button>}</article>)}</div></section>
+      <section className="panel"><div className="panel-heading"><div><p className="eyebrow">VENUES</p><h2>外租／外出場地</h2></div>{canManageAll && <button className="secondary-button" onClick={createVenuePrompt}>＋ 新增場地</button>}</div><BulkTools entity="venues" ids={venues.map((item) => item.id)} label="外部場地" /><div className="settings-list">{venues.map((venue) => <article key={venue.id}><label className="selection-check"><input type="checkbox" checked={(selectedIds.venues || []).includes(venue.id)} onChange={() => toggleSelected('venues', venue.id)} /><span>選取</span></label><div><strong>{venue.name}</strong><small>{venue.address || '地址尚未填寫'}</small></div>{canManageAll && <button className="text-button" onClick={() => editVenuePrompt(venue)}>編輯</button>}</article>)}</div></section>
+    </div>
   );
 
   const renderExports = () => (
@@ -1128,7 +1261,7 @@ export default function Home() {
         <div className="form-grid two"><label>開始日期<input type="date" value={exportStart} onChange={(event) => setExportStart(event.target.value)} /></label><label>結束日期<input type="date" value={exportEnd} min={exportStart} onChange={(event) => setExportEnd(event.target.value)} /></label></div>
         <div className="export-card-grid"><button onClick={() => exportCsv('appointments')}><span>預約與訂單</span><strong>{appointments.length} 筆資料庫紀錄</strong><small>CSV・Excel 可開啟</small></button><button onClick={() => exportCsv('shifts')}><span>師傅排班</span><strong>{shifts.length} 筆資料庫紀錄</strong><small>CSV・Excel 可開啟</small></button><button onClick={() => exportCsv('customers')}><span>客戶資料</span><strong>{customers.length} 筆資料庫紀錄</strong><small>不含私密健康資訊</small></button></div>
       </section>
-      <aside className="panel audit-panel"><p className="eyebrow">AUDIT LOG</p><h2>最近操作紀錄</h2>{auditLogs.map((item) => <article key={item.id}><span>{item.actorName.slice(0, 1)}</span><div><strong>{item.actorName}・{item.action} {item.entityType}{item.entityId ? ` #${item.entityId}` : ''}</strong><small>{item.reason || '未填寫原因'}・{item.createdAt.replace('T', ' ').slice(0, 16)}</small></div></article>)}{auditLogs.length === 0 && <div className="empty-state">資料庫目前沒有操作紀錄。</div>}</aside>
+      <aside className="panel audit-panel"><p className="eyebrow">AUDIT LOG</p><h2>最近操作紀錄</h2><BulkTools entity="audit_logs" ids={auditLogs.map((item) => item.id)} label="操作紀錄" />{auditLogs.map((item) => <article key={item.id}><label className="selection-check"><input type="checkbox" checked={(selectedIds.audit_logs || []).includes(item.id)} onChange={() => toggleSelected('audit_logs', item.id)} /><span>選取</span></label><span>{item.actorName.slice(0, 1)}</span><div><strong>{item.actorName}・{item.action} {item.entityType}{item.entityId ? ` #${item.entityId}` : ''}</strong><small>{item.reason || '未填寫原因'}・{item.createdAt.replace('T', ' ').slice(0, 16)}</small></div></article>)}{auditLogs.length === 0 && <div className="empty-state">資料庫目前沒有操作紀錄。</div>}</aside>
     </div>
   );
 
@@ -1136,21 +1269,22 @@ export default function Home() {
     <div className="users-layout">
       <section className="panel table-panel">
         <div className="panel-heading"><div><p className="eyebrow">ADMIN USERS</p><h2>後台帳號與權限</h2></div>{canCreateUsers && <button className="primary-button" onClick={() => setModal({ type: 'user' })}>＋ 新增使用者</button>}</div>
+        <BulkTools entity="users" ids={adminUsers.filter((item) => item.id !== identity?.id).map((item) => item.id)} label="後台帳號" />
         <div className="data-table users-table">
           <div className="table-head"><span>使用者</span><span>角色</span><span>狀態</span><span>最近登入</span><span>權限操作</span></div>
           {adminUsers.map((user) => {
-            const canDeactivate = user.isActive && user.id !== identity?.id && (role === 'admin' || (role === 'manager' && user.roleKey === 'clerk'));
+            const canDeactivate = user.isActive && user.id !== identity?.id && (role === 'admin' || role === 'manager');
             return <div className="table-row static" key={user.username}>
-              <span><strong>{user.displayName}</strong><small>@{user.username}{user.id === identity?.id ? '・目前帳號' : ''}</small></span>
+              <span>{user.id !== identity?.id && <label className="selection-check"><input type="checkbox" checked={(selectedIds.users || []).includes(user.id)} onChange={() => toggleSelected('users', user.id)} /><span>選取</span></label>}<strong>{user.displayName}</strong><small>@{user.username}{user.id === identity?.id ? '・目前帳號' : ''}</small></span>
               <span><strong>{user.role}</strong></span>
               <span><StatusPill status={user.status} /></span>
               <span><strong>{user.lastLogin}</strong></span>
-              <span className="access-actions">{user.roleKey === 'clerk' && user.isActive && <button className={user.canOverrideTimeRules ? 'access-warning active' : 'access-warning'} onClick={() => toggleTimeOverridePermission(user)}>{user.canOverrideTimeRules ? '關閉強制時間權限' : '開啟強制時間權限'}</button>}{canDeactivate ? <button className="access-danger" onClick={() => deactivateAdminUser(user)}>停用權限</button> : <small>{user.isActive ? (user.roleKey === 'clerk' ? '' : '不可操作') : '已移除'}</small>}</span>
+              <span className="access-actions">{user.roleKey === 'clerk' && user.isActive && <button className={user.canOverrideTimeRules ? 'access-warning active' : 'access-warning'} onClick={() => toggleTimeOverridePermission(user)}>{user.canOverrideTimeRules ? '關閉強制時間權限' : '開啟強制時間權限'}</button>}{canDeactivate ? <button className="access-danger" onClick={() => deactivateAdminUser(user)}>永久刪除</button> : <small>{user.id === identity?.id ? '目前帳號' : '不可操作'}</small>}</span>
             </div>;
           })}
         </div>
       </section>
-      <aside className="panel security-card"><p className="eyebrow">LOGIN SECURITY</p><h2>數字 PIN 安全設定</h2><ul><li>PIN 只保存 Argon2 雜湊</li><li>連續錯誤 5 次鎖定 15 分鐘</li><li>Bearer 工作階段 8 小時到期</li><li>停用後立即撤銷既有登入</li></ul><div className="security-footnote">停用採保留紀錄的安全刪除，不會破壞訂單與稽核資料。</div></aside>
+      <aside className="panel security-card"><p className="eyebrow">LOGIN SECURITY</p><h2>數字 PIN 安全設定</h2><ul><li>PIN 只保存 Argon2 雜湊</li><li>連續錯誤 5 次鎖定 15 分鐘</li><li>Bearer 工作階段 8 小時到期</li><li>永久刪除後立即撤銷既有登入</li></ul><div className="security-footnote">你可從左下角「登入資訊」自行修改帳號、名稱與 PIN。</div></aside>
       <section className="panel permission-panel"><div className="panel-heading"><div><p className="eyebrow">ROLE MATRIX</p><h2>權限對照</h2></div></div><div className="permission-grid"><strong>功能</strong><strong>Admin</strong><strong>店長</strong><strong>客服</strong>{['預約與結帳', '新增／撤銷排班', '略過時間與撞期限制', '新增／退役／永久刪除員工', '修改價格優惠', '新增帳號', '停用客服帳號', '系統與稽核'].flatMap((label, index) => [<span key={`${label}-label`}>{label}</span>, <b key={`${label}-admin`}>✓</b>, <b key={`${label}-manager`}>{index === 7 ? '查看' : index === 5 ? '限客服' : '✓'}</b>, <b className="limited" key={`${label}-clerk`}>{index === 2 ? '可個別開啟' : index < 2 ? '部分' : '—'}</b>])}</div></section>
     </div>
   );
@@ -1206,20 +1340,21 @@ export default function Home() {
 
       {toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}
 
-      {modal?.type === 'account' && <Modal title="登入資訊" subtitle="師傅只使用手機 ID；客服與管理者使用帳號及 PIN。" onClose={() => setModal(null)} wide><div className="account-login-grid"><form className="modal-form account-login-card" onSubmit={login}><p className="eyebrow">MANAGEMENT</p><h3>客服／店長／Admin</h3><label>登入帳號<input name="username" required autoCapitalize="none" autoComplete="username" placeholder="例如：admin" /></label><label>數字 PIN<input name="pin" required type="password" inputMode="numeric" pattern="[0-9]+" minLength={4} autoComplete="current-password" /></label><button className="primary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '管理帳號登入'}</button></form><form className="modal-form account-login-card" onSubmit={loginStaff}><p className="eyebrow">STAFF</p><h3>師傅手機 ID 登入</h3><label>手機 ID<input name="staffPhone" required inputMode="tel" pattern="09[0-9]{8}" autoComplete="tel" placeholder="09xxxxxxxx" /></label><button className="secondary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '以員工身分進入'}</button></form></div>{loginError && <div className="auth-error modal-auth-error">{loginError}</div>}<div className="form-note">從 LINE Bot 開啟師傅後台時會以安全連結直接登入，不會再出現登入畫面。</div></Modal>}
+      {modal?.type === 'account' && <Modal title="登入資訊" subtitle={identity ? '可自行修改顯示名稱、登入帳號與數字 PIN。' : '師傅只使用手機 ID；客服與管理者使用帳號及 PIN。'} onClose={() => setModal(null)} wide>{identity ? <form className="modal-form" onSubmit={saveOwnAccount}><div className="form-grid two"><label>顯示名稱<input name="displayName" defaultValue={identity.display_name} required /></label><label>登入帳號<input name="username" defaultValue={identity.username} required autoCapitalize="none" /></label><label>目前 PIN<input name="currentPin" required type="password" inputMode="numeric" pattern="[0-9]+" minLength={4} /></label><label>新 PIN（不修改可留空）<input name="newPin" type="password" inputMode="numeric" pattern="[0-9]*" minLength={4} maxLength={12} /></label><label>再次輸入新 PIN<input name="confirmPin" type="password" inputMode="numeric" pattern="[0-9]*" minLength={4} maxLength={12} /></label></div><div className="form-note">儲存後會撤銷目前工作階段，請使用新帳密重新登入。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">更新帳密</button></footer></form> : <><div className="account-login-grid"><form className="modal-form account-login-card" onSubmit={login}><p className="eyebrow">MANAGEMENT</p><h3>客服／店長／Admin</h3><label>登入帳號<input name="username" required autoCapitalize="none" autoComplete="username" placeholder="例如：admin" /></label><label>數字 PIN<input name="pin" required type="password" inputMode="numeric" pattern="[0-9]+" minLength={4} autoComplete="current-password" /></label><button className="primary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '管理帳號登入'}</button></form><form className="modal-form account-login-card" onSubmit={loginStaff}><p className="eyebrow">STAFF</p><h3>師傅手機 ID 登入</h3><label>手機 ID<input name="staffPhone" required inputMode="tel" pattern="09[0-9]{8}" autoComplete="tel" placeholder="09xxxxxxxx" /></label><button className="secondary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '以員工身分進入'}</button></form></div>{loginError && <div className="auth-error modal-auth-error">{loginError}</div>}<div className="form-note">從 LINE Bot 開啟師傅後台時會以安全連結直接登入，不會再出現登入畫面。</div></>}</Modal>}
 
-      {modal?.type === 'appointment' && <Modal title="新增預約" subtitle={canOverrideTimeRules ? '目前帳號可略過提前時間及師傅／房間撞期限制。' : '一般帳號最少提前 90 分鐘，並檢查師傅與房間衝突。'} onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={addAppointment}><div className="form-grid two"><label>客戶姓名<input name="customer" required placeholder="例如：王先生" /></label><label>手機號碼<input name="phone" required inputMode="numeric" pattern="09[0-9]{8}" placeholder="09xxxxxxxx" /></label><label>日期<input name="date" type="date" min={canOverrideTimeRules ? undefined : todayIso} defaultValue={bookingDefault.date} required /></label><label>開始時間<input name="start" type="time" defaultValue={bookingDefault.time} required /></label><label>服務方案<select name="serviceId" defaultValue={plans.find((item) => item.code === 'C')?.id}>{plans.filter((item) => item.active).map((plan) => <option value={plan.id} key={plan.id}>{plan.code}・{plan.name}｜{plan.duration} 分｜{formatCurrency(plan.price)}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue="0"><option value="0">不使用優惠</option>{promotions.filter((item) => item.active && item.kind.includes('折扣')).map((item) => <option key={item.id} value={item.apiId}>{item.name}｜{item.kind === '百分比折扣' ? `${item.value}%` : `折 ${formatCurrency(item.value)}`}</option>)}</select></label><label>指派師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label>場地／房間<select name="room" defaultValue={rooms[0]?.name}>{rooms.map((room) => <option key={room.id}>{room.name}</option>)}<option>外出場地</option><option>待確認</option></select></label><label className="span-two">客服備註<textarea name="note" rows={3} placeholder="不公開給客戶的內部備註" /></label></div><div className="form-note">{canOverrideTimeRules ? '這筆訂單會以管理強制權限建立，仍會留下稽核紀錄。' : '例如 09:00 當下最早可預約 10:30；後端也會阻止重疊或過近的時間。'}</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">建立預約</button></footer></form></Modal>}
+      {modal?.type === 'appointment' && <Modal title="新增預約" subtitle={canOverrideTimeRules ? '目前帳號可略過提前時間及師傅／房間撞期限制。' : '一般帳號最少提前 90 分鐘，並檢查師傅與房間衝突。'} onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={addAppointment}><div className="form-grid two"><label>客戶姓名<input name="customer" required placeholder="例如：王先生" /></label><label>手機號碼<input name="phone" required inputMode="numeric" pattern="09[0-9]{8}" placeholder="09xxxxxxxx" /></label><label>日期<input name="date" type="date" min={canOverrideTimeRules ? undefined : todayIso} defaultValue={bookingDefault.date} required /></label><label>開始時間<input name="start" type="time" defaultValue={bookingDefault.time} required /></label><label>服務方案<select name="serviceId" defaultValue={plans.find((item) => item.code === 'C')?.id}>{plans.filter((item) => item.active).map((plan) => <option value={plan.id} key={plan.id}>{plan.code}・{plan.name}｜{plan.duration} 分｜{formatCurrency(plan.price)}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue="0"><option value="0">不使用優惠</option>{promotions.filter((item) => item.active && item.kind.includes('折扣')).map((item) => <option key={item.id} value={item.apiId}>{item.name}｜{item.kind === '百分比折扣' ? `${item.value}%` : `折 ${formatCurrency(item.value)}`}</option>)}</select></label><label>指派師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label>場地／房間<select name="room" defaultValue={rooms[0]?.name}>{rooms.map((room) => <option key={room.id}>{room.name}</option>)}{venues.filter((venue) => venue.active).map((venue) => <option key={`venue-${venue.id}`}>{venue.name}</option>)}<option>待確認</option></select></label><label className="span-two">客服備註<textarea name="note" rows={3} placeholder="不公開給客戶的內部備註" /></label></div><div className="form-note">{canOverrideTimeRules ? '這筆訂單會以管理強制權限建立，仍會留下稽核紀錄。' : '例如 09:00 當下最早可預約 10:30；後端也會阻止重疊或過近的時間。'}</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">建立預約</button></footer></form></Modal>}
 
-      {modal?.type === 'appointmentDetail' && selectedAppointment && <Modal title={selectedAppointment.id} subtitle={`${selectedAppointment.date}　${selectedAppointment.start}–${selectedAppointment.end}`} onClose={() => setModal(null)}><div className="detail-stack"><div className="detail-hero"><div><span>客戶</span><strong>{selectedAppointment.customer}</strong><small>{selectedAppointment.customerSerial ? `${selectedAppointment.customerSerial}（流水）・` : ''}{selectedAppointment.phone}</small></div><StatusPill status={selectedAppointment.status} /></div><dl><div><dt>師傅</dt><dd>{selectedAppointment.staff}</dd></div><div><dt>服務方案</dt><dd>{selectedAppointment.service}</dd></div><div><dt>優惠</dt><dd>{selectedAppointment.promotionName || '未使用'}</dd></div><div><dt>場地</dt><dd>{selectedAppointment.location}・{selectedAppointment.room}</dd></div><div><dt>應收金額</dt><dd>{isViewer ? '敏感資訊已隱藏' : formatCurrency(selectedAppointment.total)}</dd></div>{!isViewer && <div><dt>師傅應回帳</dt><dd>{formatCurrency(selectedAppointment.expectedReturn || 0)}</dd></div>}<div><dt>付款狀態</dt><dd>{isViewer ? '已隱藏' : selectedAppointment.payment}</dd></div></dl>{!isViewer && selectedAppointment.note && <div className="detail-note"><strong>客服備註</strong><p>{selectedAppointment.note}</p></div>}<div className="status-actions">{canEditAppointments && <button onClick={() => setModal({ type: 'appointmentEdit', id: selectedAppointment.id })}>編輯整張訂單</button>}{canEditAppointments && selectedAppointment.status === '已確認' && <button onClick={() => updateAppointmentStatus(selectedAppointment, '已報到')}>標記報到</button>}{(canEditAppointments || isStaffUser) && ['已確認', '已報到', '服務中'].includes(selectedAppointment.status) && <button onClick={() => updateAppointmentStatus(selectedAppointment, '待結帳')}>服務完成</button>}{canEditAppointments && selectedAppointment.status === '待結帳' && <button onClick={() => setModal({ type: 'checkout', id: selectedAppointment.id })}>開始結帳</button>}{canEditAppointments && <button className="danger-text" onClick={() => updateAppointmentStatus(selectedAppointment, '已取消')}>取消預約</button>}</div></div></Modal>}
+      {modal?.type === 'appointmentDetail' && selectedAppointment && <Modal title={selectedAppointment.id} subtitle={`${selectedAppointment.date}　${selectedAppointment.start}–${selectedAppointment.end}`} onClose={() => setModal(null)}><div className="detail-stack"><div className="detail-hero"><div><span>客戶</span><strong>{selectedAppointment.customer}</strong><small>{selectedAppointment.customerSerial ? `${selectedAppointment.customerSerial}（內部識別）・` : ''}{selectedAppointment.phone}</small></div><StatusPill status={selectedAppointment.status} /></div><dl><div><dt>師傅</dt><dd>{selectedAppointment.staff}</dd></div><div><dt>服務方案</dt><dd>{selectedAppointment.service}</dd></div><div><dt>優惠</dt><dd>{selectedAppointment.promotionName || '未使用'}</dd></div><div><dt>場地</dt><dd>{selectedAppointment.location}・{selectedAppointment.room}</dd></div><div><dt>應收金額</dt><dd>{formatCurrency(selectedAppointment.total)}</dd></div><div><dt>付款狀態</dt><dd>{selectedAppointment.payment}</dd></div></dl>{selectedAppointment.note && <div className="detail-note"><strong>客服備註</strong><p>{selectedAppointment.note}</p></div>}<div className="status-actions">{canEditAppointments && <button onClick={() => setModal({ type: 'appointmentEdit', id: selectedAppointment.id })}>編輯整張訂單</button>}{canEditAppointments && selectedAppointment.status !== '已完成' && <button onClick={() => setModal({ type: 'checkout', id: selectedAppointment.id })}>記錄付款並完成</button>}</div></div></Modal>}
 
-      {modal?.type === 'appointmentEdit' && selectedAppointment && <Modal title={`編輯 ${selectedAppointment.id}`} subtitle={canManageAll ? '店長與 Admin 可修改整張訂單所有欄位。' : '客服可調整預約與服務內容，金額需由店長或 Admin 處理。'} onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={(event) => saveAppointmentEdit(event, selectedAppointment)}><div className="form-grid two"><label>客戶姓名<input name="customer" defaultValue={selectedAppointment.customer} required /></label><label>手機號碼<input name="phone" defaultValue={selectedAppointment.phone} required /></label><label>日期<input name="date" type="date" defaultValue={selectedAppointment.date} required /></label><label>開始時間<input name="start" type="time" defaultValue={selectedAppointment.start} required /></label><label>服務方案<select name="serviceId" defaultValue={selectedAppointment.serviceId}>{plans.map((plan) => <option key={plan.id} value={plan.apiId}>{plan.code}・{plan.name}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue={selectedAppointment.promotionId || '0'}><option value="0">不使用優惠</option>{promotions.map((promotion) => <option key={promotion.id} value={promotion.apiId}>{promotion.name}</option>)}</select></label><label>指派師傅<select name="staffId" defaultValue={selectedAppointment.staffId}>{staff.filter((item) => item.status === '在職').map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label><label>場地／房間<select name="room" defaultValue={selectedAppointment.room}>{rooms.map((room) => <option key={room.id}>{room.name}</option>)}<option>外出場地</option><option>待確認</option></select></label><label>訂單狀態<select name="status" defaultValue={selectedAppointment.status}>{['待確認', '已確認', '已報到', '服務中', '待結帳', '已完成', '已取消'].map((status) => <option key={status}>{status}</option>)}</select></label>{canManageAll && <><label>原價<input name="basePrice" type="number" min="0" defaultValue={selectedAppointment.basePrice || 0} /></label><label>折扣<input name="discountAmount" type="number" min="0" defaultValue={selectedAppointment.discountAmount || 0} /></label><label>加價<input name="extraAmount" type="number" min="0" defaultValue={selectedAppointment.extraAmount || 0} /></label><label>訂單總額<input name="totalAmount" type="number" min="0" defaultValue={selectedAppointment.total} /></label></>}<label className="span-two">客服備註<textarea name="note" rows={3} defaultValue={selectedAppointment.note || ''} /></label><label className="span-two">修改原因<input name="reason" placeholder="例如：客戶改期、人工修正優惠" /></label></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存訂單</button></footer></form></Modal>}
+      {modal?.type === 'appointmentEdit' && selectedAppointment && <Modal title={`編輯 ${selectedAppointment.id}`} subtitle={canManageAll ? '店長與 Admin 可修改整張訂單所有欄位。' : '客服可調整預約與服務內容，金額需由店長或 Admin 處理。'} onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={(event) => saveAppointmentEdit(event, selectedAppointment)}><div className="form-grid two"><label>客戶姓名<input name="customer" defaultValue={selectedAppointment.customer} required /></label><label>手機號碼<input name="phone" defaultValue={selectedAppointment.phone} required /></label><label>日期<input name="date" type="date" defaultValue={selectedAppointment.date} required /></label><label>開始時間<input name="start" type="time" defaultValue={selectedAppointment.start} required /></label><label>服務方案<select name="serviceId" defaultValue={selectedAppointment.serviceId}>{plans.map((plan) => <option key={plan.id} value={plan.apiId}>{plan.code}・{plan.name}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue={selectedAppointment.promotionId || '0'}><option value="0">不使用優惠</option>{promotions.map((promotion) => <option key={promotion.id} value={promotion.apiId}>{promotion.name}</option>)}</select></label><label>指派師傅<select name="staffId" defaultValue={selectedAppointment.staffId}>{staff.filter((item) => item.status === '在職').map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label><label>場地／房間<select name="room" defaultValue={selectedAppointment.room}>{rooms.map((room) => <option key={room.id}>{room.name}</option>)}{venues.map((venue) => <option key={`venue-${venue.id}`}>{venue.name}</option>)}<option>待確認</option></select></label><label>訂單狀態<select name="status" defaultValue={selectedAppointment.status}>{['待確認', '已確認', '已完成'].map((status) => <option key={status}>{status}</option>)}</select></label>{canManageAll && <><label>原價<input name="basePrice" type="number" min="0" defaultValue={selectedAppointment.basePrice || 0} /></label><label>折扣<input name="discountAmount" type="number" min="0" defaultValue={selectedAppointment.discountAmount || 0} /></label><label>加價<input name="extraAmount" type="number" min="0" defaultValue={selectedAppointment.extraAmount || 0} /></label><label>訂單總額<input name="totalAmount" type="number" min="0" defaultValue={selectedAppointment.total} /></label></>}<label className="span-two">客服備註<textarea name="note" rows={3} defaultValue={selectedAppointment.note || ''} /></label><label className="span-two">修改原因<input name="reason" placeholder="例如：客戶改期、人工修正優惠" /></label></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存訂單</button></footer></form></Modal>}
 
       {modal?.type === 'shift' && <Modal title={modal.origin === 'staff' ? '新增我的排班' : '新增師傅排班'} subtitle={modal.origin === 'staff' || !canOverrideTimeRules ? '可跨日且沒有最低時數；一般帳號需遵守 90 分鐘鎖定與撞期規則。' : '可跨日且沒有最低時數；目前帳號可略過時間與撞期限制。'} onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => addShift(event, modal.origin)}><div className="form-grid">{modal.origin === 'admin' && <label>師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<div className="form-grid two"><label>開始日期<input name="startDate" type="date" min={modal.origin === 'staff' || !canOverrideTimeRules ? todayIso : undefined} defaultValue={bookingDefault.date} required /></label><label>開始時間<ClockSelect name="start" defaultValue={bookingDefault.time} /></label><label>結束日期<input name="endDate" type="date" defaultValue={shiftEndDefault.date} required /></label><label>結束時間<ClockSelect name="end" defaultValue={shiftEndDefault.time} /></label></div></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">確認排班</button></footer></form></Modal>}
 
       {modal?.type === 'shiftDetail' && selectedShift && <Modal title={`${selectedShift.staff} 的排班`} subtitle={`${selectedShift.date} ${selectedShift.start} 至 ${selectedShift.endDate} ${selectedShift.end}`} onClose={() => setModal(null)}><div className="detail-stack"><div className="detail-hero"><div><span>建立來源</span><strong>{selectedShift.source}</strong><small>共 {Number((shiftDurationMinutes(selectedShift) / 60).toFixed(2))} 小時</small></div><StatusPill status={isShiftLocked(selectedShift) && !canOverrideTimeRules ? '已鎖定' : '可調整'} /></div>{isShiftLocked(selectedShift) && !canOverrideTimeRules && <div className="locked-message">此班已進入開始前 90 分鐘範圍。請由店長、Admin 或具強制權限的客服處理。</div>}{modal.origin === 'staff' ? <button className="danger-button full" onClick={() => removeShift(selectedShift, 'staff')}>{isShiftLocked(selectedShift) ? '聯絡店長處理' : '撤銷這段排班'}</button> : <form onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget); removeShift(selectedShift, 'admin', String(data.get('reason') || '')); }}><label className="field-label">撤銷備註<textarea name="reason" rows={3} placeholder="選填，例如：師傅臨時請假" /></label><button className="danger-button full" type="submit">撤銷排班</button></form>}</div></Modal>}
 
-      {modal?.type === 'checkout' && selectedAppointment && <Modal title="訂單結帳" subtitle={`${selectedAppointment.id}・${selectedAppointment.customer}`} onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => finishCheckout(event, selectedAppointment.id)}><div className="receipt"><div><span>{selectedAppointment.service}</span><strong>{formatCurrency(selectedAppointment.basePrice || selectedAppointment.total)}</strong></div><div><span>{selectedAppointment.promotionName || '優惠折扣'}</span><strong>− {formatCurrency(selectedAppointment.discountAmount || 0)}</strong></div><div><span>其他加價</span><strong>＋ {formatCurrency(selectedAppointment.extraAmount || 0)}</strong></div><div className="receipt-total"><span>應收總額</span><strong>{formatCurrency(selectedAppointment.total)}</strong></div><div><span>師傅應回帳</span><strong>{formatCurrency(selectedAppointment.expectedReturn || 0)}</strong></div></div><label>付款方式<select name="paymentMethod" defaultValue="現金"><option>現金</option><option>轉帳</option></select></label><label>結帳備註<textarea name="note" rows={3} placeholder="例如：現金由師傅代收，待第三人確認回帳" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>稍後處理</button><button className="primary-button" type="submit">確認完成訂單</button></footer></form></Modal>}
+      {modal?.type === 'checkout' && selectedAppointment && <Modal title="完成訂單" subtitle={`${selectedAppointment.id}・${selectedAppointment.customer}`} onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => finishCheckout(event, selectedAppointment.id)}><div className="receipt"><div><span>{selectedAppointment.service}</span><strong>{formatCurrency(selectedAppointment.basePrice || selectedAppointment.total)}</strong></div><div><span>{selectedAppointment.promotionName || '優惠折扣'}</span><strong>− {formatCurrency(selectedAppointment.discountAmount || 0)}</strong></div><div><span>其他加價</span><strong>＋ {formatCurrency(selectedAppointment.extraAmount || 0)}</strong></div><div className="receipt-total"><span>應收總額</span><strong>{formatCurrency(selectedAppointment.total)}</strong></div></div><label>付款方式<select name="paymentMethod" defaultValue="現金"><option>現金</option><option>轉帳</option></select></label><label>完成備註<textarea name="note" rows={3} placeholder="例如：現金已收妥" /></label><div className="form-note">按下完成後即視為款項已回帳，不再需要師傅或第三人另外確認。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>稍後處理</button><button className="primary-button" type="submit">確認完成訂單</button></footer></form></Modal>}
 
+      {modal?.type === 'serviceCreate' && <Modal title="新增服務方案" subtitle="新增後會同步提供後台、官網編輯器、預約網頁與 LINE Bot 使用。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={addService}><div className="form-grid two"><label>方案代碼<input name="code" required placeholder="例如 A" /></label><label>方案名稱<input name="name" required /></label><label>服務分鐘<input name="duration" type="number" min="1" required /></label><label>售價<input name="price" type="number" min="0" required /></label><label>服務地點<select name="location"><option>店內</option><option>外出</option></select></label></div><label>方案說明<textarea name="description" rows={3} /></label><label className="checkbox-field"><input name="canChooseStaff" type="checkbox" defaultChecked />可指定師傅</label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">新增方案</button></footer></form></Modal>}
       {modal?.type === 'service' && (() => { const plan = plans.find((item) => item.id === modal.id); return plan ? <Modal title={`編輯 ${plan.code} 方案`} subtitle="正式版會保存生效日期與每次價格修改紀錄。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => saveService(event, plan.id)}><label>方案名稱<input name="name" defaultValue={plan.name} required /></label><div className="form-grid two"><label>服務分鐘<input name="duration" type="number" min="30" step="10" defaultValue={plan.duration} required /></label><label>售價<input name="price" type="number" min="0" step="100" defaultValue={plan.price} required /></label></div><label className="checkbox-field"><input name="active" type="checkbox" defaultChecked={plan.active} />啟用此方案</label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">儲存變更</button></footer></form></Modal> : null; })()}
 
       {modal?.type === 'promotion' && <Modal title="新增優惠或附加費" subtitle="規則會保留生效期間與計算方式。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={addPromotion}><label>規則名稱<input name="name" required placeholder="例如：週年慶折扣" /></label><div className="form-grid two"><label>計算方式<select name="calculationType"><option value="fixed_discount">固定折扣</option><option value="percent_discount">百分比折扣</option><option value="fixed_fee">固定加價</option><option value="per_30_minutes">每 30 分鐘</option><option value="per_km">每公里</option></select></label><label>金額／百分比<input name="value" type="number" min="0" required /></label><label>生效日期<input name="startsAt" type="date" defaultValue={todayIso} /></label><label>結束日期<input name="endsAt" type="date" min={todayIso} /></label></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">新增規則</button></footer></form></Modal>}
@@ -1232,12 +1367,12 @@ export default function Home() {
 
       {modal?.type === 'staffEdit' && (() => { const member = staff.find((item) => item.id === modal.id); return member ? <Modal title={`編輯 ${member.name}`} subtitle="可編輯身高、體重、角色及撤銷後重新串接 LINE。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => saveStaffProfile(event, member)}><label>姓名／稱呼<input name="name" defaultValue={member.name} required /></label><label>師傅分類<select name="category" defaultValue={member.category}><option>直男師傅</option><option>圈內師傅</option><option>雙性師傅</option></select></label><div className="form-grid two"><label>身高（cm）<input name="height" type="number" min="100" max="250" defaultValue={member.height || ''} /></label><label>體重（kg）<input name="weight" type="number" min="30" max="250" defaultValue={member.weight || ''} /></label></div><label>角色<select name="role" defaultValue={member.role || ''}><option value="">尚未設定</option><option>攻擊手</option><option>守備方</option><option>無特定</option><option>攻守兼備</option></select></label>{member.photoUrl && <img className="staff-edit-preview" src={member.photoUrl} alt={`${member.name}目前公開照片`} />}<label>公開照片網址<input name="photoUrl" type="url" defaultValue={member.photoUrl || ''} placeholder="https://..." /></label><label>或從電腦上傳新照片<input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label><div className="form-note">選擇新檔案時會覆蓋網址欄位的照片。限 JPEG、PNG、WebP，最大 3 MB。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button>{canManageAll && <button type="button" className="danger-button" onClick={() => setModal({ type: 'staffDelete', id: member.id })}>永久刪除</button>}<button className="primary-button">儲存公開資料</button></footer></form><form className="modal-form line-link-form" onSubmit={(event) => linkStaffLine(event, member)}><div className="form-note"><strong>{member.lineConnected ? '目前 LINE 已串接' : '目前 LINE 尚未串接'}</strong><br />{member.lineConnected ? '輸入新的 LINE User ID 會先撤銷舊連結，再傳送測試通知並改綁。' : '只有測試通知成功送達才會完成串接。'}</div><label>新的 LINE User ID<input name="lineUserId" required pattern="U[0-9a-fA-F]{32}" minLength={33} maxLength={33} placeholder="U 開頭的 33 位 LINE User ID" /></label><footer className="modal-actions">{member.lineConnected && <button type="button" className="danger-button" onClick={() => unlinkStaffLine(member)}>僅解除目前 LINE</button>}<button className="primary-button" type="submit">{member.lineConnected ? '撤銷後改綁並傳通知' : '串接並傳送測試通知'}</button></footer></form></Modal> : null; })()}
 
-      {modal?.type === 'staffDelete' && (() => { const member = staff.find((item) => item.id === modal.id); return member ? <Modal title={`永久刪除 ${member.name}`} subtitle="這項操作無法復原，系統會先檢查是否存在營運歷史。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => permanentlyDeleteStaff(event, member)}><div className="locked-message">永久刪除會移除 LINE 綁定、登入連結與私密資料。若已有預約、排班、付款或回帳紀錄，系統會拒絕刪除；這種情況請使用「暫時退役」。</div><label>刪除原因<input name="reason" required minLength={3} maxLength={500} placeholder="例如：重複建立的錯誤帳戶" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="danger-button" type="submit">確認永久刪除</button></footer></form></Modal> : null; })()}
+      {modal?.type === 'staffDelete' && (() => { const member = staff.find((item) => item.id === modal.id); return member ? <Modal title={`永久刪除 ${member.name}`} subtitle="這項操作無法復原。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => permanentlyDeleteStaff(event, member)}><div className="locked-message">永久刪除會移除 LINE 綁定、登入連結、班表與私密資料；歷史訂單只保留當時的師傅名稱快照。</div><label>刪除原因<input name="reason" required minLength={3} maxLength={500} placeholder="例如：重複建立的錯誤帳戶" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="danger-button" type="submit">確認永久刪除</button></footer></form></Modal> : null; })()}
 
       {modal?.type === 'bookingRequest' && selectedBookingRequest && <Modal title={`處理 ${selectedBookingRequest.request_id}`} subtitle="這是預約通知；儲存修改不會成立訂單，按確認後才會建立正式訂單。" onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={(event) => saveBookingRequest(event, selectedBookingRequest)}><div className="form-grid two"><label>客戶名稱<input name="customerName" defaultValue={selectedBookingRequest.customer_name} required /></label><label>手機號碼<input name="phone" defaultValue={selectedBookingRequest.phone} pattern="09[0-9]{8}" required /></label><label>預約時間<input name="startTime" type="datetime-local" defaultValue={selectedBookingRequest.start_time.slice(0, 16)} required /></label><label>指定師傅<select name="staffId" defaultValue={selectedBookingRequest.staff_id || ''}><option value="">未指定</option>{staff.filter((item) => item.status === '在職').map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label><label>服務方案<select name="servicePlanId" defaultValue={selectedBookingRequest.service_plan_id}>{plans.filter((item) => item.active).map((item) => <option key={item.id} value={item.apiId}>{item.code}・{item.name}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue={selectedBookingRequest.promotion_id || ''}><option value="">不使用優惠</option>{promotions.filter((item) => item.active).map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label></div><label>客戶備註<textarea name="notes" rows={3} defaultValue={selectedBookingRequest.notes || ''} /></label><label>客服處理備註<textarea name="reviewNote" rows={2} defaultValue={selectedBookingRequest.review_note || ''} /></label><footer className="modal-actions"><button type="button" className="danger-button" onClick={() => cancelBookingRequest(selectedBookingRequest)}>取消通知</button><button className="secondary-button" type="submit">儲存修改</button><button className="primary-button" type="button" onClick={() => confirmBookingRequest(selectedBookingRequest)}>確認並成立訂單</button></footer></form></Modal>}
 
       {modal?.type === 'user' && canCreateUsers && <Modal title="新增後台使用者" subtitle={role === 'manager' ? '店長只能新增客服（管理）帳號。' : 'Admin 可新增 Admin、店長或客服帳號。'} onClose={() => setModal(null)}><form className="modal-form" onSubmit={addAdminUser}><label>顯示名稱<input name="displayName" required /></label><label>登入帳號<input name="username" required autoCapitalize="none" /></label>{role === 'manager' ? <label>角色<input name="role" value="客服" disabled /></label> : <label>角色<select name="role"><option>Admin</option><option>店長</option><option>客服</option></select></label>}<label>初始數字 PIN<input name="pin" required inputMode="numeric" pattern="[0-9]+" minLength={4} maxLength={12} type="password" placeholder="至少 4 位" /></label><label className="checkbox-row"><input name="canOverrideTimeRules" type="checkbox" />若角色為客服，允許略過預約、排班的時間與撞期限制</label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立帳號</button></footer></form></Modal>}
-      {modal?.type === 'customer' && selectedCustomer && <Modal title={`編輯 ${selectedCustomer.name}`} subtitle="VIP 是流水；真正的客戶 ID 是手機號碼，同一客戶可保存多支。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={saveCustomer}><label>客戶流水<input value={selectedCustomer.vipSerial} disabled /></label><label>客戶名稱<input name="displayName" defaultValue={selectedCustomer.name} required placeholder="可由後台建立或採用 LINE 顯示名稱" /></label><label>客戶 ID（手機號碼）<textarea name="phones" rows={4} defaultValue={selectedCustomer.phones.join('\n')} required placeholder={"0912345678\n0987654321"} /></label><div className="form-note">每行一支手機；第一支是主要聯絡號碼。每支手機只能屬於一位客戶。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存客戶資料</button></footer></form></Modal>}
+      {modal?.type === 'customer' && selectedCustomer && <Modal title={`編輯 ${selectedCustomer.name}`} subtitle="內部識別由等級與主要手機後四碼組成，客人不會看到。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={saveCustomer}><label>客戶等級<select name="customerGrade" defaultValue={selectedCustomer.grade} disabled={!canManageAll}><option>SSR</option><option>SR</option><option>R</option><option>N</option></select>{!canManageAll && <input type="hidden" name="customerGrade" value={selectedCustomer.grade} />}</label><label>內部識別<input value={selectedCustomer.vipSerial} disabled /></label><label>客戶名稱<input name="displayName" defaultValue={selectedCustomer.name} required placeholder="可由後台建立或採用 LINE 顯示名稱" /></label><label>手機 ID<textarea name="phones" rows={4} defaultValue={selectedCustomer.phones.join('\n')} required placeholder={"0912345678\n0987654321"} /></label><div className="form-note">每行一支手機；第一支是主要聯絡號碼。每支手機只能屬於一位客戶。只有 Admin／店長可調整等級；SSR／SR 不會因官網再次預約而自動降級。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存客戶資料</button></footer></form></Modal>}
     </main>
   );
 }

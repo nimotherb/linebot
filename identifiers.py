@@ -1,20 +1,28 @@
-"""Stable public identifiers used across the Bot and administration API."""
+"""Stable internal customer identifiers used by administration surfaces."""
 
 from __future__ import annotations
 
-import os
+import re
 
 
-DEFAULT_CUSTOMER_SERIAL_START = 4800
+CUSTOMER_GRADES = ("SSR", "SR", "R", "N")
 
 
-def customer_serial(user_id: int | None) -> str:
-    """Return the display-only VIP sequence without exposing the database id."""
-    if user_id is None:
-        return "VIP-Unknown"
-    try:
-        configured_start = int(os.getenv("CUSTOMER_SERIAL_START", str(DEFAULT_CUSTOMER_SERIAL_START)))
-    except ValueError:
-        configured_start = DEFAULT_CUSTOMER_SERIAL_START
-    start = max(1, configured_start)
-    return f"VIP-{start + int(user_id) - 1:04d}"
+def customer_serial(
+    user_id: int | None = None,
+    phone: str | None = None,
+    grade: str | None = None,
+) -> str:
+    """Return the internal ``GRADE-last4`` identifier.
+
+    The database id is accepted only for backwards-compatible callers and is
+    never included in the result.  Customer-facing responses must omit this
+    internal identifier entirely.
+    """
+    del user_id
+    normalized_grade = (grade or "N").strip().upper()
+    if normalized_grade not in CUSTOMER_GRADES:
+        normalized_grade = "N"
+    digits = re.sub(r"\D", "", phone or "")
+    suffix = digits[-4:] if len(digits) >= 4 else "????"
+    return f"{normalized_grade}-{suffix}"

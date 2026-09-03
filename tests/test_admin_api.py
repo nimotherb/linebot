@@ -140,11 +140,11 @@ def test_login_is_required_and_bootstrap_seeds_two_rooms(client):
     headers = login(client)
     response = client.get("/api/admin/bootstrap", headers=headers)
     assert response.status_code == 200
-    assert [room["name"] for room in response.json()["rooms"]] == ["房間 1", "房間 2"]
+    assert [room["name"] for room in response.json()["rooms"]] == ["657上", "657下"]
     staff_rows = response.json()["staff"]
     assert len(staff_rows) == 47
     assert all(item["photo_url"].startswith("https://") for item in staff_rows)
-    assert customer_serial(1) == "VIP-4800"
+    assert customer_serial(phone="0912345678", grade="SSR") == "SSR-5678"
 
 
 def test_staff_photo_upload_and_safe_permanent_delete(client):
@@ -210,9 +210,9 @@ def test_staff_photo_upload_and_safe_permanent_delete(client):
         },
     )
     assert shift.status_code == 201, shift.text
-    blocked = client.delete(f"/api/admin/staff/{used.json()['id']}", headers=admin_headers, params={"reason": "驗證歷史保護"})
-    assert blocked.status_code == 409
-    assert "暫時退役" in blocked.json()["detail"]
+    removed_used = client.delete(f"/api/admin/staff/{used.json()['id']}", headers=admin_headers, params={"reason": "驗證強制永久刪除"})
+    assert removed_used.status_code == 200
+    assert all(item["staff_id"] != used.json()["id"] for item in client.get("/api/admin/bootstrap", headers=admin_headers).json()["shifts"])
 
 
 def test_appointment_end_and_staff_room_conflicts(client):
@@ -249,7 +249,7 @@ def test_appointment_end_and_staff_room_conflicts(client):
     first = client.post("/api/admin/appointments", headers=clerk_headers, json=payload)
     assert first.status_code == 201, first.text
     assert first.json()["end_time"] == (start_at + timedelta(minutes=90)).isoformat(timespec="minutes")
-    assert first.json()["customer_serial"] == "VIP-4800"
+    assert first.json()["customer_serial"] == "N-5678"
 
     with SessionLocal() as db:
         staff_obj = db.query(Staff).filter(Staff.id == staff["id"]).first()
@@ -325,10 +325,11 @@ def test_manager_can_only_create_clerk_accounts(client):
     assert forced_overlap.status_code == 201, forced_overlap.text
     removed = client.delete(f"/api/admin/users/{clerk_id}", headers=manager_headers)
     assert removed.status_code == 200
-    assert removed.json()["is_active"] is False
+    assert removed.json()["ok"] is True
+    assert all(item["id"] != clerk_id for item in client.get("/api/admin/users", headers=manager_headers).json())
 
     admin_user = next(item for item in client.get("/api/admin/users", headers=manager_headers).json() if item["username"] == "admin")
-    assert client.delete(f"/api/admin/users/{admin_user['id']}", headers=manager_headers).status_code == 403
+    assert client.delete(f"/api/admin/users/{admin_user['id']}", headers=manager_headers).status_code == 422
 
 
 def test_booking_request_waits_for_review_and_can_be_confirmed_without_shift(client):
@@ -586,14 +587,13 @@ def test_permanent_staff_delete_is_confirmed_and_preserves_history(client):
         },
     )
     assert shift.status_code == 201, shift.text
-    blocked = client.delete(
+    removed_protected = client.delete(
         f"/api/admin/staff/{protected['id']}",
         headers=headers,
-        params={"reason": "嘗試刪除已有歷史的師傅"},
+        params={"reason": "強制刪除已有歷史的師傅"},
     )
-    assert blocked.status_code == 409
-    assert "排班 1 筆" in blocked.json()["detail"]
-    assert "暫時退役" in blocked.json()["detail"]
+    assert removed_protected.status_code == 200
+    assert all(item["id"] != shift.json()["id"] for item in client.get("/api/admin/bootstrap", headers=headers).json()["shifts"])
 
 
 def test_staff_line_magic_link_is_short_lived_and_single_use(client):
@@ -630,18 +630,18 @@ def test_customer_name_serial_and_multiple_phone_ids(client):
     assert created.status_code == 201, created.text
     row = created.json()
     assert row["customer_name"] == "多手機客戶"
-    assert row["customer_serial"].startswith("VIP-")
+    assert row["customer_serial"] == "N-0001"
     customer_id = row["customer_id"]
 
     updated = client.patch(
         f"/api/admin/customers/{customer_id}",
         headers=headers,
-        json={"display_name": "王先生", "phones": ["0966000001", "0966000002"]},
+        json={"display_name": "王先生", "phones": ["0966000001", "0966000002"], "customer_grade": "SSR"},
     )
     assert updated.status_code == 200, updated.text
     assert updated.json()["display_name"] == "王先生"
     assert updated.json()["phones"] == ["0966000001", "0966000002"]
-    assert updated.json()["vip_serial"] == row["customer_serial"]
+    assert updated.json()["vip_serial"] == "SSR-0001"
 
 
 def test_public_booking_checks_availability_and_is_idempotent(client):
@@ -694,6 +694,9 @@ def test_public_booking_checks_availability_and_is_idempotent(client):
     assert first.json()["appointment"]["customer_name"] == "網頁預約客戶"
     assert first.json()["appointment"]["phone"] == "0977000002"
     assert first.json()["appointment"]["staff_id"] == staff["id"]
+    assert "customer_serial" not in first.json()["appointment"]
+    assert "customer_grade" not in first.json()["appointment"]
+    assert "customer_id" not in first.json()["appointment"]
 
     repeated = client.post("/api/public/booking/appointments", json=payload)
     assert repeated.status_code == 201, repeated.text
@@ -710,6 +713,36 @@ def test_public_booking_checks_availability_and_is_idempotent(client):
     })
     assert automatic.status_code == 201, automatic.text
     assert automatic.json()["appointment"]["staff_id"] == staff["id"]
+
+
+def test_admin_can_update_own_login_and_bulk_delete(client):
+    headers = login(client)
+    changed = client.patch(
+        "/api/admin/auth/me",
+        headers=headers,
+        json={"current_pin": "123456", "display_name": "Admin 測試", "username": "admin-test", "new_pin": "123457"},
+    )
+    assert changed.status_code == 200, changed.text
+    changed_headers = login(client, "admin-test", "123457")
+    service = client.post(
+        "/api/admin/services",
+        headers=changed_headers,
+        json={"code": "DELETE-ME", "name": "批量刪除測試", "duration_minutes": 60, "price": 1},
+    )
+    assert service.status_code == 201, service.text
+    deleted = client.post(
+        "/api/admin/bulk-delete",
+        headers=changed_headers,
+        json={"entity": "services", "ids": [service.json()["id"]], "reason": "自動測試批量刪除"},
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["deleted_ids"] == [service.json()["id"]]
+    restored = client.patch(
+        "/api/admin/auth/me",
+        headers=changed_headers,
+        json={"current_pin": "123457", "display_name": "Admin", "username": "admin", "new_pin": "123456"},
+    )
+    assert restored.status_code == 200, restored.text
 
 
 def test_return_tables_promotions_and_line_pin_binding(client):

@@ -92,6 +92,13 @@ class AdminUserPermissionIn(BaseModel):
     can_override_time_rules: bool
 
 
+class AdminSelfUpdateIn(BaseModel):
+    current_pin: str = Field(min_length=4, max_length=32, pattern=r"^\d+$")
+    username: str | None = Field(default=None, min_length=3, max_length=80, pattern=r"^[a-zA-Z0-9._-]+$")
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    new_pin: str | None = Field(default=None, min_length=4, max_length=32, pattern=r"^\d+$")
+
+
 class AppointmentCreateIn(BaseModel):
     customer_name: str = Field(min_length=1, max_length=120)
     phone: str = Field(min_length=8, max_length=30)
@@ -108,7 +115,7 @@ class AppointmentCreateIn(BaseModel):
 class AppointmentPatchIn(BaseModel):
     customer_name: str | None = Field(default=None, min_length=1, max_length=120)
     phone: str | None = Field(default=None, min_length=8, max_length=30)
-    status: str | None = None
+    status: Literal["pending", "confirmed", "completed", "待確認", "已確認", "已完成"] | None = None
     staff_id: int | None = None
     room_id: int | None = None
     venue_id: int | None = None
@@ -197,6 +204,31 @@ class StaffMagicLoginIn(BaseModel):
 class CustomerPatchIn(BaseModel):
     display_name: str = Field(min_length=1, max_length=255)
     phones: list[str] = Field(min_length=1, max_length=10)
+    customer_grade: Literal["SSR", "SR", "R", "N"] = "N"
+
+
+class RoomCreateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class RoomPatchIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    active: bool | None = None
+
+
+class VenuePatchIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    address: str | None = Field(default=None, max_length=500)
+    room_name: str | None = Field(default=None, max_length=120)
+    rental_cost: int | None = Field(default=None, ge=0)
+    notes: str | None = None
+    active: bool | None = None
+
+
+class BulkDeleteIn(BaseModel):
+    entity: Literal["appointments", "booking_requests", "shifts", "customers", "staff", "services", "promotions", "rooms", "venues", "users", "audit_logs"]
+    ids: list[int] = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=2, max_length=500)
 
 
 class PublicBookingCreateIn(BaseModel):
@@ -478,6 +510,10 @@ def register_admin_api(
         promotion_id = Column(Integer, ForeignKey("promotions.id"), nullable=True)
         room_id = Column(Integer, ForeignKey("rooms.id"), nullable=True)
         venue_id = Column(Integer, ForeignKey("venues.id"), nullable=True)
+        service_name_snapshot = Column(String(160), nullable=True)
+        promotion_name_snapshot = Column(String(160), nullable=True)
+        room_name_snapshot = Column(String(160), nullable=True)
+        venue_name_snapshot = Column(String(160), nullable=True)
         contact_phone = Column(String(20), nullable=True)
         base_price = Column(Integer, nullable=False, default=0)
         discount_amount = Column(Integer, nullable=False, default=0)
@@ -764,12 +800,15 @@ def register_admin_api(
                     line_user_id=line_identity["sub"],
                     phone=contact_phone,
                     display_name=line_identity.get("name") or payload.customer_name.strip(),
+                    customer_grade="R",
                 )
                 db.add(customer)
                 db.flush()
             attach_customer_phone(db, customer, contact_phone)
             if not getattr(customer, "display_name", None):
                 customer.display_name = line_identity.get("name") or payload.customer_name.strip()
+            if getattr(customer, "customer_grade", "N") not in {"SSR", "SR"}:
+                customer.customer_grade = "R"
             return customer, contact_phone, "liff"
 
         customer = phone_customer
@@ -778,12 +817,15 @@ def register_admin_api(
                 line_user_id=f"manual:{secrets.token_hex(16)}",
                 phone=contact_phone,
                 display_name=payload.customer_name.strip(),
+                customer_grade="R",
             )
             db.add(customer)
             db.flush()
         attach_customer_phone(db, customer, contact_phone)
         if not getattr(customer, "display_name", None):
             customer.display_name = payload.customer_name.strip()
+        if getattr(customer, "customer_grade", "N") not in {"SSR", "SR"}:
+            customer.customer_grade = "R"
         return customer, contact_phone, "web"
 
     def available_staff(db: Session, start_dt: datetime, end_dt: datetime) -> list:
@@ -870,23 +912,11 @@ def register_admin_api(
         *,
         actor_id: int | None = None,
         reason: str | None = None,
+        commit: bool = True,
     ) -> dict[str, Any]:
         item = db.query(Staff).filter(Staff.id == staff_id).with_for_update().first()
         if not item:
             raise HTTPException(status_code=404, detail="找不到員工")
-
-        dependencies = {
-            "預約": db.query(Appointment).filter(Appointment.staff_id == staff_id).count(),
-            "排班": db.query(Shift).filter(Shift.staff_id == staff_id).count(),
-            "付款": db.query(Payment).filter(Payment.received_by_staff_id == staff_id).count(),
-            "回帳": db.query(StaffReturn).filter(StaffReturn.staff_id == staff_id).count(),
-        }
-        retained = [f"{label} {count} 筆" for label, count in dependencies.items() if count]
-        if retained:
-            raise HTTPException(
-                status_code=409,
-                detail=f"{item.name} 仍有{'、'.join(retained)}歷史，不能永久刪除；請改用暫時退役以保留帳務與稽核紀錄。",
-            )
 
         actor = db.query(AdminUser).filter(AdminUser.id == actor_id).first() if actor_id else None
         normalized_name = item.name.strip().casefold()
@@ -899,6 +929,14 @@ def register_admin_api(
             ))
 
         before = staff_dict(item)
+        db.query(Appointment).filter(Appointment.staff_id == staff_id).update({
+            Appointment.staff_name_snapshot: item.name,
+            Appointment.staff_id: None,
+        }, synchronize_session=False)
+        db.query(BookingRequest).filter(BookingRequest.requested_staff_id == staff_id).update({BookingRequest.requested_staff_id: None}, synchronize_session=False)
+        db.query(Payment).filter(Payment.received_by_staff_id == staff_id).update({Payment.received_by_staff_id: None}, synchronize_session=False)
+        db.query(StaffReturn).filter(StaffReturn.staff_id == staff_id).delete(synchronize_session=False)
+        db.query(Shift).filter(Shift.staff_id == staff_id).delete(synchronize_session=False)
         if item.line_user_id and not item.line_user_id.startswith(("pending:", "seeded:")) and not db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == item.line_user_id).first():
             db.add(RevokedStaffLine(line_user_id=item.line_user_id, staff_name=item.name, revoked_by_user_id=actor_id))
         for model in (StaffScheduleToken, StaffPrivateHealth, StaffSession, StaffMagicLink, StaffPhoto):
@@ -906,10 +944,100 @@ def register_admin_api(
         deleted_name = item.name
         db.delete(item)
         audit(db, actor, "permanent_delete", "staff", staff_id, reason=reason, before=before)
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         return {"ok": True, "deleted_staff_id": staff_id, "deleted_staff_name": deleted_name}
 
     app.state.permanently_delete_staff = permanently_delete_staff
+
+    def delete_appointment_record(db: Session, appointment_id: int) -> None:
+        item = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到預約")
+        db.query(StaffReturn).filter(StaffReturn.appointment_id == appointment_id).delete(synchronize_session=False)
+        db.query(Payment).filter(Payment.appointment_id == appointment_id).delete(synchronize_session=False)
+        db.query(AppointmentDetail).filter(AppointmentDetail.appointment_id == appointment_id).delete(synchronize_session=False)
+        db.query(BookingRequest).filter(BookingRequest.appointment_id == appointment_id).delete(synchronize_session=False)
+        db.query(PublicBookingRequest).filter(PublicBookingRequest.appointment_id == appointment_id).delete(synchronize_session=False)
+        db.delete(item)
+
+    def delete_customer_record(db: Session, customer_id: int) -> None:
+        item = db.query(User).filter(User.id == customer_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到客戶")
+        appointment_ids = [row[0] for row in db.query(Appointment.id).filter(Appointment.user_id == customer_id).all()]
+        for appointment_id in appointment_ids:
+            delete_appointment_record(db, appointment_id)
+        db.query(BookingRequest).filter(BookingRequest.user_id == customer_id).delete(synchronize_session=False)
+        db.query(CustomerPhone).filter(CustomerPhone.user_id == customer_id).delete(synchronize_session=False)
+        db.delete(item)
+
+    def delete_service_record(db: Session, service_id: int) -> None:
+        item = db.query(ServicePlan).filter(ServicePlan.id == service_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到服務方案")
+        db.query(AppointmentDetail).filter(AppointmentDetail.service_plan_id == service_id).update({
+            AppointmentDetail.service_name_snapshot: item.name,
+            AppointmentDetail.service_plan_id: None,
+        }, synchronize_session=False)
+        db.query(BookingRequest).filter(BookingRequest.service_plan_id == service_id).delete(synchronize_session=False)
+        db.delete(item)
+
+    def delete_promotion_record(db: Session, promotion_id: int) -> None:
+        item = db.query(Promotion).filter(Promotion.id == promotion_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到優惠")
+        db.query(AppointmentDetail).filter(AppointmentDetail.promotion_id == promotion_id).update({
+            AppointmentDetail.promotion_name_snapshot: item.name,
+            AppointmentDetail.promotion_id: None,
+        }, synchronize_session=False)
+        db.query(BookingRequest).filter(BookingRequest.promotion_id == promotion_id).update({BookingRequest.promotion_id: None}, synchronize_session=False)
+        db.delete(item)
+
+    def delete_room_record(db: Session, room_id: int) -> None:
+        item = db.query(Room).filter(Room.id == room_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到房間")
+        db.query(AppointmentDetail).filter(AppointmentDetail.room_id == room_id).update({
+            AppointmentDetail.room_name_snapshot: item.name,
+            AppointmentDetail.room_id: None,
+        }, synchronize_session=False)
+        db.delete(item)
+
+    def delete_venue_record(db: Session, venue_id: int) -> None:
+        item = db.query(Venue).filter(Venue.id == venue_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到場地")
+        db.query(AppointmentDetail).filter(AppointmentDetail.venue_id == venue_id).update({
+            AppointmentDetail.venue_name_snapshot: item.name,
+            AppointmentDetail.venue_id: None,
+        }, synchronize_session=False)
+        db.delete(item)
+
+    def delete_admin_user_record(db: Session, user_id: int, actor) -> None:
+        item = db.query(AdminUser).filter(AdminUser.id == user_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到後台帳號")
+        if item.id == actor.id:
+            raise HTTPException(status_code=422, detail="不能刪除目前登入中的自己")
+        if item.role == "admin" and db.query(AdminUser).filter(AdminUser.role == "admin", AdminUser.id != item.id).count() == 0:
+            raise HTTPException(status_code=422, detail="系統至少必須保留一個 Admin")
+        db.query(AdminSession).filter(AdminSession.admin_user_id == user_id).delete(synchronize_session=False)
+        for model, column in (
+            (Shift, Shift.created_by_user_id),
+            (BookingRequest, BookingRequest.reviewed_by_user_id),
+            (Payment, Payment.confirmed_by_user_id),
+            (StaffReturn, StaffReturn.confirmed_by_user_id),
+            (AuditLog, AuditLog.actor_user_id),
+            (DeletedStaffIdentity, DeletedStaffIdentity.deleted_by_user_id),
+            (RevokedStaffLine, RevokedStaffLine.revoked_by_user_id),
+            (SiteContent, SiteContent.updated_by_user_id),
+            (SiteContent, SiteContent.published_by_user_id),
+        ):
+            db.query(model).filter(column == user_id).update({column: None}, synchronize_session=False)
+        db.delete(item)
 
     def unlink_staff_line(staff_id: int, db: Session, *, actor_id: int | None = None):
         item = db.query(Staff).filter(Staff.id == staff_id).with_for_update().first()
@@ -1331,28 +1459,32 @@ def register_admin_api(
         rule_set_id = getattr(staff_obj, "return_rule_set_id", None) or cache["default_rule_set_id"]
         service_code = plan.code if plan else (item.plan_name or "").split("-", 1)[0]
         return_rule = cache["rules"].get((rule_set_id, "E" if service_code == "OUT" else service_code)) if rule_set_id else None
+        phone = (detail.contact_phone if detail and detail.contact_phone else getattr(user, "phone", None)) or getattr(item, "customer_phone_snapshot", None)
+        grade = getattr(user, "customer_grade", "N") if user else "N"
+        canonical_status = "pending" if item.status == "pending" else "completed" if item.status == "completed" else "confirmed"
         return {
             "id": item.id,
             "order_id": f"AP-{item.start_time.strftime('%m%d')}-{item.id:03d}",
             "customer_id": item.user_id,
-            "customer_serial": customer_serial(item.user_id),
-            "customer_name": getattr(user, "display_name", None) or "未命名客戶",
-            "phone": (detail.contact_phone if detail and detail.contact_phone else user.phone) if user else None,
+            "customer_serial": customer_serial(item.user_id, phone, grade),
+            "customer_grade": grade,
+            "customer_name": getattr(user, "display_name", None) or getattr(item, "customer_name_snapshot", None) or "未命名客戶",
+            "phone": phone,
             "staff_id": item.staff_id,
-            "staff_name": staff_obj.name if staff_obj else "未指定",
+            "staff_name": staff_obj.name if staff_obj else getattr(item, "staff_name_snapshot", None) or "未指定",
             "service_plan_id": plan.id if plan else None,
-            "service_name": plan.name if plan else item.plan_name or "未知方案",
+            "service_name": plan.name if plan else (getattr(detail, "service_name_snapshot", None) if detail else None) or item.plan_name or "未知方案",
             "promotion_id": promotion.id if promotion else None,
-            "promotion_name": promotion.name if promotion else None,
+            "promotion_name": promotion.name if promotion else (getattr(detail, "promotion_name_snapshot", None) if detail else None),
             "duration_minutes": item.duration,
             "start_time": _iso(item.start_time),
             "end_time": _iso(item.end_time),
-            "status": item.status,
-            "status_label": STATUS_TO_ZH.get(item.status, item.status),
+            "status": canonical_status,
+            "status_label": STATUS_TO_ZH[canonical_status],
             "room_id": detail.room_id if detail else None,
-            "room_name": room.name if room else None,
+            "room_name": room.name if room else (getattr(detail, "room_name_snapshot", None) if detail else None),
             "venue_id": detail.venue_id if detail else None,
-            "venue_name": venue.name if venue else None,
+            "venue_name": venue.name if venue else (getattr(detail, "venue_name_snapshot", None) if detail else None),
             "location_type": detail.location_type if detail else "pending",
             "base_price": detail.base_price if detail else appointment_price_from_legacy(item),
             "discount_amount": detail.discount_amount if detail else 0,
@@ -1412,7 +1544,8 @@ def register_admin_api(
         phones = cache["phones"].get(item.id, [])
         return {
             "id": item.id,
-            "vip_serial": customer_serial(item.id),
+            "customer_grade": getattr(item, "customer_grade", "N"),
+            "vip_serial": customer_serial(item.id, phones[0] if phones else item.phone, getattr(item, "customer_grade", "N")),
             "display_name": getattr(item, "display_name", None),
             "primary_phone": phones[0] if phones else item.phone,
             "phones": phones or ([item.phone] if item.phone else []),
@@ -1445,7 +1578,8 @@ def register_admin_api(
             "id": item.id,
             "request_id": f"BR-{item.start_time.strftime('%m%d')}-{item.id:03d}",
             "customer_id": item.user_id,
-            "customer_serial": customer_serial(item.user_id),
+            "customer_serial": customer_serial(item.user_id, item.contact_phone, getattr(customer, "customer_grade", "N")),
+            "customer_grade": getattr(customer, "customer_grade", "N"),
             "customer_name": getattr(customer, "display_name", None) or "未命名客戶",
             "phone": item.contact_phone,
             "staff_id": item.requested_staff_id,
@@ -1610,6 +1744,9 @@ def register_admin_api(
             start_time=item.start_time,
             end_time=item.end_time,
             status="confirmed",
+            customer_name_snapshot=getattr(db.query(User).filter(User.id == item.user_id).first(), "display_name", None),
+            customer_phone_snapshot=item.contact_phone,
+            staff_name_snapshot=staff_obj.name if item.requested_staff_id else None,
         )
         db.add(appointment)
         db.flush()
@@ -1617,6 +1754,8 @@ def register_admin_api(
             appointment_id=appointment.id,
             service_plan_id=plan.id,
             promotion_id=promotion.id if promotion else None,
+            service_name_snapshot=plan.name,
+            promotion_name_snapshot=promotion.name if promotion else None,
             contact_phone=item.contact_phone,
             base_price=plan.price,
             discount_amount=discount,
@@ -1697,10 +1836,20 @@ def register_admin_api(
                 if code not in existing_plan_codes:
                     db.add(ServicePlan(code=code, name=name, duration_minutes=duration, price=price, description=description, location_type=location, can_choose_staff=choose_staff))
 
+            legacy_room_names = {"房間 1": "657上", "房間 2": "657下"}
+            for old_name, new_name in legacy_room_names.items():
+                room = db.query(Room).filter(Room.name == old_name).first()
+                if room and not db.query(Room).filter(Room.name == new_name).first():
+                    room.name = new_name
             existing_room_names = {row[0] for row in db.query(Room.name).all()}
-            for room_name in ("房間 1", "房間 2"):
+            for room_name in ("657上", "657下"):
                 if room_name not in existing_room_names:
                     db.add(Room(name=room_name))
+
+            existing_venue_names = {row[0] for row in db.query(Venue.name).all()}
+            for venue_name in ("外租旅館", "外出場地"):
+                if venue_name not in existing_venue_names:
+                    db.add(Venue(name=venue_name, address=None, room_name=None, rental_cost=0))
 
             seed_promotions = [
                 ("生日月優惠", "fixed_discount", 300, "當月壽星出示證明可使用。"),
@@ -1877,7 +2026,11 @@ def register_admin_api(
             source=source,
             idempotency_key=payload.idempotency_key,
         )
-        return {"duplicate": duplicate, "booking_request": booking_request_dict(db, item)}
+        receipt = booking_request_dict(db, item)
+        receipt.pop("customer_id", None)
+        receipt.pop("customer_serial", None)
+        receipt.pop("customer_grade", None)
+        return {"duplicate": duplicate, "booking_request": receipt}
 
     @app.post("/api/staff/auth/login")
     def staff_login(payload: StaffLoginIn, db: Session = Depends(get_db)):
@@ -1947,15 +2100,8 @@ def register_admin_api(
 
     @app.patch("/api/staff/appointments/{appointment_id}/complete")
     def staff_complete_appointment(appointment_id: int, db: Session = Depends(get_db), staff_obj=Depends(current_staff)):
-        appointment = db.query(Appointment).filter(Appointment.id == appointment_id, Appointment.staff_id == staff_obj.id).with_for_update().first()
-        if not appointment:
-            raise HTTPException(status_code=404, detail="找不到自己的訂單")
-        if appointment.status in CANCELLED_APPOINTMENT_STATUSES:
-            raise HTTPException(status_code=422, detail="已取消訂單不能標記完成")
-        appointment.status = "awaiting_checkout"
-        audit(db, None, "staff_complete", "appointment", appointment.id, reason=f"staff_id={staff_obj.id}")
-        db.commit()
-        return appointment_dict(db, appointment)
+        _ = (appointment_id, db, staff_obj)
+        raise HTTPException(status_code=403, detail="訂單完成與回帳已合併，請由店長或後台管理人員標記已完成")
 
     @app.post("/api/admin/auth/login")
     def login(payload: LoginIn, request: Request, db: Session = Depends(get_db)):
@@ -2002,9 +2148,29 @@ def register_admin_api(
     def me(user=Depends(current_admin)):
         return serialize_admin(user)
 
+    @app.patch("/api/admin/auth/me")
+    def update_me(payload: AdminSelfUpdateIn, db: Session = Depends(get_db), user=Depends(current_admin)):
+        if not password_hash.verify(payload.current_pin, user.pin_hash):
+            raise HTTPException(status_code=401, detail="目前 PIN 不正確")
+        before = serialize_admin(user)
+        if payload.username:
+            username = payload.username.strip().lower()
+            duplicate = db.query(AdminUser).filter(AdminUser.username == username, AdminUser.id != user.id).first()
+            if duplicate:
+                raise HTTPException(status_code=409, detail="登入帳號已存在")
+            user.username = username
+        if payload.display_name:
+            user.display_name = payload.display_name.strip()
+        if payload.new_pin:
+            user.pin_hash = password_hash.hash(payload.new_pin)
+        audit(db, user, "update_own_credentials", "admin_user", user.id, before=before, after=serialize_admin(user))
+        db.query(AdminSession).filter(AdminSession.admin_user_id == user.id).delete(synchronize_session=False)
+        db.commit()
+        return {"ok": True, "user": serialize_admin(user), "login_required": True}
+
     @app.get("/api/admin/bootstrap")
     def bootstrap(db: Session = Depends(get_db), user=Depends(current_admin)):
-        appointments = db.query(Appointment).order_by(Appointment.start_time.desc()).limit(300).all()
+        appointments = db.query(Appointment).filter(Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES)).order_by(Appointment.start_time.desc()).limit(300).all()
         booking_requests = db.query(BookingRequest).order_by(BookingRequest.created_at.desc()).limit(500).all()
         shift_rows = db.query(Shift).filter(Shift.status == "active").order_by(Shift.start_time).limit(500).all()
         shift_staff = _model_map(db, Staff, {item.staff_id for item in shift_rows})
@@ -2020,7 +2186,7 @@ def register_admin_api(
             "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()],
             "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.deleted_at.is_(None)).order_by(Promotion.id).all()],
             "rooms": [{"id": item.id, "name": item.name, "active": item.active} for item in db.query(Room).order_by(Room.id).all()],
-            "venues": [{"id": item.id, "name": item.name, "address": item.address, "room_name": item.room_name, "rental_cost": item.rental_cost, "notes": item.notes, "active": item.active} for item in db.query(Venue).filter(Venue.active.is_(True)).all()],
+            "venues": [{"id": item.id, "name": item.name, "address": item.address, "room_name": item.room_name, "rental_cost": item.rental_cost, "notes": item.notes, "active": item.active} for item in db.query(Venue).order_by(Venue.name).all()],
             "customers": customer_dicts(db, customers),
             "admin_users": [serialize_admin(item) for item in db.query(AdminUser).order_by(AdminUser.id).all()] if user.role in {"admin", "manager"} else [],
             "return_rule_sets": return_rule_sets_dict(db),
@@ -2094,6 +2260,16 @@ def register_admin_api(
         item = cancel_booking_request_record(request_id, db, actor, payload.review_note)
         return booking_request_dict(db, item)
 
+    @app.delete("/api/admin/booking-requests/{request_id}")
+    def delete_booking_request(request_id: int, reason: str = Query(min_length=2, max_length=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(BookingRequest).filter(BookingRequest.id == request_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到預約通知")
+        db.delete(item)
+        audit(db, actor, "permanent_delete", "booking_request", request_id, reason=reason)
+        db.commit()
+        return {"ok": True, "id": request_id}
+
     @app.post("/api/admin/maintenance/reset-booking-data")
     def reset_booking_data(payload: BookingDataResetIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin"))):
         """Delete booking/test transaction rows while preserving operational master data."""
@@ -2133,7 +2309,7 @@ def register_admin_api(
         db: Session = Depends(get_db),
         user=Depends(current_admin),
     ):
-        query = db.query(Appointment)
+        query = db.query(Appointment).filter(Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES))
         if start:
             query = query.filter(Appointment.start_time >= parse_local_datetime(start))
         if end:
@@ -2151,12 +2327,23 @@ def register_admin_api(
             raise HTTPException(status_code=404, detail="找不到客戶")
         before = customer_dict(db, customer)
         customer.display_name = payload.display_name.strip()
+        if actor.role not in {"admin", "manager"} and payload.customer_grade != getattr(customer, "customer_grade", "N"):
+            raise HTTPException(status_code=403, detail="只有 Admin 或店長可以調整客戶等級")
+        customer.customer_grade = payload.customer_grade
         sync_customer_phones(db, customer, payload.phones)
         db.flush()
         after = customer_dict(db, customer)
         audit(db, actor, "update", "customer", customer.id, before=before, after=after)
         db.commit()
         return after
+
+    @app.delete("/api/admin/customers/{customer_id}")
+    def delete_customer(customer_id: int, reason: str = Query(min_length=2, max_length=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        before = customer_dict(db, db.query(User).filter(User.id == customer_id).first()) if db.query(User).filter(User.id == customer_id).first() else None
+        delete_customer_record(db, customer_id)
+        audit(db, actor, "permanent_delete", "customer", customer_id, reason=reason, before=before)
+        db.commit()
+        return {"ok": True, "id": customer_id}
 
     @app.post("/api/admin/appointments", status_code=201)
     def create_appointment(payload: AppointmentCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
@@ -2197,7 +2384,7 @@ def register_admin_api(
 
         customer, contact_phone = customer_for_phone(db, payload.phone)
         if not customer:
-            customer = User(line_user_id=f"manual:{secrets.token_hex(16)}", phone=contact_phone, display_name=payload.customer_name)
+            customer = User(line_user_id=f"manual:{secrets.token_hex(16)}", phone=contact_phone, display_name=payload.customer_name, customer_grade="N")
             db.add(customer)
             db.flush()
             sync_customer_phones(db, customer, [contact_phone])
@@ -2220,6 +2407,9 @@ def register_admin_api(
             start_time=start_dt,
             end_time=end_dt,
             status="confirmed",
+            customer_name_snapshot=customer.display_name,
+            customer_phone_snapshot=contact_phone,
+            staff_name_snapshot=staff_obj.name if payload.staff_id else None,
         )
         db.add(appointment)
         db.flush()
@@ -2229,6 +2419,10 @@ def register_admin_api(
             promotion_id=promotion.id if promotion else None,
             room_id=payload.room_id,
             venue_id=payload.venue_id,
+            service_name_snapshot=plan.name,
+            promotion_name_snapshot=promotion.name if promotion else None,
+            room_name_snapshot=(db.query(Room).filter(Room.id == payload.room_id).first().name if payload.room_id else None),
+            venue_name_snapshot=(db.query(Venue).filter(Venue.id == payload.venue_id).first().name if payload.venue_id else None),
             contact_phone=contact_phone,
             base_price=plan.price,
             discount_amount=promotion_discount(promotion, plan.price),
@@ -2260,7 +2454,11 @@ def register_admin_api(
             if existing and existing.appointment_id:
                 appointment = db.query(Appointment).filter(Appointment.id == existing.appointment_id).first()
                 if appointment:
-                    return {"duplicate": True, "appointment": appointment_dict(db, appointment)}
+                    receipt = appointment_dict(db, appointment)
+                    receipt.pop("customer_id", None)
+                    receipt.pop("customer_serial", None)
+                    receipt.pop("customer_grade", None)
+                    return {"duplicate": True, "appointment": receipt}
             raise HTTPException(status_code=409, detail="預約正在處理中，請勿重複送出")
 
         plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id, ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).first()
@@ -2303,7 +2501,11 @@ def register_admin_api(
         if duplicate:
             claim.appointment_id = duplicate.id
             db.commit()
-            return {"duplicate": True, "appointment": appointment_dict(db, duplicate)}
+            receipt = appointment_dict(db, duplicate)
+            receipt.pop("customer_id", None)
+            receipt.pop("customer_serial", None)
+            receipt.pop("customer_grade", None)
+            return {"duplicate": True, "appointment": receipt}
 
         appointment = Appointment(
             user_id=customer.id,
@@ -2313,6 +2515,9 @@ def register_admin_api(
             start_time=start_dt,
             end_time=end_dt,
             status="confirmed",
+            customer_name_snapshot=customer.display_name,
+            customer_phone_snapshot=contact_phone,
+            staff_name_snapshot=db.query(Staff).filter(Staff.id == assigned_staff_id).first().name,
         )
         db.add(appointment)
         db.flush()
@@ -2325,6 +2530,8 @@ def register_admin_api(
             appointment_id=appointment.id,
             service_plan_id=plan.id,
             promotion_id=promotion.id if promotion else None,
+            service_name_snapshot=plan.name,
+            promotion_name_snapshot=promotion.name if promotion else None,
             contact_phone=contact_phone,
             base_price=plan.price,
             discount_amount=discount,
@@ -2348,7 +2555,20 @@ def register_admin_api(
                 appointment_notifier(appointment, db, origin=source_label, notify_management=False)
             except Exception:
                 logger.exception("Unable to push public booking notification appointment_id=%s", appointment.id)
-        return {"duplicate": False, "appointment": appointment_dict(db, appointment)}
+        receipt = appointment_dict(db, appointment)
+        receipt.pop("customer_id", None)
+        receipt.pop("customer_serial", None)
+        receipt.pop("customer_grade", None)
+        return {"duplicate": False, "appointment": receipt}
+
+    @app.delete("/api/admin/appointments/{appointment_id}")
+    def delete_appointment(appointment_id: int, reason: str = Query(min_length=2, max_length=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        before = appointment_dict(db, item) if item else None
+        delete_appointment_record(db, appointment_id)
+        audit(db, actor, "permanent_delete", "appointment", appointment_id, reason=reason, before=before)
+        db.commit()
+        return {"ok": True, "id": appointment_id}
 
     @app.post("/api/staff/appointments", status_code=201)
     def create_staff_appointment(payload: StaffAppointmentCreateIn, db: Session = Depends(get_db), staff_obj=Depends(current_staff)):
@@ -2487,9 +2707,15 @@ def register_admin_api(
         locked = not staff_may_change_shift(item.start_time)
         if locked and not actor_can_override_time_rules(actor, db):
             raise HTTPException(status_code=422, detail="此班已鎖定，請由店長、Admin 或具強制權限的客服處理")
-        item.status = "cancelled"
-        item.change_reason = reason
-        audit(db, actor, "cancel", "shift", item.id, reason=reason, before=shift_dict(item))
+        before = shift_dict(item)
+        if actor.role in {"admin", "manager"}:
+            db.delete(item)
+            action = "permanent_delete"
+        else:
+            item.status = "cancelled"
+            item.change_reason = reason
+            action = "cancel"
+        audit(db, actor, action, "shift", item.id, reason=reason, before=before)
         db.commit()
         return {"ok": True, "locked_override": locked}
 
@@ -2605,18 +2831,15 @@ def register_admin_api(
 
     @app.delete("/api/admin/services/{service_id}")
     def delete_service(service_id: int, reason: str | None = Query(default=None, max_length=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
-        item = db.query(ServicePlan).filter(ServicePlan.id == service_id, ServicePlan.deleted_at.is_(None)).with_for_update().first()
+        item = db.query(ServicePlan).filter(ServicePlan.id == service_id).with_for_update().first()
         if not item:
             raise HTTPException(status_code=404, detail="找不到服務方案")
         before = service_dict(item)
-        deleted_at = now_taipei_naive()
-        item.active = False
-        item.deleted_at = deleted_at
-        if item.effective_to is None or item.effective_to > deleted_at:
-            item.effective_to = deleted_at
-        audit(db, actor, "catalog_delete", "service_plan", item.id, reason=reason or "官網編輯器刪除", before=before, after=service_dict(item))
+        item_id = item.id
+        delete_service_record(db, item_id)
+        audit(db, actor, "permanent_delete", "service_plan", item_id, reason=reason or "刪除方案", before=before)
         db.commit()
-        return {"ok": True, "id": item.id, "history_preserved": True}
+        return {"ok": True, "id": item_id, "history_preserved": True}
 
     @app.get("/api/admin/promotions")
     def list_promotions(db: Session = Depends(get_db), user=Depends(current_admin)):
@@ -2647,18 +2870,15 @@ def register_admin_api(
 
     @app.delete("/api/admin/promotions/{promotion_id}")
     def delete_promotion(promotion_id: int, reason: str | None = Query(default=None, max_length=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
-        item = db.query(Promotion).filter(Promotion.id == promotion_id, Promotion.deleted_at.is_(None)).with_for_update().first()
+        item = db.query(Promotion).filter(Promotion.id == promotion_id).with_for_update().first()
         if not item:
             raise HTTPException(status_code=404, detail="找不到優惠")
         before = promotion_dict(item)
-        deleted_at = now_taipei_naive()
-        item.active = False
-        item.deleted_at = deleted_at
-        if item.ends_at is None or item.ends_at > deleted_at:
-            item.ends_at = deleted_at
-        audit(db, actor, "catalog_delete", "promotion", item.id, reason=reason or "官網編輯器刪除", before=before, after=promotion_dict(item))
+        item_id = item.id
+        delete_promotion_record(db, item_id)
+        audit(db, actor, "permanent_delete", "promotion", item_id, reason=reason or "刪除優惠", before=before)
         db.commit()
-        return {"ok": True, "id": item.id, "history_preserved": True}
+        return {"ok": True, "id": item_id, "history_preserved": True}
 
     @app.get("/api/admin/staff")
     def list_staff(db: Session = Depends(get_db), user=Depends(current_admin)):
@@ -2864,6 +3084,62 @@ def register_admin_api(
         db.commit()
         return {"id": item.id, **_model_dump(payload), "active": True}
 
+    @app.patch("/api/admin/venues/{venue_id}")
+    def update_venue(venue_id: int, payload: VenuePatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(Venue).filter(Venue.id == venue_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到場地")
+        before = {"name": item.name, "address": item.address, "room_name": item.room_name, "rental_cost": item.rental_cost, "notes": item.notes, "active": item.active}
+        for field, value in _model_dump_unset(payload).items():
+            setattr(item, field, value)
+        audit(db, actor, "update", "venue", item.id, before=before, after=_model_dump_unset(payload))
+        db.commit()
+        return {"id": item.id, "name": item.name, "address": item.address, "room_name": item.room_name, "rental_cost": item.rental_cost, "notes": item.notes, "active": item.active}
+
+    @app.delete("/api/admin/venues/{venue_id}")
+    def delete_venue(venue_id: int, reason: str = Query(min_length=2, max_length=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        delete_venue_record(db, venue_id)
+        audit(db, actor, "permanent_delete", "venue", venue_id, reason=reason)
+        db.commit()
+        return {"ok": True, "id": venue_id}
+
+    @app.get("/api/admin/rooms")
+    def list_rooms(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
+        return [{"id": item.id, "name": item.name, "active": item.active} for item in db.query(Room).order_by(Room.id).all()]
+
+    @app.post("/api/admin/rooms", status_code=201)
+    def create_room(payload: RoomCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        name = payload.name.strip()
+        if db.query(Room).filter(Room.name == name).first():
+            raise HTTPException(status_code=409, detail="房間名稱已存在")
+        item = Room(name=name, active=True)
+        db.add(item)
+        db.flush()
+        audit(db, actor, "create", "room", item.id, after={"name": name})
+        db.commit()
+        return {"id": item.id, "name": item.name, "active": item.active}
+
+    @app.patch("/api/admin/rooms/{room_id}")
+    def update_room(room_id: int, payload: RoomPatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(Room).filter(Room.id == room_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到房間")
+        before = {"name": item.name, "active": item.active}
+        if payload.name is not None:
+            item.name = payload.name.strip()
+        if payload.active is not None:
+            item.active = payload.active
+        audit(db, actor, "update", "room", item.id, before=before, after={"name": item.name, "active": item.active})
+        db.commit()
+        return {"id": item.id, "name": item.name, "active": item.active}
+
+    @app.delete("/api/admin/rooms/{room_id}")
+    def delete_room(room_id: int, reason: str = Query(min_length=2, max_length=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        delete_room_record(db, room_id)
+        audit(db, actor, "permanent_delete", "room", room_id, reason=reason)
+        db.commit()
+        return {"ok": True, "id": room_id}
+
     @app.post("/api/admin/appointments/{appointment_id}/checkout")
     def checkout(appointment_id: int, payload: CheckoutIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
         appointment = db.query(Appointment).filter(Appointment.id == appointment_id).with_for_update().first()
@@ -2876,33 +3152,17 @@ def register_admin_api(
             amount=payload.amount,
             method=payload.method,
             status="paid",
-            cash_return_status="pending" if payload.method == "cash" else "not_applicable",
+            cash_return_status="confirmed" if payload.method == "cash" else "not_applicable",
             received_by_staff_id=payload.received_by_staff_id,
-            confirmed_by_user_id=actor.id if payload.method == "transfer" else None,
+            confirmed_by_user_id=actor.id,
             note=payload.note,
         )
         db.add(payment)
         appointment.status = "completed"
         db.flush()
-        return_amount = 0
-        staff_return = None
-        if payload.method == "cash" and payload.received_by_staff_id:
-            if appointment.staff_id and appointment.staff_id != payload.received_by_staff_id:
-                raise HTTPException(status_code=422, detail="代收師傅必須與訂單師傅相同")
-            rule = return_rule_for_appointment(db, appointment)
-            return_amount = rule.amount if rule else 0
-            staff_return = StaffReturn(
-                appointment_id=appointment.id,
-                staff_id=payload.received_by_staff_id,
-                rule_id=rule.id if rule else None,
-                amount=return_amount,
-                status="pending",
-                note=payload.note,
-            )
-            db.add(staff_return)
         audit(db, actor, "checkout", "appointment", appointment_id, after={"amount": payload.amount, "method": payload.method})
         db.commit()
-        return {"ok": True, "payment_id": payment.id, "cash_return_status": payment.cash_return_status, "return_amount": return_amount, "staff_return_id": staff_return.id if staff_return else None, "appointment": appointment_dict(db, appointment)}
+        return {"ok": True, "payment_id": payment.id, "cash_return_status": payment.cash_return_status, "return_amount": 0, "staff_return_id": None, "appointment": appointment_dict(db, appointment)}
 
     @app.post("/api/admin/payments/{payment_id}/confirm-cash-return")
     def confirm_cash_return(payment_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
@@ -2989,25 +3249,9 @@ def register_admin_api(
 
     @app.delete("/api/admin/users/{user_id}")
     def deactivate_admin_user(user_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
-        item = db.query(AdminUser).filter(AdminUser.id == user_id).first()
-        if not item:
-            raise HTTPException(status_code=404, detail="找不到後台帳號")
-        if item.id == actor.id:
-            raise HTTPException(status_code=422, detail="不能停用目前登入中的自己")
-        if actor.role == "manager" and item.role != "clerk":
-            raise HTTPException(status_code=403, detail="店長只能停用客服帳號")
-        if item.role == "admin" and item.is_active:
-            active_admins = db.query(AdminUser).filter(AdminUser.role == "admin", AdminUser.is_active.is_(True)).count()
-            if active_admins <= 1:
-                raise HTTPException(status_code=422, detail="系統至少必須保留一個啟用中的 Admin")
-        if not item.is_active:
-            return serialize_admin(item)
-        before = serialize_admin(item)
-        item.is_active = False
-        db.query(AdminSession).filter(AdminSession.admin_user_id == item.id).delete(synchronize_session=False)
-        audit(db, actor, "deactivate", "admin_user", item.id, before=before, after=serialize_admin(item))
+        delete_admin_user_record(db, user_id, actor)
         db.commit()
-        return serialize_admin(item)
+        return {"ok": True, "id": user_id}
 
     @app.get("/api/admin/audit-logs")
     def list_audit_logs(limit: int = Query(default=100, ge=1, le=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
@@ -3018,6 +3262,57 @@ def register_admin_api(
             user = users.get(item.actor_user_id) if item.actor_user_id else None
             result.append({"id": item.id, "actor": user.display_name if user else "系統", "action": item.action, "entity_type": item.entity_type, "entity_id": item.entity_id, "reason": item.reason, "created_at": _iso(item.created_at)})
         return result
+
+    @app.delete("/api/admin/audit-logs/{audit_id}")
+    def delete_audit_log(audit_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        _ = actor
+        item = db.query(AuditLog).filter(AuditLog.id == audit_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到操作紀錄")
+        db.delete(item)
+        db.commit()
+        return {"ok": True, "id": audit_id}
+
+    @app.post("/api/admin/bulk-delete")
+    def bulk_delete(payload: BulkDeleteIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        ids = list(dict.fromkeys(payload.ids))
+        deleted: list[int] = []
+        for item_id in ids:
+            if payload.entity == "appointments":
+                delete_appointment_record(db, item_id)
+            elif payload.entity == "booking_requests":
+                item = db.query(BookingRequest).filter(BookingRequest.id == item_id).first()
+                if not item:
+                    raise HTTPException(status_code=404, detail=f"找不到預約通知 #{item_id}")
+                db.delete(item)
+            elif payload.entity == "shifts":
+                item = db.query(Shift).filter(Shift.id == item_id).first()
+                if not item:
+                    raise HTTPException(status_code=404, detail=f"找不到排班 #{item_id}")
+                db.delete(item)
+            elif payload.entity == "customers":
+                delete_customer_record(db, item_id)
+            elif payload.entity == "staff":
+                permanently_delete_staff(item_id, db, actor_id=actor.id, reason=payload.reason, commit=False)
+            elif payload.entity == "services":
+                delete_service_record(db, item_id)
+            elif payload.entity == "promotions":
+                delete_promotion_record(db, item_id)
+            elif payload.entity == "rooms":
+                delete_room_record(db, item_id)
+            elif payload.entity == "venues":
+                delete_venue_record(db, item_id)
+            elif payload.entity == "users":
+                delete_admin_user_record(db, item_id, actor)
+            elif payload.entity == "audit_logs":
+                item = db.query(AuditLog).filter(AuditLog.id == item_id).first()
+                if not item:
+                    raise HTTPException(status_code=404, detail=f"找不到操作紀錄 #{item_id}")
+                db.delete(item)
+            deleted.append(item_id)
+        audit(db, actor, "bulk_permanent_delete", payload.entity, reason=payload.reason, after={"ids": deleted})
+        db.commit()
+        return {"ok": True, "entity": payload.entity, "deleted_ids": deleted}
 
     @app.get("/api/admin/export/{dataset}")
     def export_dataset(dataset: Literal["appointments", "shifts", "customers", "staff_returns"], start: datetime | None = None, end: datetime | None = None, db: Session = Depends(get_db), actor=Depends(current_admin)):
@@ -3047,7 +3342,7 @@ def register_admin_api(
                 staff_obj = staff.get(item.staff_id)
                 writer.writerow([item.id, staff_obj.name if staff_obj else item.staff_id, item.start_time.date(), item.start_time.strftime("%H:%M"), item.end_time.strftime("%H:%M"), item.source, item.status])
         elif dataset == "customers":
-            writer.writerow(["客戶流水", "客戶名稱", "客戶 ID（手機，可多支）", "建立日期"])
+            writer.writerow(["內部識別（等級-手機後四碼）", "客戶名稱", "手機 ID（可多支）", "建立日期"])
             query = db.query(User)
             if start:
                 query = query.filter(User.created_at >= parse_local_datetime(start))
@@ -3057,7 +3352,7 @@ def register_admin_api(
             customers = {item["id"]: item for item in customer_dicts(db, items)}
             for item in items:
                 phones = customers[item.id]["phones"]
-                writer.writerow([customer_serial(item.id), getattr(item, "display_name", None) or "未命名客戶", "、".join(phones), item.created_at])
+                writer.writerow([customer_serial(item.id, phones[0] if phones else item.phone, getattr(item, "customer_grade", "N")), getattr(item, "display_name", None) or "未命名客戶", "、".join(phones), item.created_at])
         else:
             writer.writerow(["回帳編號", "訂單編號", "師傅", "應回帳", "狀態", "建立時間", "確認時間"])
             query = db.query(StaffReturn)

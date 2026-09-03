@@ -106,6 +106,7 @@ class User(Base):
     phone = Column(String(50), nullable=True)
     phone_temp = Column(String(50), nullable=True)
     display_name = Column(String(255), nullable=True)
+    customer_grade = Column(String(10), default="N", nullable=False)
     utm_source = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     appointments = relationship("Appointment", back_populates="user", cascade="all, delete-orphan")
@@ -138,7 +139,7 @@ class Staff(Base):
     is_online = Column(Boolean, default=False, nullable=False)
     online_start_time = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    appointments = relationship("Appointment", back_populates="staff", cascade="all, delete-orphan")
+    appointments = relationship("Appointment", back_populates="staff")
 
 class Appointment(Base):
     __tablename__ = "appointments"
@@ -150,6 +151,9 @@ class Appointment(Base):
     start_time = Column(DateTime, nullable=False)
     end_time = Column(DateTime, nullable=False)
     status = Column(String(50), default="pending", nullable=False)
+    customer_name_snapshot = Column(String(255), nullable=True)
+    customer_phone_snapshot = Column(String(20), nullable=True)
+    staff_name_snapshot = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     user = relationship("User", back_populates="appointments")
     staff = relationship("Staff", back_populates="appointments")
@@ -247,7 +251,11 @@ def normalize_phone(value: str | None) -> str:
 
 
 def vip_serial(user: User | None) -> str:
-    return customer_serial(user.id if user else None)
+    return customer_serial(
+        user.id if user else None,
+        getattr(user, "phone", None),
+        getattr(user, "customer_grade", "N"),
+    )
 
 
 def valid_staff_role(value: str | None) -> str | None:
@@ -757,9 +765,9 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
                 {
                     "type": "box", "layout": "vertical", "margin": "xxl", "spacing": "sm",
                     "contents": [
-                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶流水", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_vip_id, "size": "sm", "color": "#111111", "align": "end"}]},
+                        *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "內部客戶識別", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_vip_id, "size": "sm", "color": "#111111", "align": "end"}]}] if is_staff_notify else []),
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_name, "size": "sm", "color": "#111111", "align": "end"}]},
-                        *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶 ID（手機）", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": customer_phone, "size": "sm", "color": "#111111", "align": "end"}]}] if customer_phone else []),
+                        *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶手機", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": customer_phone, "size": "sm", "color": "#111111", "align": "end"}]}] if customer_phone and is_staff_notify else []),
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "時段", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": start_time_str, "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "方案", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": plan_name, "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "separator", "margin": "xxl"},
@@ -1275,8 +1283,12 @@ if handler_customer:
                         display_name = bot_customer_api.get_profile(user_id).display_name
                     except Exception:
                         logging.info("暫時無法取得 LINE 顯示名稱 user_id=%s", user_id)
-                    user = User(line_user_id=user_id, display_name=display_name)
+                    user = User(line_user_id=user_id, display_name=display_name, customer_grade="SR")
                     db.add(user)
+                    db.commit()
+                elif getattr(user, "customer_grade", "N") not in {"SSR", "SR"}:
+                    # 由 LINE 客服建立的身分提升為 SR；既有 SSR/SR 不自動降級。
+                    user.customer_grade = "SR"
                     db.commit()
 
                 if text in {"預約", "網頁預約", "備用預約", "預約網頁"}:
@@ -1758,7 +1770,10 @@ if handler_customer:
                     plan_name=p_info["name"],
                     start_time=booking_start,
                     end_time=booking_end,
-                    status="confirmed"
+                    status="confirmed",
+                    customer_name_snapshot=user.display_name,
+                    customer_phone_snapshot=user.phone,
+                    staff_name_snapshot=(db.query(Staff).filter(Staff.id == int(staff_id)).first().name if staff_id != "none" else None),
                 )
                 db.add(appointment)
                 db.flush()
@@ -1776,6 +1791,8 @@ if handler_customer:
                         appointment_id=appointment.id,
                         service_plan_id=service_plan.id if service_plan else None,
                         promotion_id=promotion.id if promotion else None,
+                        service_name_snapshot=service_plan.name if service_plan else p_info["name"],
+                        promotion_name_snapshot=promotion.name if promotion else None,
                         contact_phone=user.phone,
                         base_price=base_price,
                         discount_amount=discount,
@@ -1978,17 +1995,26 @@ def notify_appointment_parties(
     origin: str = "後台建立",
     notify_management: bool = True,
 ) -> None:
-    """Push an order to its staff, and optionally to bound management accounts."""
+    """Push an order to the customer, assigned staff and optional management."""
+    models = getattr(app.state, "admin_models", {})
+    AdminUser = models.get("AdminUser")
+    assigned_staff_line_id = appointment.staff.line_user_id if appointment.staff and appointment.staff.line_user_id and not appointment.staff.line_user_id.startswith(("pending:", "seeded:")) else None
+    customer_line_id = appointment.user.line_user_id if appointment.user and appointment.user.line_user_id and not appointment.user.line_user_id.startswith(("manual:", "liff:")) else None
+    if bot_customer_api and customer_line_id:
+        try:
+            bot_customer_api.push_message(
+                customer_line_id,
+                FlexSendMessage(alt_text="伊果 SPA 預約已成立", contents=build_appointment_bubble(appointment, db=db)),
+            )
+        except Exception:
+            logging.exception("預約確認推送失敗 recipient=客戶 appointment_id=%s", appointment.id)
     if not bot_staff_api:
         logging.warning("略過派單通知：LINE_TOKEN_STAFF 未設定 appointment_id=%s", appointment.id)
         return
-    models = getattr(app.state, "admin_models", {})
-    AdminUser = models.get("AdminUser")
     management_message = FlexSendMessage(
         alt_text=f"{origin}・新訂單",
-        contents=build_appointment_bubble(appointment, is_staff_notify=True, db=db, show_return=True),
+        contents=build_appointment_bubble(appointment, is_staff_notify=True, db=db, show_return=False),
     )
-    assigned_staff_line_id = appointment.staff.line_user_id if appointment.staff and appointment.staff.line_user_id and not appointment.staff.line_user_id.startswith(("pending:", "seeded:")) else None
     if notify_management and AdminUser:
         for account in db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.line_user_id.isnot(None)).all():
             if account.line_user_id == assigned_staff_line_id:
@@ -1998,7 +2024,7 @@ def notify_appointment_parties(
             except Exception:
                 logging.exception("派單推送失敗 recipient=客服帳號 %s appointment_id=%s", account.username, appointment.id)
     if assigned_staff_line_id:
-        staff_bubble = build_appointment_bubble(appointment, is_staff_notify=True, db=db, show_return=True)
+        staff_bubble = build_appointment_bubble(appointment, is_staff_notify=True, db=db, show_return=False)
         staff_bubble["footer"] = {"type": "box", "layout": "vertical", "contents": [
             {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "postback", "label": "接單", "data": f"action=staff_accept_order&appointment_id={appointment.id}"}},
         ]}
@@ -2012,11 +2038,21 @@ def notify_appointment_parties(
 
 
 def notify_booking_request_parties(booking_request, db: Session, *, origin: str = "booking_web") -> None:
-    """Booking requests are review notifications; only bound management accounts receive them."""
-    if not bot_staff_api:
-        logging.warning("略過預約通知推送：LINE_TOKEN_STAFF 未設定 booking_request_id=%s", booking_request.id)
-        return
+    """Notify the customer that review is pending and alert management."""
     AdminUser = getattr(app.state, "admin_models", {}).get("AdminUser")
+    customer = db.query(User).filter(User.id == booking_request.user_id).first()
+    customer_line_id = customer.line_user_id if customer and customer.line_user_id and not customer.line_user_id.startswith(("manual:", "liff:")) else None
+    if bot_customer_api and customer_line_id:
+        try:
+            bot_customer_api.push_message(
+                customer_line_id,
+                TextSendMessage(text="已收到您的預約通知，客服確認後才會正式成立；確認結果會再由 LINE 通知您。"),
+            )
+        except Exception:
+            logging.exception("預約通知回覆失敗 recipient=客戶 booking_request_id=%s", booking_request.id)
+    if not bot_staff_api:
+        logging.warning("略過管理端預約通知：LINE_TOKEN_STAFF 未設定 booking_request_id=%s", booking_request.id)
+        return
     if not AdminUser:
         return
     message = FlexSendMessage(
@@ -2061,6 +2097,7 @@ def on_startup():
         queries = [
             "ALTER TABLE users ADD COLUMN phone_temp VARCHAR(50);",
             "ALTER TABLE users ADD COLUMN display_name VARCHAR(255);",
+            "ALTER TABLE users ADD COLUMN customer_grade VARCHAR(10) NOT NULL DEFAULT 'N';",
             "ALTER TABLE staffs ADD COLUMN phone VARCHAR(50);",
             "ALTER TABLE staffs ADD COLUMN phone_temp VARCHAR(50);",
             "ALTER TABLE staffs ADD COLUMN height VARCHAR(20);",
@@ -2079,7 +2116,14 @@ def on_startup():
             "ALTER TABLE promotions ADD COLUMN deleted_at DATETIME NULL;",
             "ALTER TABLE appointment_details ADD COLUMN promotion_id INTEGER;",
             "ALTER TABLE appointment_details ADD COLUMN contact_phone VARCHAR(20);",
-            "ALTER TABLE appointments ADD COLUMN plan_name VARCHAR(50);"
+            "ALTER TABLE appointment_details ADD COLUMN service_name_snapshot VARCHAR(160);",
+            "ALTER TABLE appointment_details ADD COLUMN promotion_name_snapshot VARCHAR(160);",
+            "ALTER TABLE appointment_details ADD COLUMN room_name_snapshot VARCHAR(160);",
+            "ALTER TABLE appointment_details ADD COLUMN venue_name_snapshot VARCHAR(160);",
+            "ALTER TABLE appointments ADD COLUMN plan_name VARCHAR(50);",
+            "ALTER TABLE appointments ADD COLUMN customer_name_snapshot VARCHAR(255);",
+            "ALTER TABLE appointments ADD COLUMN customer_phone_snapshot VARCHAR(20);",
+            "ALTER TABLE appointments ADD COLUMN staff_name_snapshot VARCHAR(255);",
         ]
         for q in queries:
             try:

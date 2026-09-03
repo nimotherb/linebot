@@ -22,6 +22,7 @@ type RawAppointment = {
   id: number;
   order_id: string;
   customer_serial?: string;
+  customer_grade?: 'SSR' | 'SR' | 'R' | 'N';
   customer_name: string;
   phone?: string;
   staff_id?: number;
@@ -124,7 +125,8 @@ export type BootstrapData = {
   shifts: RawShift[];
   promotions: Array<{ id: number; name: string; calculation_type: string; value: number; active: boolean; starts_at?: string; ends_at?: string }>;
   rooms: Array<{ id: number; name: string; active: boolean }>;
-  customers?: Array<{ id: number; vip_serial: string; display_name?: string; primary_phone?: string; phones: string[]; visits: number; spent: number; last_visit?: string }>;
+  venues?: Array<{ id: number; name: string; address?: string; room_name?: string; rental_cost: number; notes?: string; active: boolean }>;
+  customers?: Array<{ id: number; customer_grade: 'SSR' | 'SR' | 'R' | 'N'; vip_serial: string; display_name?: string; primary_phone?: string; phones: string[]; visits: number; spent: number; last_visit?: string }>;
   admin_users?: AdminIdentity[];
   return_rule_sets?: ReturnRuleSetView[];
   audit_logs?: Array<{
@@ -306,6 +308,7 @@ export const mapCustomer = (item: NonNullable<BootstrapData['customers']>[number
   id: item.vip_serial,
   apiId: item.id,
   vipSerial: item.vip_serial,
+  grade: item.customer_grade,
   name: item.display_name || '未命名客戶',
   lineName: item.display_name || '未取得',
   phone: item.primary_phone || item.phones[0] || '未提供',
@@ -427,7 +430,7 @@ export class SpaApi {
     return this.request<RawAppointment>(`/api/admin/appointments/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
   }
 
-  updateCustomer(id: number, payload: { display_name: string; phones: string[] }) {
+  updateCustomer(id: number, payload: { display_name: string; phones: string[]; customer_grade: Customer['grade'] }) {
     return this.request<NonNullable<BootstrapData['customers']>[number]>(`/api/admin/customers/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
   }
 
@@ -471,6 +474,50 @@ export class SpaApi {
 
   unlinkStaffLine(id: number) {
     return this.request<RawStaff>(`/api/admin/staff/${id}/line-link`, { method: 'DELETE' });
+  }
+
+  createService(payload: Record<string, unknown>) {
+    return this.request<RawService>('/api/admin/services', { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  deleteService(id: number, reason = '後台永久刪除方案') {
+    return this.request<{ ok: boolean }>(`/api/admin/services/${id}?reason=${encodeURIComponent(reason)}`, { method: 'DELETE' });
+  }
+
+  deletePromotion(id: number, reason = '後台永久刪除優惠') {
+    return this.request<{ ok: boolean }>(`/api/admin/promotions/${id}?reason=${encodeURIComponent(reason)}`, { method: 'DELETE' });
+  }
+
+  createRoom(name: string) {
+    return this.request<{ id: number; name: string; active: boolean }>('/api/admin/rooms', { method: 'POST', body: JSON.stringify({ name }) });
+  }
+
+  updateRoom(id: number, payload: Record<string, unknown>) {
+    return this.request<{ id: number; name: string; active: boolean }>(`/api/admin/rooms/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
+  deleteRoom(id: number, reason = '後台永久刪除房間') {
+    return this.request<{ ok: boolean }>(`/api/admin/rooms/${id}?reason=${encodeURIComponent(reason)}`, { method: 'DELETE' });
+  }
+
+  createVenue(payload: Record<string, unknown>) {
+    return this.request<NonNullable<BootstrapData['venues']>[number]>('/api/admin/venues', { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  updateVenue(id: number, payload: Record<string, unknown>) {
+    return this.request<NonNullable<BootstrapData['venues']>[number]>(`/api/admin/venues/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
+  deleteVenue(id: number, reason = '後台永久刪除場地') {
+    return this.request<{ ok: boolean }>(`/api/admin/venues/${id}?reason=${encodeURIComponent(reason)}`, { method: 'DELETE' });
+  }
+
+  updateOwnAccount(payload: { current_pin: string; username?: string; display_name?: string; new_pin?: string }) {
+    return this.request<{ ok: boolean; user: AdminIdentity; login_required: boolean }>('/api/admin/auth/me', { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
+  bulkDelete(entity: 'appointments' | 'booking_requests' | 'shifts' | 'customers' | 'staff' | 'services' | 'promotions' | 'rooms' | 'venues' | 'users' | 'audit_logs', ids: number[], reason: string) {
+    return this.request<{ ok: boolean; deleted_ids: number[] }>('/api/admin/bulk-delete', { method: 'POST', body: JSON.stringify({ entity, ids, reason }) });
   }
 
   linkStaffLine(id: number, lineUserId: string) {
@@ -522,7 +569,7 @@ export class SpaApi {
   }
 
   deactivateUser(id: number) {
-    return this.request<AdminIdentity>(`/api/admin/users/${id}`, { method: 'DELETE' });
+    return this.request<{ ok: boolean; id: number }>(`/api/admin/users/${id}`, { method: 'DELETE' });
   }
 
   updateUserPermissions(id: number, canOverrideTimeRules: boolean) {
