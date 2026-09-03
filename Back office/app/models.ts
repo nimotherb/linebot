@@ -54,6 +54,7 @@ export type StaffMember = {
   photoUrl?: string;
   height?: string;
   weight?: string;
+  role?: '攻擊手' | '守備方' | '無特定' | '攻守兼備';
 };
 
 export type Shift = {

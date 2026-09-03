@@ -68,6 +68,7 @@ type RawStaff = {
   photo_url?: string;
   height?: string;
   weight?: string;
+  role?: '攻擊手' | '守備方' | '無特定' | '攻守兼備';
 };
 
 type RawShift = {
@@ -263,6 +264,7 @@ export const mapStaff = (item: RawStaff): StaffMember => ({
   photoUrl: resolveStaffPhotoUrl(item.photo_url),
   height: item.height,
   weight: item.weight,
+  role: item.role,
 });
 
 export const mapShift = (item: RawShift): Shift => {
@@ -469,6 +471,10 @@ export class SpaApi {
 
   unlinkStaffLine(id: number) {
     return this.request<RawStaff>(`/api/admin/staff/${id}/line-link`, { method: 'DELETE' });
+  }
+
+  linkStaffLine(id: number, lineUserId: string) {
+    return this.request<RawStaff & { notification_sent: boolean }>(`/api/admin/staff/${id}/line-link`, { method: 'PUT', body: JSON.stringify({ line_user_id: lineUserId }) });
   }
 
   updateBookingRequest(id: number, payload: Record<string, unknown>) {

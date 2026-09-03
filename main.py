@@ -188,6 +188,27 @@ def handle_line_admin_message(text_value: str, user_id: str, db: Session):
             LINE_ADMIN_PENDING.pop(user_id, None)
             return TextSendMessage(text="管理員帳戶已從這個 LINE 登出。")
         return TextSendMessage(text="這個 LINE 目前沒有綁定管理員帳戶。")
+    if identity and text_value == "新增客服":
+        return TextSendMessage(
+            text=(
+                "請一次輸入：\n新增客服 顯示名稱 登入帳號 4位PIN\n\n"
+                "例如：\n新增客服 小美 service01 2468\n\n"
+                "只會建立客服帳號，不會新增第二個 Admin 或店長。"
+            )
+        )
+    if identity and text_value.startswith("新增客服"):
+        matched = re.fullmatch(r"新增客服\s+(.+?)\s+([a-zA-Z0-9._-]{3,80})\s+(\d{4})", text_value)
+        if not matched:
+            return TextSendMessage(text="格式不正確。請輸入：新增客服 顯示名稱 登入帳號 4位PIN")
+        creator = getattr(getattr(app, "state", None), "create_line_clerk", None)
+        if not creator:
+            return TextSendMessage(text="新增客服功能目前無法使用，請改從後台操作。")
+        display_name, username, pin = matched.groups()
+        try:
+            account = creator(identity["id"], username, display_name, pin, db)
+        except Exception as exc:
+            return TextSendMessage(text=getattr(exc, "detail", "新增客服帳號失敗。"))
+        return TextSendMessage(text=f"客服帳號已建立：\n名稱：{account['display_name']}\n帳號：{account['username']}\nPIN 已依輸入內容設定。")
     if text_value in {"root", "管理員", "管理選單"}:
         if identity:
             return build_root_admin_menu(identity)
@@ -611,7 +632,8 @@ def build_root_admin_menu(identity=None):
                     {"type": "text", "text": "ROOT ADMIN", "weight": "bold", "color": "#FCD34D", "size": "xl"},
                     {"type": "text", "text": f"{display_name}・{role_label}", "color": "#E9D5FF", "size": "sm", "margin": "sm"},
                     {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "查看本日預約", "data": "action=admin_view"}},
-                    {"type": "button", "style": "primary", "color": "#312E81", "margin": "sm", "action": {"type": "postback", "label": "查看／解除師傅 LINE", "data": "action=admin_staff&offset=0"}},
+                    {"type": "button", "style": "primary", "color": "#312E81", "margin": "sm", "action": {"type": "postback", "label": "串接／解除師傅 LINE", "data": "action=admin_staff&offset=0"}},
+                    {"type": "button", "style": "primary", "color": "#1E3A8A", "margin": "sm", "action": {"type": "postback", "label": "管理客服帳號", "data": "action=admin_users"}},
                     {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "登出管理員", "data": "action=admin_logout"}}
                 ]
             }
@@ -876,26 +898,50 @@ def build_unlink_staff_confirmation(staff):
     )
 
 
-def build_line_staff_binding_menu(db: Session, *, offset: int = 0, page_size: int = 9):
-    """Build small, text-only cards for viewing and unlinking staff LINE IDs."""
+def build_bind_staff_confirmation(staff, *, replacing: bool = False):
+    return FlexSendMessage(
+        alt_text=f"確認將此 LINE 綁定給 {staff.name}",
+        contents={
+            "type": "bubble",
+            "header": {"type": "box", "layout": "vertical", "backgroundColor": "#123F37", "contents": [
+                {"type": "text", "text": "師傅 LINE 串接", "weight": "bold", "size": "xl", "color": "#FFFFFF"},
+            ]},
+            "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
+                {"type": "text", "text": f"將目前這個 LINE 綁定為「{staff.name}」？", "weight": "bold", "wrap": True},
+                {"type": "text", "text": "原本的 LINE 會先被撤銷，再改綁目前這個 LINE；系統會傳送成功通知確認連線。" if replacing else "系統會傳送成功通知確認連線；完成後，此 LINE 可同時保有師傅與 Root 管理權限。", "size": "sm", "color": "#6B7280", "wrap": True},
+            ]},
+            "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "postback", "label": "確認改綁到此 LINE" if replacing else "確認綁定到此 LINE", "data": f"action=confirm_bind_staff&staff_id={staff.id}"}},
+                {"type": "button", "style": "secondary", "action": {"type": "postback", "label": "取消", "data": "action=admin_staff&offset=0"}},
+            ]},
+        },
+    )
+
+
+def build_line_staff_binding_menu(db: Session, *, current_line_user_id: str | None = None, offset: int = 0, page_size: int = 9):
+    """Build text-only cards for replacing, binding, and unlinking staff LINE IDs."""
     total = db.query(Staff).count()
     offset = max(0, min(offset, max(0, total - 1)))
     rows = db.query(Staff).order_by(Staff.name, Staff.id).offset(offset).limit(page_size).all()
     bubbles = []
     for staff in rows:
         connected = bool(staff.line_user_id and not staff.line_user_id.startswith(("pending:", "seeded:")))
+        connected_here = connected and staff.line_user_id == current_line_user_id
         bubble = {
             "type": "bubble",
             "size": "micro",
             "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
                 {"type": "text", "text": staff.name, "weight": "bold", "size": "lg", "wrap": True},
-                {"type": "text", "text": "LINE 已綁定" if connected else "LINE 未綁定", "size": "sm", "color": "#0F766E" if connected else "#9CA3AF"},
+                {"type": "text", "text": "已綁定目前 LINE" if connected_here else "LINE 已綁定" if connected else "LINE 未綁定", "size": "sm", "color": "#0F766E" if connected else "#9CA3AF"},
             ]},
         }
+        footer_contents = []
         if connected:
-            bubble["footer"] = {"type": "box", "layout": "vertical", "contents": [
-                {"type": "button", "style": "primary", "color": "#D97706", "action": {"type": "postback", "label": "解除 LINE", "data": f"action=request_unlink_staff&staff_id={staff.id}"}},
-            ]}
+            footer_contents.append({"type": "button", "style": "primary", "color": "#D97706", "action": {"type": "postback", "label": "解除 LINE", "data": f"action=request_unlink_staff&staff_id={staff.id}"}})
+        if not connected_here:
+            footer_contents.append({"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "postback", "label": "撤銷後改綁此 LINE" if connected else "綁定到此 LINE", "data": f"action=request_bind_staff&staff_id={staff.id}"}})
+        if footer_contents:
+            bubble["footer"] = {"type": "box", "layout": "vertical", "spacing": "sm", "contents": footer_contents}
         bubbles.append(bubble)
     navigation = []
     if offset > 0:
@@ -914,6 +960,39 @@ def build_line_staff_binding_menu(db: Session, *, offset: int = 0, page_size: in
     if not bubbles:
         return TextSendMessage(text="目前沒有師傅資料。")
     return FlexSendMessage(alt_text="師傅 LINE 綁定管理", contents={"type": "carousel", "contents": bubbles})
+
+
+def build_line_admin_user_menu(db: Session, *, offset: int = 0, page_size: int = 8):
+    AdminUser = getattr(app.state, "admin_models", {}).get("AdminUser")
+    if not AdminUser:
+        return TextSendMessage(text="帳號管理功能目前無法使用，請改從後台操作。")
+    total = db.query(AdminUser).count()
+    offset = max(0, min(offset, max(0, total - 1)))
+    rows = db.query(AdminUser).order_by(AdminUser.role, AdminUser.username).offset(offset).limit(page_size).all()
+    role_labels = {"admin": "Admin（唯一）", "manager": "店長", "clerk": "客服"}
+    bubbles = [{
+        "type": "bubble",
+        "size": "micro",
+        "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+            {"type": "text", "text": item.display_name, "weight": "bold", "size": "lg", "wrap": True},
+            {"type": "text", "text": f"{item.username}・{role_labels.get(item.role, item.role)}", "size": "sm", "color": "#6B7280", "wrap": True},
+            {"type": "text", "text": "啟用中" if item.is_active else "已停用", "size": "xs", "color": "#0F766E" if item.is_active else "#9CA3AF"},
+        ]},
+    } for item in rows]
+    controls = [{"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "message", "label": "新增客服", "text": "新增客服"}}]
+    if offset > 0:
+        controls.append({"type": "button", "style": "secondary", "action": {"type": "postback", "label": "上一頁", "data": f"action=admin_users&offset={max(0, offset - page_size)}"}})
+    if offset + page_size < total:
+        controls.append({"type": "button", "style": "secondary", "action": {"type": "postback", "label": "下一頁", "data": f"action=admin_users&offset={offset + page_size}"}})
+    bubbles.append({
+        "type": "bubble",
+        "size": "micro",
+        "body": {"type": "box", "layout": "vertical", "contents": [
+            {"type": "text", "text": "Admin 固定為 admin；店長固定為 jerry。", "size": "sm", "wrap": True},
+        ]},
+        "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": controls},
+    })
+    return FlexSendMessage(alt_text="後台帳號管理", contents={"type": "carousel", "contents": bubbles})
 
 
 def build_staff_accept_online_prompt(appointment_id: int, staff_name: str):
@@ -992,9 +1071,9 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
     """處理管理員（root）相關的 Postback 動作"""
     action_name = parse_qs(data).get("action", [""])[0]
     root_actions = {
-        "admin_logout", "admin_view", "admin_staff", "delete_staff", "toggle_staff",
+        "admin_logout", "admin_view", "admin_staff", "admin_users", "delete_staff", "toggle_staff",
         "request_permanent_delete_staff", "confirm_permanent_delete_staff",
-        "request_unlink_staff", "confirm_unlink_staff",
+        "request_unlink_staff", "confirm_unlink_staff", "request_bind_staff", "confirm_bind_staff",
         "confirm_booking_request", "cancel_booking_request",
     }
     if action_name not in root_actions:
@@ -1057,7 +1136,14 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
             offset = int(parse_qs(data).get("offset", ["0"])[0])
         except (TypeError, ValueError):
             offset = 0
-        return build_line_staff_binding_menu(db, offset=offset)
+        return build_line_staff_binding_menu(db, current_line_user_id=user_id, offset=offset)
+
+    elif action_name == "admin_users":
+        try:
+            offset = int(parse_qs(data).get("offset", ["0"])[0])
+        except (TypeError, ValueError):
+            offset = 0
+        return build_line_admin_user_menu(db, offset=offset)
     
     elif action_name == "request_permanent_delete_staff":
         qs = parse_qs(data)
@@ -1070,6 +1156,35 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         staff_id = qs.get("staff_id", [None])[0]
         staff = db.query(Staff).filter(Staff.id == int(staff_id)).first() if staff_id else None
         return build_unlink_staff_confirmation(staff) if staff else TextSendMessage(text="查無師傅資料")
+
+    elif action_name == "request_bind_staff":
+        qs = parse_qs(data)
+        staff_id = qs.get("staff_id", [None])[0]
+        staff = db.query(Staff).filter(Staff.id == int(staff_id)).first() if staff_id else None
+        if not staff:
+            return TextSendMessage(text="查無師傅資料")
+        replacing = bool(staff.line_user_id and not staff.line_user_id.startswith(("pending:", "seeded:")) and staff.line_user_id != user_id)
+        return build_bind_staff_confirmation(staff, replacing=replacing)
+
+    elif action_name == "confirm_bind_staff":
+        qs = parse_qs(data)
+        staff_id = qs.get("staff_id", [None])[0]
+        binder = getattr(getattr(app, "state", None), "bind_staff_line", None)
+        identity_getter = getattr(getattr(app, "state", None), "line_admin_identity", None)
+        if not staff_id or not user_id or not binder:
+            return TextSendMessage(text="LINE 串接功能目前無法使用，請改從後台操作。")
+        identity = identity_getter(user_id, db) if identity_getter else None
+        try:
+            staff = binder(
+                int(staff_id),
+                user_id,
+                db,
+                actor_id=identity.get("id") if identity else None,
+                source="Root 撤銷後改綁",
+            )
+            return TextSendMessage(text=f"已將目前 LINE 串接為 {staff.name}；測試通知已成功送達。Root 管理權限會同時保留。")
+        except Exception as exc:
+            return TextSendMessage(text=getattr(exc, "detail", "LINE 串接失敗。"))
 
     elif action_name == "confirm_unlink_staff":
         qs = parse_qs(data)
@@ -1762,7 +1877,7 @@ if handler_staff:
                             TextSendMessage(text=f"基本資料已一次更新完成：\n身高：{staff.height}\n體重：{staff.weight}\n角色：{staff.role}"),
                         )
                 else:
-                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n🟢「上線」／⚫「下線」：設定目前接單狀態\n📋「預約」：查看未來一週自己的預約\n👤「我的檔案」：查看與更新資料\n📅「排班」或「後台」：開啟自己的後台\n🔧「root」：管理員需再輸入 PIN 綁定"
+                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n🟢「上線」／⚫「下線」：設定目前接單狀態\n📋「預約」：查看未來一週自己的預約\n👤「我的檔案」：查看與更新資料\n📅「排班」或「後台」：開啟自己的後台"
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=guide_txt))
 
             except Exception:
@@ -1897,6 +2012,21 @@ def notify_booking_request_parties(booking_request, db: Session, *, origin: str 
             bot_staff_api.push_message(account.line_user_id, message)
         except Exception:
             logging.exception("預約通知推送失敗 admin_user_id=%s booking_request_id=%s", account.id, booking_request.id)
+
+
+def notify_staff_line_linked(staff, line_user_id: str, *, source: str = "管理後台") -> None:
+    """Verify a staff LINE binding by delivering a real push message."""
+    if not bot_staff_api:
+        raise RuntimeError("LINE_TOKEN_STAFF 未設定")
+    bot_staff_api.push_message(
+        line_user_id,
+        TextSendMessage(
+            text=(
+                f"{staff.name} 師傅您好，您的 LINE 已由{source}完成串接。\n"
+                "現在可接收派單通知，並輸入「上線」、「下線」、「預約」、「我的檔案」或「後台」使用功能。"
+            )
+        ),
+    )
 
 app = FastAPI(title="SPA 智能客服與預約系統")
 
@@ -2065,4 +2195,5 @@ register_admin_api(
     Appointment=Appointment,
     appointment_notifier=notify_appointment_parties,
     booking_request_notifier=notify_booking_request_parties,
+    staff_line_notifier=notify_staff_line_linked,
 )

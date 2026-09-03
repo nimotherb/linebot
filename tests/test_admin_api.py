@@ -15,7 +15,8 @@ os.environ["ADMIN_INITIAL_PIN"] = "123456"
 os.environ["MANAGER_INITIAL_PIN"] = "654321"
 os.environ["CUSTOMER_SERIAL_START"] = "4800"
 
-from main import Base, SessionLocal, Staff, User, app, build_booking_web_message, build_line_staff_binding_menu, build_staff_bubble, build_staff_week_appointments, engine, now_taipei_naive, on_startup, parse_staff_profile_text, public_https_url  # noqa: E402
+import main as main_module  # noqa: E402
+from main import Base, SessionLocal, Staff, User, app, build_booking_web_message, build_line_staff_binding_menu, build_staff_bubble, build_staff_week_appointments, engine, handle_line_admin_message, handle_root_action, now_taipei_naive, on_startup, parse_staff_profile_text, public_https_url  # noqa: E402
 from identifiers import customer_serial  # noqa: E402
 
 
@@ -343,13 +344,19 @@ def test_booking_request_waits_for_review_and_can_be_confirmed_without_shift(cli
     assert len(client.get("/api/admin/appointments", headers=headers).json()) == before + 1
 
 
-def test_manager_can_unlink_staff_line_without_deleting_history(client):
+def test_manager_can_unlink_staff_line_without_deleting_history(client, monkeypatch):
+    class FakeLineBot:
+        def push_message(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(main_module, "bot_staff_api", FakeLineBot())
     admin_headers = login(client)
     manager_headers = login(client, "jerry", "654321")
+    line_user_id = "U" + "a" * 32
     created = client.post("/api/admin/staff", headers=admin_headers, json={
         "name": "LINE 解綁測試師傅",
         "category": "gay",
-        "line_user_id": "U-test-staff-line-binding",
+        "line_user_id": line_user_id,
     })
     assert created.status_code == 201, created.text
     assert created.json()["line_connected"] is True
@@ -358,7 +365,119 @@ def test_manager_can_unlink_staff_line_without_deleting_history(client):
     assert unlinked.json()["line_connected"] is False
     with SessionLocal() as db:
         RevokedStaffLine = app.state.admin_models["RevokedStaffLine"]
-        assert db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == "U-test-staff-line-binding").count() == 1
+        assert db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == line_user_id).count() == 1
+
+
+def test_staff_profile_line_rebinding_and_root_dual_identity(client, monkeypatch):
+    class FakeLineBot:
+        def __init__(self):
+            self.sent = []
+
+        def push_message(self, recipient, message):
+            self.sent.append((recipient, message.text))
+
+    fake_bot = FakeLineBot()
+    monkeypatch.setattr(main_module, "bot_staff_api", fake_bot)
+    headers = login(client)
+    created = client.post("/api/admin/staff", headers=headers, json={
+        "name": "資料串接測試師傅",
+        "category": "straight",
+    })
+    assert created.status_code == 201, created.text
+    staff_id = created.json()["id"]
+
+    updated = client.patch(f"/api/admin/staff/{staff_id}", headers=headers, json={
+        "height": 177,
+        "weight": 80,
+        "role": "守備方",
+    })
+    assert updated.status_code == 200, updated.text
+    assert (updated.json()["height"], updated.json()["weight"], updated.json()["role"]) == ("177", "80", "守備方")
+
+    first_line_id = "U" + "b" * 32
+    second_line_id = "U" + "c" * 32
+    linked = client.put(f"/api/admin/staff/{staff_id}/line-link", headers=headers, json={"line_user_id": first_line_id})
+    assert linked.status_code == 200, linked.text
+    assert linked.json()["line_connected"] is True
+    assert linked.json()["notification_sent"] is True
+
+    rebound = client.put(f"/api/admin/staff/{staff_id}/line-link", headers=headers, json={"line_user_id": second_line_id})
+    assert rebound.status_code == 200, rebound.text
+    assert [item[0] for item in fake_bot.sent[-2:]] == [first_line_id, second_line_id]
+
+    with SessionLocal() as db:
+        RevokedStaffLine = app.state.admin_models["RevokedStaffLine"]
+        assert db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == first_line_id).count() == 1
+        assert db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == second_line_id).count() == 0
+
+        app.state.bind_line_admin(second_line_id, "123456", db)
+        assert app.state.line_admin_identity(second_line_id, db)["role"] == "admin"
+        assert db.query(Staff).filter(Staff.id == staff_id, Staff.line_user_id == second_line_id).first()
+
+        ordered_staff_ids = [row.id for row in db.query(Staff).order_by(Staff.name, Staff.id).all()]
+        menu_offset = (ordered_staff_ids.index(staff_id) // 9) * 9
+        menu = build_line_staff_binding_menu(db, current_line_user_id=second_line_id, offset=menu_offset)
+        assert any(
+            getattr(content, "text", "") == "已綁定目前 LINE"
+            for bubble in menu.contents.contents
+            for content in bubble.body.contents
+        )
+
+        clerk_reply = handle_line_admin_message("新增客服 測試客服 lineclerk01 2468", second_line_id, db)
+        assert "客服帳號已建立" in clerk_reply.text
+        AdminUser = app.state.admin_models["AdminUser"]
+        clerk = db.query(AdminUser).filter(AdminUser.username == "lineclerk01").first()
+        assert clerk and clerk.role == "clerk"
+
+        manager_line_id = "U" + "f" * 32
+        app.state.bind_line_admin(manager_line_id, "654321", db)
+        manager_reply = handle_line_admin_message("新增客服 店長新增客服 lineclerk02 1357", manager_line_id, db)
+        assert "客服帳號已建立" in manager_reply.text
+        manager_clerk = db.query(AdminUser).filter(AdminUser.username == "lineclerk02").first()
+        assert manager_clerk and manager_clerk.role == "clerk"
+
+        old_target_line_id = "U" + "e" * 32
+        replacement_target = Staff(
+            line_user_id=old_target_line_id,
+            name="Root 改綁測試師傅",
+            category="gay",
+            employment_status="active",
+        )
+        db.add(replacement_target)
+        db.commit()
+        app.state.unlink_staff_line(staff_id, db, actor_id=app.state.line_admin_identity(second_line_id, db)["id"])
+        root_reply = handle_root_action(
+            f"action=confirm_bind_staff&staff_id={replacement_target.id}",
+            second_line_id,
+            db,
+            is_staff_side=True,
+        )
+        assert "Root 管理權限會同時保留" in root_reply.text
+        db.refresh(replacement_target)
+        assert replacement_target.line_user_id == second_line_id
+        assert db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == old_target_line_id).count() == 1
+
+
+def test_staff_line_binding_rolls_back_when_notification_fails(client, monkeypatch):
+    class FailingLineBot:
+        def push_message(self, *_args, **_kwargs):
+            raise RuntimeError("not reachable")
+
+    monkeypatch.setattr(main_module, "bot_staff_api", FailingLineBot())
+    headers = login(client)
+    created = client.post("/api/admin/staff", headers=headers, json={
+        "name": "無法通知測試師傅",
+        "category": "gay",
+    })
+    assert created.status_code == 201, created.text
+    staff_id = created.json()["id"]
+    line_user_id = "U" + "d" * 32
+
+    response = client.put(f"/api/admin/staff/{staff_id}/line-link", headers=headers, json={"line_user_id": line_user_id})
+    assert response.status_code == 502, response.text
+    with SessionLocal() as db:
+        item = db.query(Staff).filter(Staff.id == staff_id).first()
+        assert item.line_user_id.startswith("pending:")
 
 
 def test_legacy_public_backoffice_bootstrap_is_disabled(client):

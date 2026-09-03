@@ -56,6 +56,7 @@ PUBLIC_BOOKING_WINDOW_MINUTES = 10
 PUBLIC_BOOKING_MAX_ATTEMPTS = 8
 _PUBLIC_BOOKING_ATTEMPTS: dict[str, list[datetime]] = {}
 _PUBLIC_BOOKING_LOCK = threading.Lock()
+LINE_USER_ID_PATTERN = re.compile(r"^U[0-9a-fA-F]{32}$")
 
 STATUS_TO_ZH = {
     "pending": "待確認",
@@ -241,6 +242,9 @@ class StaffCreateIn(BaseModel):
     phone: str | None = Field(default=None, max_length=50)
     return_rule_set_id: int | None = None
     photo_url: str | None = Field(default=None, max_length=1000)
+    height: int | None = Field(default=None, ge=100, le=250)
+    weight: int | None = Field(default=None, ge=30, le=250)
+    role: Literal["攻擊手", "守備方", "無特定", "攻守兼備"] | None = None
 
 
 class StaffStatusIn(BaseModel):
@@ -254,6 +258,13 @@ class StaffPatchIn(BaseModel):
     category: Literal["straight", "gay", "bisexual"] | None = None
     return_rule_set_id: int | None = None
     photo_url: str | None = Field(default=None, max_length=1000)
+    height: int | None = Field(default=None, ge=100, le=250)
+    weight: int | None = Field(default=None, ge=30, le=250)
+    role: Literal["攻擊手", "守備方", "無特定", "攻守兼備"] | None = None
+
+
+class StaffLineLinkIn(BaseModel):
+    line_user_id: str = Field(min_length=33, max_length=33)
 
 
 class StaffPhotoIn(BaseModel):
@@ -367,6 +378,7 @@ def register_admin_api(
     Appointment,
     appointment_notifier=None,
     booking_request_notifier=None,
+    staff_line_notifier=None,
 ) -> None:
     """Register models, startup seeding, and all API endpoints."""
 
@@ -909,6 +921,71 @@ def register_admin_api(
 
     app.state.unlink_staff_line = unlink_staff_line
 
+    def bind_staff_line(
+        staff_id: int,
+        line_user_id: str,
+        db: Session,
+        *,
+        actor_id: int | None = None,
+        source: str = "管理後台",
+    ):
+        normalized_line_id = (line_user_id or "").strip()
+        if not LINE_USER_ID_PATTERN.fullmatch(normalized_line_id):
+            raise HTTPException(status_code=422, detail="LINE User ID 必須是 U 開頭加 32 位十六進位字元")
+
+        item = db.query(Staff).filter(Staff.id == staff_id).with_for_update().first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到員工")
+        duplicate = db.query(Staff).filter(Staff.line_user_id == normalized_line_id, Staff.id != staff_id).first()
+        if duplicate:
+            raise HTTPException(status_code=409, detail=f"這個 LINE 已綁定師傅 {duplicate.name}，請先解除原連結")
+
+        actor = db.query(AdminUser).filter(AdminUser.id == actor_id).first() if actor_id else None
+        before = staff_dict(item)
+        previous_line_user_id = item.line_user_id
+        if (
+            previous_line_user_id
+            and previous_line_user_id != normalized_line_id
+            and not previous_line_user_id.startswith(("pending:", "seeded:"))
+            and not db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == previous_line_user_id).first()
+        ):
+            db.add(RevokedStaffLine(
+                line_user_id=previous_line_user_id,
+                staff_name=item.name,
+                revoked_by_user_id=actor_id,
+            ))
+
+        item.line_user_id = normalized_line_id
+        db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == normalized_line_id).delete(synchronize_session=False)
+        db.query(StaffSession).filter(StaffSession.staff_id == staff_id).delete(synchronize_session=False)
+        db.query(StaffMagicLink).filter(StaffMagicLink.staff_id == staff_id).delete(synchronize_session=False)
+        db.flush()
+
+        if not staff_line_notifier:
+            db.rollback()
+            raise HTTPException(status_code=503, detail="派單 LINE Bot 尚未設定，未完成串接")
+        try:
+            staff_line_notifier(item, normalized_line_id, source=source)
+        except Exception as exc:
+            db.rollback()
+            logger.exception("Unable to verify staff LINE binding staff_id=%s", staff_id)
+            raise HTTPException(status_code=502, detail="通知無法送達此 LINE，未完成串接；請確認 LINE User ID 且已加入派單 Bot") from exc
+
+        audit(
+            db,
+            actor,
+            "line_link" if previous_line_user_id != normalized_line_id else "line_link_verify",
+            "staff",
+            staff_id,
+            reason=source,
+            before=before,
+            after={**staff_dict(item), "notification_sent": True},
+        )
+        db.commit()
+        return item
+
+    app.state.bind_staff_line = bind_staff_line
+
     def decode_site_content(value: str | None) -> dict[str, Any]:
         if not value:
             return {}
@@ -1038,9 +1115,47 @@ def register_admin_api(
         db.commit()
         return identity
 
+    def create_line_clerk(
+        actor_id: int,
+        username: str,
+        display_name: str,
+        pin: str,
+        db: Session,
+    ):
+        actor = db.query(AdminUser).filter(
+            AdminUser.id == actor_id,
+            AdminUser.is_active.is_(True),
+            AdminUser.role.in_(["admin", "manager"]),
+        ).first()
+        if not actor:
+            raise HTTPException(status_code=403, detail="只有 Admin 或店長可新增客服帳號")
+        normalized_username = (username or "").strip()
+        normalized_name = (display_name or "").strip()
+        if not re.fullmatch(r"[a-zA-Z0-9._-]{3,80}", normalized_username):
+            raise HTTPException(status_code=422, detail="客服帳號須為 3 至 80 位英數字、句點、底線或減號")
+        if not normalized_name or len(normalized_name) > 120:
+            raise HTTPException(status_code=422, detail="客服名稱不可空白且最多 120 字")
+        if not re.fullmatch(r"\d{4}", pin or ""):
+            raise HTTPException(status_code=422, detail="客服 PIN 必須是自訂 4 位數字")
+        if db.query(AdminUser).filter(AdminUser.username == normalized_username).first():
+            raise HTTPException(status_code=409, detail="登入帳號已存在")
+        item = AdminUser(
+            username=normalized_username,
+            display_name=normalized_name,
+            pin_hash=password_hash.hash(pin),
+            role="clerk",
+            is_active=True,
+        )
+        db.add(item)
+        db.flush()
+        audit(db, actor, "create_from_line", "admin_user", item.id, after=serialize_admin(item))
+        db.commit()
+        return serialize_admin(item)
+
     app.state.line_admin_identity = line_admin_identity
     app.state.bind_line_admin = bind_line_admin
     app.state.unbind_line_admin = unbind_line_admin
+    app.state.create_line_clerk = create_line_clerk
 
     def service_dict(item) -> dict[str, Any]:
         return {
@@ -2559,10 +2674,8 @@ def register_admin_api(
 
     @app.post("/api/admin/staff", status_code=201)
     def create_staff(payload: StaffCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
-        line_user_id = payload.line_user_id or f"pending:{secrets.token_hex(16)}"
-        if db.query(Staff).filter(Staff.line_user_id == line_user_id).first():
-            raise HTTPException(status_code=409, detail="LINE 帳號已存在")
-        db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == line_user_id).delete(synchronize_session=False)
+        requested_line_user_id = (payload.line_user_id or "").strip() or None
+        line_user_id = f"pending:{secrets.token_hex(16)}"
         photo_url = (payload.photo_url or "").strip()
         if photo_url and not photo_url.startswith(("https://", "http://")):
             raise HTTPException(status_code=422, detail="照片網址必須以 https:// 或 http:// 開頭；本機照片請使用上傳功能")
@@ -2575,10 +2688,22 @@ def register_admin_api(
             employment_status="active",
             return_rule_set_id=payload.return_rule_set_id,
             photo_url=photo_url or None,
+            height=str(payload.height) if payload.height is not None else None,
+            weight=str(payload.weight) if payload.weight is not None else None,
+            role=payload.role,
         )
         db.add(item)
         db.flush()
         audit(db, actor, "create", "staff", item.id, after=staff_dict(item))
+        if requested_line_user_id:
+            item = bind_staff_line(
+                item.id,
+                requested_line_user_id,
+                db,
+                actor_id=actor.id,
+                source="建立員工時串接",
+            )
+            return {**staff_dict(item), "notification_sent": True}
         db.commit()
         return staff_dict(item)
 
@@ -2598,6 +2723,9 @@ def register_admin_api(
         if "return_rule_set_id" in changes and changes["return_rule_set_id"] is not None:
             if not db.query(ReturnRuleSet).filter(ReturnRuleSet.id == changes["return_rule_set_id"], ReturnRuleSet.active.is_(True)).first():
                 raise HTTPException(status_code=404, detail="找不到回帳表")
+        for numeric_profile_field in ("height", "weight"):
+            if numeric_profile_field in changes and changes[numeric_profile_field] is not None:
+                changes[numeric_profile_field] = str(changes[numeric_profile_field])
         before = staff_dict(item)
         for field, value in changes.items():
             setattr(item, field, value)
@@ -2646,6 +2774,22 @@ def register_admin_api(
     def unlink_staff_line_endpoint(staff_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
         item = unlink_staff_line(staff_id, db, actor_id=actor.id)
         return staff_dict(item)
+
+    @app.put("/api/admin/staff/{staff_id}/line-link")
+    def link_staff_line_endpoint(
+        staff_id: int,
+        payload: StaffLineLinkIn,
+        db: Session = Depends(get_db),
+        actor=Depends(require_roles("admin", "manager")),
+    ):
+        item = bind_staff_line(
+            staff_id,
+            payload.line_user_id,
+            db,
+            actor_id=actor.id,
+            source="管理後台串接",
+        )
+        return {**staff_dict(item), "notification_sent": True}
 
     @app.delete("/api/admin/staff/{staff_id}")
     def delete_staff_permanently(
