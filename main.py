@@ -296,6 +296,22 @@ def parse_staff_profile_text(value: str) -> dict[str, str]:
     return {"height": height, "weight": weight, "role": role}
 
 
+def repair_legacy_staff_profile_fields(staff) -> bool:
+    """Split profile text accidentally stored in the legacy height column."""
+    raw_height = (staff.height or "").strip()
+    if not raw_height or re.fullmatch(r"\d{3}", raw_height):
+        return False
+    candidate = raw_height if "身高" in raw_height else f"身高={raw_height}"
+    try:
+        profile = parse_staff_profile_text(candidate)
+    except ValueError:
+        return False
+    staff.height = profile["height"]
+    staff.weight = profile["weight"]
+    staff.role = profile["role"]
+    return True
+
+
 def customer_phone_values(db: Session, user: User | None) -> list[str]:
     if not user:
         return []
@@ -2107,6 +2123,8 @@ def on_startup():
             if not staff_obj.category:
                 staff_obj.category = profile.category
             staff_obj.photo_url = therapist_photo_url(profile)
+        for staff_obj in db.query(Staff).all():
+            repair_legacy_staff_profile_fields(staff_obj)
         existing_phone_rows = {item.phone: item for item in db.query(CustomerPhone).all()}
         for customer in db.query(User).filter(User.phone.isnot(None)).order_by(User.id).all():
             try:
