@@ -78,7 +78,7 @@ type RawShift = {
   staff_name?: string;
   start_time: string;
   end_time: string;
-  source: 'staff_link' | 'admin' | 'manager' | 'clerk';
+  source: 'staff_link' | 'line_online' | 'admin' | 'manager' | 'clerk';
   locked: boolean;
 };
 
@@ -166,6 +166,8 @@ export type PublicBookingAvailability = {
   available_for_instant_booking?: boolean;
   staff: Array<{ id: number; name: string; category?: RawStaff['category'] }>;
 };
+
+export type PublicBookingIdentity = { name?: string; phone?: string };
 
 export type RawBookingRequest = {
   id: number;
@@ -282,7 +284,7 @@ export const mapShift = (item: RawShift): Shift => {
     start: start.time,
     endDate: end.date,
     end: end.time,
-    source: item.source === 'staff_link' ? '師傅連結' : item.source === 'manager' ? '店長' : item.source === 'clerk' ? '客服' : 'Admin',
+    source: item.source === 'staff_link' ? '師傅連結' : item.source === 'line_online' ? '師傅上線' : item.source === 'manager' ? '店長' : item.source === 'clerk' ? '客服' : 'Admin',
     locked: item.locked,
   };
 };
@@ -395,6 +397,12 @@ export class SpaApi {
     if (requestedStaffId) query.set('requested_staff_id', String(requestedStaffId));
     if (requestOnly) query.set('request_only', 'true');
     return this.request<PublicBookingAvailability>(`/api/public/booking/availability?${query}`);
+  }
+
+  publicBookingIdentity(idToken: string) {
+    return this.request<PublicBookingIdentity>('/api/public/booking/identity', {
+      method: 'POST', body: JSON.stringify({ id_token: idToken }),
+    });
   }
 
   createPublicBooking(payload: Record<string, unknown>) {

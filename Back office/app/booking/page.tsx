@@ -129,6 +129,12 @@ export default function BookingPage() {
         if (!active) return;
         setIdToken(token);
         setName((current) => current || decoded?.name || '');
+        try {
+          const savedIdentity = await api.publicBookingIdentity(token);
+          if (!active) return;
+          setName((current) => current || savedIdentity.name || decoded?.name || '');
+          setPhone((current) => current || savedIdentity.phone || '');
+        } catch {}
         setInsideLine(liff.isInClient());
         setIdentityMode('line');
         setIdentityMessage('已由 LINE 安全辨識身分');
@@ -255,7 +261,7 @@ export default function BookingPage() {
           <div className={styles.sectionTitle}><span>02</span><div><h2>日期與師傅</h2><p>在同一個預約流程中選擇師傅範圍，不會跳到另一個入口</p></div></div>
           <div className={flowStyles.bookingModeGrid} role="radiogroup" aria-label="師傅選擇方式">
             <button type="button" role="radio" aria-checked={bookingMode === 'scheduled'} className={bookingMode === 'scheduled' ? flowStyles.bookingModeSelected : flowStyles.bookingMode} onClick={() => { setBookingMode('scheduled'); setStaffId(''); setAvailability(null); setError(''); }}>
-              <i>01</i><span><strong>現有排班師傅預訂</strong><small>只顯示有正式排班且沒有撞單的師傅，可直接成立預約。</small></span>
+              <i>01</i><span><strong>現有排班師傅預訂</strong><small>顯示該時段有排班或目前已上線、且沒有撞單的師傅，可直接成立預約。</small></span>
             </button>
             <button type="button" role="radio" aria-checked={bookingMode === 'requested'} className={bookingMode === 'requested' ? flowStyles.bookingModeSelected : flowStyles.bookingMode} onClick={() => { setBookingMode('requested'); setStaffId(''); setAvailability(null); setError(''); }}>
               <i>02</i><span><strong>所有師傅預約</strong><small>瀏覽全部在職師傅並指定人選；送出後由客服確認，不會立即成立預約。</small></span>
@@ -301,7 +307,7 @@ export default function BookingPage() {
         <dl className={styles.receipt}>
           <div><dt>預約時間</dt><dd>{startTime.replace('T', ' ')}–{availability?.end_time.slice(11, 16)}</dd></div>
           <div><dt>服務方案</dt><dd>{service?.name}・{service?.duration_minutes} 分</dd></div>
-          <div><dt>師傅選擇</dt><dd>{staff?.name || '不指定，由店長安排'}・{requestOnly ? '待客服確認' : '目前排班'}</dd></div>
+          <div><dt>師傅選擇</dt><dd>{staff?.name || '不指定，由店長安排'}・{requestOnly ? '待客服確認' : '排班中／已上線'}</dd></div>
           <div><dt>優惠</dt><dd>{promotion?.name || '不使用優惠'}</dd></div>
           <div><dt>客戶</dt><dd>{name}・{phone}</dd></div>
           {notes && <div><dt>備註</dt><dd>{notes}</dd></div>}

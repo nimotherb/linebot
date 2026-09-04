@@ -498,7 +498,7 @@ def build_booking_flow_flex(*, plan_key: str, promotion_id: str, selected_dt: st
                 "type": "box", "layout": "vertical", "spacing": "lg", "contents": [
                     {"type": "box", "layout": "vertical", "spacing": "sm", "paddingAll": "16px", "backgroundColor": "#EDF3E5", "cornerRadius": "16px", "contents": [
                         {"type": "text", "text": "目前排班師傅", "weight": "bold", "size": "lg", "color": "#123F37"},
-                        {"type": "text", "text": "只列出有正式排班且沒有撞單的師傅，可直接成立預約。", "size": "sm", "color": "#5B6C66", "wrap": True},
+                        {"type": "text", "text": "列出該時段有排班或目前已上線、且沒有撞單的師傅，可直接成立預約。", "size": "sm", "color": "#5B6C66", "wrap": True},
                         {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "postback", "label": "查看目前排班", "data": scheduled_data}},
                     ]},
                     {"type": "box", "layout": "vertical", "spacing": "sm", "paddingAll": "16px", "backgroundColor": "#FFF6E8", "cornerRadius": "16px", "contents": [
@@ -788,6 +788,41 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
     return bubble
 
 
+LINE_ONLINE_SHIFT_SOURCE = "line_online"
+
+
+def set_staff_online_schedule(db: Session, staff, online: bool):
+    """Start or finish the formal shift represented by LINE online status."""
+    Shift = getattr(app.state, "admin_models", {}).get("Shift")
+    if not Shift:
+        raise RuntimeError("排班資料表尚未就緒")
+    now = now_taipei_naive()
+    shift = db.query(Shift).filter(
+        Shift.staff_id == staff.id,
+        Shift.status == "active",
+        Shift.source == LINE_ONLINE_SHIFT_SOURCE,
+    ).order_by(Shift.start_time.desc()).first()
+    if online:
+        if not staff.is_online or not shift or shift.end_time <= now:
+            shift = Shift(
+                staff_id=staff.id,
+                start_time=now,
+                end_time=now + timedelta(days=2),
+                status="active",
+                source=LINE_ONLINE_SHIFT_SOURCE,
+            )
+            db.add(shift)
+        staff.is_online = True
+        staff.online_start_time = shift.start_time
+    else:
+        if shift and (staff.is_online or shift.end_time > now):
+            shift.end_time = now
+        staff.is_online = False
+        staff.online_start_time = None
+    db.commit()
+    return shift
+
+
 def build_booking_request_bubble(booking_request, db: Session, *, customer_copy: bool = False):
     models = getattr(app.state, "admin_models", {})
     ServicePlan = models.get("ServicePlan")
@@ -1032,7 +1067,7 @@ def build_staff_accept_online_prompt(appointment_id: int, staff_name: str):
             ]},
             "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
                 {"type": "text", "text": f"{staff_name} 已接下訂單 AP-{appointment_id}。", "weight": "bold", "wrap": True},
-                {"type": "text", "text": "接單後是否要將「師傅在線」設為下線？正式班表不會因此取消。", "size": "sm", "color": "#6B7280", "wrap": True},
+                {"type": "text", "text": "接單後是否下線？下線會結束這次由 LINE 上線建立的正式排班。", "size": "sm", "color": "#6B7280", "wrap": True},
             ]},
             "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
                 {"type": "button", "style": "primary", "color": "#DC2626", "action": {"type": "postback", "label": "接單後下線", "data": "action=staff_set_online&online=0"}},
@@ -1714,7 +1749,7 @@ if handler_customer:
                         Shift.start_time <= booking_start,
                         Shift.end_time >= booking_end,
                     ).first()
-                    if not scheduled:
+                    if not scheduled and not staff_obj.is_online:
                         creator = getattr(getattr(app, "state", None), "create_booking_request_record", None)
                         service_code = "OUT" if plan_key == "Out" else plan_key
                         service_plan = db.query(ServicePlan).filter(
@@ -1881,15 +1916,12 @@ if handler_staff:
                 elif text in {"後台", "後臺", "排班"}:
                     reply_with_fallback(bot_staff_api, event.reply_token, build_staff_backend_link(staff, db), db=db, context="師傅 LINE 直登入連結")
                 elif text == "上線":
-                    staff.is_online = True
-                    staff.online_start_time = now_taipei_naive()
-                    db.commit()
-                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="已上線。這只代表目前可接單，不會替代正式排班。"))
+                    shift = set_staff_online_schedule(db, staff, True)
+                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"已上線並開始正式排班（{shift.start_time.strftime('%m/%d %H:%M')} 起）。"))
                 elif text == "下線":
-                    staff.is_online = False
-                    staff.online_start_time = None
-                    db.commit()
-                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="已下線。既有班表與已接訂單仍會保留。"))
+                    shift = set_staff_online_schedule(db, staff, False)
+                    ended_at = shift.end_time.strftime('%m/%d %H:%M') if shift else now_taipei_naive().strftime('%m/%d %H:%M')
+                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"已下線並結束本次正式排班（{ended_at}）。已接訂單仍會保留。"))
                 elif text == "我的檔案":
                     profile_lines = ["【基本資料】", f"姓名：{staff.name}"]
                     if staff.height:
@@ -1917,7 +1949,7 @@ if handler_staff:
                             TextSendMessage(text=f"基本資料已一次更新完成：\n身高：{staff.height}\n體重：{staff.weight}\n角色：{staff.role}"),
                         )
                 else:
-                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n🟢「上線」／⚫「下線」：設定目前接單狀態\n📋「預約」：查看未來一週自己的預約\n👤「我的檔案」：查看與更新資料\n📅「排班」或「後台」：開啟自己的後台\n🪪「UID」：取得自己的 LINE UID"
+                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n🟢「上線」：開始正式排班\n⚫「下線」：結束本次排班\n📋「預約」：查看未來一週自己的預約\n👤「我的檔案」：查看與更新資料\n📅「排班」或「後台」：開啟自己的後台\n🪪「UID」：取得自己的 LINE UID"
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=guide_txt))
 
             except Exception:
@@ -1954,10 +1986,8 @@ if handler_staff:
                 if not staff:
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="找不到已綁定的師傅帳號。"))
                     return
-                staff.is_online = online
-                staff.online_start_time = now_taipei_naive() if online else None
-                db.commit()
-                bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="已維持上線，可繼續接單。" if online else "已下線；既有班表與訂單不受影響。"))
+                set_staff_online_schedule(db, staff, online)
+                bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="已維持上線及正式排班，可繼續接單。" if online else "已下線並結束本次正式排班；已接訂單仍會保留。"))
                 return
 
             if action_name == "confirm_staff_phone":

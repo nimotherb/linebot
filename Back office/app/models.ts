@@ -66,7 +66,7 @@ export type Shift = {
   start: string;
   endDate: string;
   end: string;
-  source: '師傅連結' | '客服' | '店長' | 'Admin';
+  source: '師傅連結' | '師傅上線' | '客服' | '店長' | 'Admin';
   locked?: boolean;
 };
 

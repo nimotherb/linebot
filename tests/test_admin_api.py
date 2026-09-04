@@ -16,7 +16,8 @@ os.environ["MANAGER_INITIAL_PIN"] = "654321"
 os.environ["CUSTOMER_SERIAL_START"] = "4800"
 
 import main as main_module  # noqa: E402
-from main import Base, SessionLocal, Staff, User, app, build_booking_web_message, build_line_staff_binding_menu, build_staff_bubble, build_staff_week_appointments, engine, handle_line_admin_message, handle_root_action, now_taipei_naive, on_startup, parse_staff_profile_text, public_https_url, repair_legacy_staff_profile_fields  # noqa: E402
+import admin_api as admin_api_module  # noqa: E402
+from main import Base, CustomerPhone, SessionLocal, Staff, User, app, build_booking_web_message, build_line_staff_binding_menu, build_staff_bubble, build_staff_week_appointments, engine, handle_line_admin_message, handle_root_action, now_taipei_naive, on_startup, parse_staff_profile_text, public_https_url, repair_legacy_staff_profile_fields, set_staff_online_schedule  # noqa: E402
 from identifiers import customer_serial  # noqa: E402
 
 
@@ -736,6 +737,63 @@ def test_public_booking_checks_availability_and_is_idempotent(client):
     })
     assert automatic.status_code == 201, automatic.text
     assert automatic.json()["appointment"]["staff_id"] == staff["id"]
+
+
+def test_line_online_shift_enables_booking_autofill_and_customer_card(client, monkeypatch):
+    class FakeCustomerBot:
+        def __init__(self):
+            self.sent = []
+
+        def push_message(self, recipient, message):
+            self.sent.append((recipient, message))
+
+    line_id = "U" + "9" * 32
+    fake_bot = FakeCustomerBot()
+    monkeypatch.setattr(main_module, "bot_customer_api", fake_bot)
+    monkeypatch.setattr(admin_api_module, "_verify_line_id_token", lambda _token: {"sub": line_id, "name": "LINE 預約客戶"})
+    headers = login(client)
+    plan = next(item for item in client.get("/api/admin/bootstrap", headers=headers).json()["services"] if item["code"] == "B")
+    staff = client.post("/api/admin/staff", headers=headers, json={"name": "上線預訂測試師傅", "category": "gay"}).json()
+
+    with SessionLocal() as db:
+        staff_obj = db.query(Staff).filter(Staff.id == staff["id"]).first()
+        shift = set_staff_online_schedule(db, staff_obj, True)
+        assert shift.source == "line_online"
+        customer = User(line_user_id=line_id, phone="0958123456", display_name="已綁定客戶", customer_grade="SR")
+        db.add(customer)
+        db.flush()
+        db.add(CustomerPhone(user_id=customer.id, phone="0958123456", is_primary=True))
+        db.commit()
+
+    identity = client.post("/api/public/booking/identity", json={"id_token": "test-line-id-token"})
+    assert identity.status_code == 200, identity.text
+    assert identity.json() == {"name": "已綁定客戶", "phone": "0958123456"}
+
+    start_time = "2099-09-08T19:00:00"
+    availability = client.get("/api/public/booking/availability", params={"service_plan_id": plan["id"], "start_time": start_time})
+    assert availability.status_code == 200, availability.text
+    assert staff["id"] in {item["id"] for item in availability.json()["staff"]}
+
+    created = client.post("/api/public/booking/appointments", json={
+        "customer_name": "LINE 預約客戶",
+        "phone": "0958123456",
+        "service_plan_id": plan["id"],
+        "start_time": start_time,
+        "staff_id": staff["id"],
+        "id_token": "test-line-id-token",
+        "idempotency_key": "line-online-booking-card-0001",
+    })
+    assert created.status_code == 201, created.text
+    assert len(fake_bot.sent) == 1
+    assert fake_bot.sent[0][0] == line_id
+    assert fake_bot.sent[0][1].alt_text == "伊果 SPA 預約已成立"
+
+    with SessionLocal() as db:
+        staff_obj = db.query(Staff).filter(Staff.id == staff["id"]).first()
+        shift = set_staff_online_schedule(db, staff_obj, False)
+        db.refresh(staff_obj)
+        assert staff_obj.is_online is False
+        assert shift.end_time <= now_taipei_naive()
 
 
 def test_admin_can_update_own_login_and_bulk_delete(client):

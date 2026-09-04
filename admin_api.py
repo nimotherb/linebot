@@ -29,7 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from pwdlib import PasswordHash
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, or_, select, text
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -243,6 +243,10 @@ class PublicBookingCreateIn(BaseModel):
     idempotency_key: str = Field(min_length=16, max_length=80)
     source: Literal["booking_web", "official_website", "line_all_staff"] = "booking_web"
     website: str = Field(default="", max_length=0)
+
+
+class PublicBookingIdentityIn(BaseModel):
+    id_token: str = Field(min_length=1, max_length=4096)
 
 
 class BookingRequestPatchIn(BaseModel):
@@ -838,13 +842,16 @@ def register_admin_api(
             Appointment.start_time < end_dt,
             Appointment.end_time > start_dt,
         ).exists()
-        return db.query(Staff).join(Shift, Shift.staff_id == Staff.id).filter(
-            Staff.employment_status == "active",
+        scheduled_staff_ids = select(Shift.staff_id).where(
             Shift.status == "active",
             Shift.start_time <= start_dt,
             Shift.end_time >= end_dt,
+        )
+        return db.query(Staff).filter(
+            Staff.employment_status == "active",
+            or_(Staff.is_online.is_(True), Staff.id.in_(scheduled_staff_ids)),
             ~appointment_conflict,
-        ).distinct().order_by(Staff.name).all()
+        ).order_by(Staff.name).all()
 
     app.state.available_staff = available_staff
 
@@ -2009,6 +2016,18 @@ def register_admin_api(
             "end_time": _iso(end_dt),
             "can_choose_staff": plan.can_choose_staff,
             "staff": [{"id": item.id, "name": item.name, "category": item.category} for item in staff_items],
+        }
+
+    @app.post("/api/public/booking/identity")
+    def public_booking_identity(payload: PublicBookingIdentityIn, db: Session = Depends(get_db)):
+        identity = _verify_line_id_token(payload.id_token)
+        customer = db.query(User).filter(User.line_user_id == identity["sub"]).first()
+        if not customer:
+            return {"name": identity.get("name"), "phone": None}
+        phones = customer_phone_rows(db, customer)
+        return {
+            "name": customer.display_name or identity.get("name"),
+            "phone": phones[0].phone if phones else customer.phone,
         }
 
     @app.post("/api/public/booking/requests", status_code=201)
