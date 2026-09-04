@@ -2030,7 +2030,6 @@ def register_admin_api(
         )
         receipt = booking_request_dict(db, item)
         receipt.pop("customer_id", None)
-        receipt.pop("customer_serial", None)
         receipt.pop("customer_grade", None)
         return {"duplicate": duplicate, "booking_request": receipt}
 
@@ -2458,7 +2457,6 @@ def register_admin_api(
                 if appointment:
                     receipt = appointment_dict(db, appointment)
                     receipt.pop("customer_id", None)
-                    receipt.pop("customer_serial", None)
                     receipt.pop("customer_grade", None)
                     return {"duplicate": True, "appointment": receipt}
             raise HTTPException(status_code=409, detail="預約正在處理中，請勿重複送出")
@@ -2505,7 +2503,6 @@ def register_admin_api(
             db.commit()
             receipt = appointment_dict(db, duplicate)
             receipt.pop("customer_id", None)
-            receipt.pop("customer_serial", None)
             receipt.pop("customer_grade", None)
             return {"duplicate": True, "appointment": receipt}
 
@@ -2559,7 +2556,6 @@ def register_admin_api(
                 logger.exception("Unable to push public booking notification appointment_id=%s", appointment.id)
         receipt = appointment_dict(db, appointment)
         receipt.pop("customer_id", None)
-        receipt.pop("customer_serial", None)
         receipt.pop("customer_grade", None)
         return {"duplicate": False, "appointment": receipt}
 
@@ -3346,7 +3342,7 @@ def register_admin_api(
                 staff_obj = staff.get(item.staff_id)
                 writer.writerow([item.id, staff_obj.name if staff_obj else item.staff_id, item.start_time.date(), item.start_time.strftime("%H:%M"), item.end_time.strftime("%H:%M"), item.source, item.status])
         elif dataset == "customers":
-            writer.writerow(["內部識別（等級-手機後四碼）", "客戶名稱", "手機 ID（可多支）", "建立日期"])
+            writer.writerow(["客人識別（等級-手機後四碼）", "客戶名稱", "手機 ID（可多支）", "建立日期"])
             query = db.query(User)
             if start:
                 query = query.filter(User.created_at >= parse_local_datetime(start))

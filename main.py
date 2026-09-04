@@ -767,7 +767,7 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
                 {
                     "type": "box", "layout": "vertical", "margin": "xxl", "spacing": "sm",
                     "contents": [
-                        *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "內部客戶識別", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_vip_id, "size": "sm", "color": "#111111", "align": "end"}]}] if is_staff_notify else []),
+                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客人識別", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_vip_id, "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_name, "size": "sm", "color": "#111111", "align": "end"}]},
                         *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶手機", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": customer_phone, "size": "sm", "color": "#111111", "align": "end"}]}] if customer_phone and is_staff_notify else []),
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "時段", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": start_time_str, "size": "sm", "color": "#111111", "align": "end"}]},
@@ -799,6 +799,7 @@ def build_booking_request_bubble(booking_request, db: Session, *, customer_copy:
     request_id = f"BR-{booking_request.start_time.strftime('%m%d')}-{booking_request.id:03d}"
     rows = [
         ("通知編號", request_id),
+        ("客人識別", vip_serial(customer)),
         ("時間", booking_request.start_time.strftime("%m月%d日 %H:%M")),
         ("方案", plan.name if plan else "未知方案"),
         ("指定師傅", staff.name if staff else "未指定"),
@@ -2052,7 +2053,7 @@ def notify_booking_request_parties(booking_request, db: Session, *, origin: str 
         try:
             bot_customer_api.push_message(
                 customer_line_id,
-                TextSendMessage(text="已收到您的預約通知，客服確認後才會正式成立；確認結果會再由 LINE 通知您。"),
+                FlexSendMessage(alt_text="預約通知已送出", contents=build_booking_request_bubble(booking_request, db, customer_copy=True)),
             )
         except Exception:
             logging.exception("預約通知回覆失敗 recipient=客戶 booking_request_id=%s", booking_request.id)

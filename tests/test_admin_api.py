@@ -387,6 +387,7 @@ def test_booking_request_waits_for_review_and_can_be_confirmed_without_shift(cli
     request_row = created.json()["booking_request"]
     assert request_row["status"] == "pending"
     assert request_row["staff_id"] == staff["id"]
+    assert request_row["customer_serial"] == "R-6666"
     assert len(client.get("/api/admin/appointments", headers=headers).json()) == before
 
     confirmed = client.post(f"/api/admin/booking-requests/{request_row['id']}/confirm", headers=headers)
@@ -716,7 +717,7 @@ def test_public_booking_checks_availability_and_is_idempotent(client):
     assert first.json()["appointment"]["customer_name"] == "網頁預約客戶"
     assert first.json()["appointment"]["phone"] == "0977000002"
     assert first.json()["appointment"]["staff_id"] == staff["id"]
-    assert "customer_serial" not in first.json()["appointment"]
+    assert first.json()["appointment"]["customer_serial"] == "R-0002"
     assert "customer_grade" not in first.json()["appointment"]
     assert "customer_id" not in first.json()["appointment"]
 

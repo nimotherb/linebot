@@ -79,6 +79,7 @@ export default function BookingPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [orderId, setOrderId] = useState('');
+  const [customerIdentifier, setCustomerIdentifier] = useState('');
   const [idempotencyKey, setIdempotencyKey] = useState('');
   const [idToken, setIdToken] = useState('');
   const [identityMode, setIdentityMode] = useState<IdentityMode>('loading');
@@ -200,9 +201,11 @@ export default function BookingPage() {
       if (requestOnly) {
         const result = await api.createPublicBookingRequest(payload);
         setOrderId(result.booking_request.request_id);
+        setCustomerIdentifier(result.booking_request.customer_serial || '');
       } else {
         const result = await api.createPublicBooking(payload);
         setOrderId(result.appointment.order_id);
+        setCustomerIdentifier(result.appointment.customer_serial || '');
       }
       setStage('success');
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -308,7 +311,7 @@ export default function BookingPage() {
       </section>}
 
       {stage === 'success' && <section className={`${styles.card} ${styles.successCard}`}>
-        <div className={styles.checkmark}>✓</div><p>{requestOnly ? 'REQUEST RECEIVED' : 'BOOKING CONFIRMED'}</p><h2>{orderId}</h2><span>{requestOnly ? '這是預約通知編號，不是正式訂單編號。客服確認後才會成立預約；若需調整請聯絡真人客服。' : '請保留此訂單編號。若預約內容需要調整，請透過真人客服聯絡我們。'}</span>
+        <div className={styles.checkmark}>✓</div><p>{requestOnly ? 'REQUEST RECEIVED' : 'BOOKING CONFIRMED'}</p><h2>{orderId}</h2>{customerIdentifier && <span>客人識別：<strong>{customerIdentifier}</strong></span>}<span>{requestOnly ? '這是預約通知編號，不是正式訂單編號。客服確認後才會成立預約；若需調整請聯絡真人客服。' : '請保留此訂單編號。若預約內容需要調整，請透過真人客服聯絡我們。'}</span>
         <a className={styles.primary} href={options?.support_url || 'https://lin.ee/vOq3Xvt'}>聯絡真人客服</a>
         {identityMode === 'line' && insideLine && <button className={styles.secondary} onClick={() => window.liff?.closeWindow()}>關閉預約頁</button>}
         <a className={styles.textLink} href="/booking">再預約一筆</a>

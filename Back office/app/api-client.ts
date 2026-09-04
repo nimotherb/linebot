@@ -170,6 +170,7 @@ export type PublicBookingAvailability = {
 export type RawBookingRequest = {
   id: number;
   request_id: string;
+  customer_serial?: string;
   customer_name: string;
   phone: string;
   staff_id?: number;
