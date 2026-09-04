@@ -123,17 +123,18 @@ const buildBusinessWeek = (weekOffset: number, reference = new Date()) => {
   const localDate = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)));
   const daysSinceMonday = (localDate.getUTCDay() + 6) % 7;
   localDate.setUTCDate(localDate.getUTCDate() - daysSinceMonday + weekOffset * 7);
-  const dayNames = ['日', '一', '二', '三', '四', '五', '六'];
+  const dayNames = ['一', '二', '三', '四', '五', '六', '日'];
   return Array.from({ length: 7 }, (_, index) => {
     const day = new Date(localDate);
     day.setUTCDate(localDate.getUTCDate() + index);
     return {
       date: day.toISOString().slice(0, 10),
-      day: dayNames[day.getUTCDay()],
+      day: dayNames[index],
       label: `${day.getUTCMonth() + 1}/${day.getUTCDate()}`,
     };
   });
 };
+const weekRangeLabel = (days: ReturnType<typeof buildBusinessWeek>) => `${days[0].label}–${days[6].label}`;
 const nextBookableSlot = () => {
   const threshold = Date.now() + 90 * 60 * 1000;
   const rounded = new Date(Math.ceil(threshold / (30 * 60 * 1000)) * 30 * 60 * 1000);
@@ -1203,7 +1204,7 @@ export default function Home() {
       <>
         <section className="rule-banner"><div><strong>90 分鐘鎖定規則</strong><span>師傅端距開始 90 分鐘內不可新增、修改或撤銷；店長與 Admin 可填寫原因強制處理。</span></div>{appMode === 'live' && <button onClick={() => navigateTo('staffPortal')}>預覽師傅畫面</button>}</section>
         <section className="panel roster-panel">
-          <div className="toolbar"><div className="segmented"><button className={week === 'current' ? 'active' : ''} onClick={() => setWeek('current')}>本週</button><button className={week === 'next' ? 'active' : ''} onClick={() => setWeek('next')}>下週</button></div><select value={scheduleCategoryFilter} onChange={(event) => setScheduleCategoryFilter(event.target.value as typeof scheduleCategoryFilter)}><option value="全部">全部師傅</option><option value="圈內師傅">圈內</option><option value="直男師傅">直男</option><option value="雙性師傅">雙性</option></select><div className="filter-note"><strong>{filteredScheduleStaff.length}</strong><span>位符合篩選</span></div><div className="toolbar-spacer" />{appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('shifts')}>⇩ 匯出班表</button>}{(canManageShifts || isStaffUser) && <button className="primary-button" onClick={() => setModal({ type: 'shift', origin: isStaffUser ? 'staff' : 'admin' })}>＋ 新增排班</button>}</div>
+          <div className="toolbar"><div className="segmented"><button className={week === 'current' ? 'active' : ''} onClick={() => setWeek('current')}>本週 {weekRangeLabel(currentWeekDays)}</button><button className={week === 'next' ? 'active' : ''} onClick={() => setWeek('next')}>下週 {weekRangeLabel(followingWeekDays)}</button></div><select value={scheduleCategoryFilter} onChange={(event) => setScheduleCategoryFilter(event.target.value as typeof scheduleCategoryFilter)}><option value="全部">全部師傅</option><option value="圈內師傅">圈內</option><option value="直男師傅">直男</option><option value="雙性師傅">雙性</option></select><div className="filter-note"><strong>{filteredScheduleStaff.length}</strong><span>位符合篩選</span></div><div className="toolbar-spacer" />{appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('shifts')}>⇩ 匯出班表</button>}{(canManageShifts || isStaffUser) && <button className="primary-button" onClick={() => setModal({ type: 'shift', origin: isStaffUser ? 'staff' : 'admin' })}>＋ 新增排班</button>}</div>
           <BulkTools entity="shifts" ids={visibleShiftIds} label="排班" />
           <div className="roster-grid" style={{ gridTemplateColumns: `120px repeat(${days.length}, minmax(112px, 1fr))` }}>
             <div className="roster-corner">師傅</div>
