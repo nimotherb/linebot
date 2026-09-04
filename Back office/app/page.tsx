@@ -32,6 +32,8 @@ type ModalState =
   | { type: 'checkout'; id: string }
   | { type: 'serviceCreate' }
   | { type: 'service'; id: string }
+  | { type: 'roomEdit'; id: number }
+  | { type: 'venueEdit'; id: number }
   | { type: 'promotion' }
   | { type: 'promotionEdit'; id: string }
   | { type: 'returnRule'; setId: number; ruleId: number }
@@ -84,6 +86,7 @@ const headings: Record<SectionId, { eyebrow: string; title: string; description:
 };
 
 const formatCurrency = (value: number) => `NT$ ${value.toLocaleString('zh-TW')}`;
+const normalizeRoomName = (name: string) => ({ '房間 1': '657上', '房間 2': '657下' }[name] || name);
 const toMinutes = (clock: string) => {
   if (clock === '24:00') return 1440;
   const [hours, minutes] = clock.split(':').map(Number);
@@ -243,7 +246,7 @@ export default function Home() {
     setPlans(data.services.map(mapService));
     setStaff(data.staff.map(mapStaff));
     setPromotions(data.promotions.map(mapPromotion));
-    setRooms(data.rooms.map((room) => ({ id: room.id, name: room.name })));
+    setRooms((data.rooms || []).map((room) => ({ id: room.id, name: normalizeRoomName(room.name) })));
     setVenues(data.venues || []);
     setCustomers((data.customers || []).map(mapCustomer));
     setAdminUsers((data.admin_users || []).map(mapAdminUser));
@@ -422,6 +425,8 @@ export default function Home() {
   const selectedAppointment = modal && 'id' in modal ? appointments.find((item) => item.id === modal.id) : undefined;
   const selectedShift = modal && 'id' in modal ? shifts.find((item) => item.id === modal.id) : undefined;
   const selectedCustomer = modal?.type === 'customer' ? customers.find((item) => item.id === modal.id) : undefined;
+  const selectedRoom = modal?.type === 'roomEdit' ? rooms.find((item) => item.id === modal.id) : undefined;
+  const selectedVenue = modal?.type === 'venueEdit' ? venues.find((item) => item.id === modal.id) : undefined;
   const selectedBookingRequest = modal?.type === 'bookingRequest' ? bookingRequests.find((item) => item.id === modal.id) : undefined;
   const isViewer = appMode === 'unavailable';
   const isStaffUser = appMode === 'staff';
@@ -637,10 +642,7 @@ export default function Home() {
   };
 
   const editRoomPrompt = async (room: { id: number; name: string }) => {
-    const name = window.prompt('修改房間名稱：', room.name)?.trim();
-    if (!name || name === room.name) return;
-    try { const updated = await api.updateRoom(room.id, { name }); setRooms((current) => current.map((item) => item.id === room.id ? updated : item)); notify('房間已更新。'); }
-    catch (error) { notify(error instanceof Error ? error.message : '更新房間失敗'); }
+    setModal({ type: 'roomEdit', id: room.id });
   };
 
   const createVenuePrompt = async () => {
@@ -652,11 +654,38 @@ export default function Home() {
   };
 
   const editVenuePrompt = async (venue: NonNullable<BootstrapData['venues']>[number]) => {
-    const name = window.prompt('修改場地名稱：', venue.name)?.trim();
-    if (!name) return;
-    const address = window.prompt('修改場地地址（可留空）：', venue.address || '')?.trim() || '';
-    try { const updated = await api.updateVenue(venue.id, { name, address, active: venue.active }); setVenues((current) => current.map((item) => item.id === venue.id ? updated : item)); notify('場地已更新。'); }
-    catch (error) { notify(error instanceof Error ? error.message : '更新場地失敗'); }
+    setModal({ type: 'venueEdit', id: venue.id });
+  };
+
+  const saveRoom = async (event: FormEvent<HTMLFormElement>, room: { id: number; name: string }) => {
+    event.preventDefault();
+    if (appMode !== 'live') return notify('目前未連線至資料庫，不能更新房間。');
+    const name = String(new FormData(event.currentTarget).get('name') || '').trim();
+    if (!name) return notify('請輸入房間名稱。');
+    try {
+      const updated = await api.updateRoom(room.id, { name });
+      setRooms((current) => current.map((item) => item.id === room.id ? updated : item));
+      setModal(null);
+      notify('房間名稱已同步到 MySQL。');
+    } catch (error) { notify(error instanceof Error ? error.message : '更新房間失敗'); }
+  };
+
+  const saveVenue = async (event: FormEvent<HTMLFormElement>, venue: NonNullable<BootstrapData['venues']>[number]) => {
+    event.preventDefault();
+    if (appMode !== 'live') return notify('目前未連線至資料庫，不能更新場地。');
+    const data = new FormData(event.currentTarget);
+    const name = String(data.get('name') || '').trim();
+    if (!name) return notify('請輸入場地名稱。');
+    const address = String(data.get('address') || '').trim() || null;
+    const roomName = String(data.get('roomName') || '').trim() || null;
+    const rentalCost = Math.max(0, Number(data.get('rentalCost') || 0));
+    const notes = String(data.get('notes') || '').trim() || null;
+    try {
+      const updated = await api.updateVenue(venue.id, { name, address, room_name: roomName, rental_cost: rentalCost, notes, active: venue.active });
+      setVenues((current) => current.map((item) => item.id === venue.id ? updated : item));
+      setModal(null);
+      notify('場地名稱、地址與設定已同步到 MySQL。');
+    } catch (error) { notify(error instanceof Error ? error.message : '更新場地失敗'); }
   };
 
   const finishCheckout = async (event: FormEvent<HTMLFormElement>, id: string) => {
@@ -1265,8 +1294,8 @@ export default function Home() {
     <div className="services-layout">
       <section className="panel"><div className="panel-heading"><div><p className="eyebrow">SERVICE PLANS</p><h2>服務方案</h2></div>{canManageAll && <button className="secondary-button" onClick={() => setModal({ type: 'serviceCreate' })}>＋ 新增方案</button>}</div><BulkTools entity="services" ids={plans.flatMap((item) => item.apiId ? [item.apiId] : [])} label="服務方案" /><div className="plan-grid">{plans.map((plan) => <article className={plan.active ? 'plan-card' : 'plan-card inactive'} key={plan.id}><label className="selection-check"><input type="checkbox" checked={!!plan.apiId && (selectedIds.services || []).includes(plan.apiId)} onChange={() => plan.apiId && toggleSelected('services', plan.apiId)} /><span>選取</span></label><header><span>{plan.code}</span><small>{plan.location}</small></header><h3>{plan.name}</h3><p>{plan.duration} 分鐘</p><strong>{formatCurrency(plan.price)}</strong><footer><span>{plan.canChooseStaff ? '可指定師傅' : '不指定優惠'}</span>{canManageAll && <button onClick={() => setModal({ type: 'service', id: plan.id })}>編輯</button>}</footer></article>)}</div></section>
       <section className="panel"><div className="panel-heading"><div><p className="eyebrow">PROMOTIONS</p><h2>優惠與附加費</h2></div>{canManageAll && <button className="secondary-button" onClick={() => setModal({ type: 'promotion' })}>＋ 新增規則</button>}</div><BulkTools entity="promotions" ids={promotions.flatMap((item) => item.apiId ? [item.apiId] : [])} label="優惠／附加費" /><div className="promotion-list">{promotions.map((promotion) => <article key={promotion.id}><label className="selection-check"><input type="checkbox" checked={!!promotion.apiId && (selectedIds.promotions || []).includes(promotion.apiId)} onChange={() => promotion.apiId && toggleSelected('promotions', promotion.apiId)} /><span>選取</span></label><span className="promo-icon">{promotion.kind.includes('折扣') ? '−' : '＋'}</span><div><strong>{promotion.name}</strong><small>{promotion.kind}・{promotion.period}</small></div><b>{promotion.kind === '百分比折扣' ? `${promotion.value}%` : formatCurrency(promotion.value)}</b><StatusPill status={promotion.active ? '啟用' : '停用'} />{canManageAll && <button className="text-button" onClick={() => setModal({ type: 'promotionEdit', id: promotion.id })}>編輯</button>}</article>)}</div></section>
-      <section className="panel"><div className="panel-heading"><div><p className="eyebrow">ROOMS</p><h2>店內房間</h2></div>{canManageAll && <button className="secondary-button" onClick={createRoomPrompt}>＋ 新增房間</button>}</div><BulkTools entity="rooms" ids={rooms.map((item) => item.id)} label="房間" /><div className="settings-list">{rooms.map((room) => <article key={room.id}><label className="selection-check"><input type="checkbox" checked={(selectedIds.rooms || []).includes(room.id)} onChange={() => toggleSelected('rooms', room.id)} /><span>選取</span></label><div><strong>{room.name}</strong><small>店內房間</small></div>{canManageAll && <button className="text-button" onClick={() => editRoomPrompt(room)}>編輯</button>}</article>)}</div></section>
-      <section className="panel"><div className="panel-heading"><div><p className="eyebrow">VENUES</p><h2>外租／外出場地</h2></div>{canManageAll && <button className="secondary-button" onClick={createVenuePrompt}>＋ 新增場地</button>}</div><BulkTools entity="venues" ids={venues.map((item) => item.id)} label="外部場地" /><div className="settings-list">{venues.map((venue) => <article key={venue.id}><label className="selection-check"><input type="checkbox" checked={(selectedIds.venues || []).includes(venue.id)} onChange={() => toggleSelected('venues', venue.id)} /><span>選取</span></label><div><strong>{venue.name}</strong><small>{venue.address || '地址尚未填寫'}</small></div>{canManageAll && <button className="text-button" onClick={() => editVenuePrompt(venue)}>編輯</button>}</article>)}</div></section>
+      <section className="panel"><div className="panel-heading"><div><p className="eyebrow">ROOMS・MYSQL</p><h2>店內房間</h2><p className="panel-hint">正式房間：657上、657下；資料由後端資料庫同步。</p></div>{canManageAll && <button className="secondary-button" onClick={createRoomPrompt}>＋ 新增房間</button>}</div><BulkTools entity="rooms" ids={rooms.map((item) => item.id)} label="房間" /><div className="settings-list">{rooms.map((room) => <article key={room.id}><label className="selection-check"><input type="checkbox" checked={(selectedIds.rooms || []).includes(room.id)} onChange={() => toggleSelected('rooms', room.id)} /><span>選取</span></label><div><strong>{room.name}</strong><small>店內房間・預約與排班共用</small></div>{canManageAll && <button className="text-button" onClick={() => editRoomPrompt(room)}>編輯房間</button>}</article>)}</div>{rooms.length === 0 && <div className="empty-state">資料庫尚未建立房間資料，請先確認 FastAPI／MySQL 連線。</div>}</section>
+      <section className="panel"><div className="panel-heading"><div><p className="eyebrow">VENUES・MYSQL</p><h2>外租／外出場地</h2><p className="panel-hint">外租旅館與外出場地的名稱、地址、費用和備註可手動編輯。</p></div>{canManageAll && <button className="secondary-button" onClick={createVenuePrompt}>＋ 新增場地</button>}</div><BulkTools entity="venues" ids={venues.map((item) => item.id)} label="外部場地" /><div className="settings-list">{venues.map((venue) => <article key={venue.id}><label className="selection-check"><input type="checkbox" checked={(selectedIds.venues || []).includes(venue.id)} onChange={() => toggleSelected('venues', venue.id)} /><span>選取</span></label><div><strong>{venue.name}</strong><small>{venue.address || '地址尚未填寫'}{venue.rental_cost ? `・場租 ${formatCurrency(venue.rental_cost)}` : ''}</small></div>{canManageAll && <button className="text-button" onClick={() => editVenuePrompt(venue)}>編輯名稱／地址</button>}</article>)}</div>{venues.length === 0 && <div className="empty-state">資料庫尚未建立外部場地資料，請先確認 FastAPI／MySQL 連線。</div>}</section>
     </div>
   );
 
@@ -1358,6 +1387,10 @@ export default function Home() {
       {toast && <div className="toast" role="status"><span>✓</span>{toast}</div>}
 
       {modal?.type === 'account' && <Modal title="登入資訊" subtitle={identity ? '可自行修改顯示名稱、登入帳號與數字 PIN。' : '師傅只使用手機 ID；客服與管理者使用帳號及 PIN。'} onClose={() => setModal(null)} wide>{identity ? <form className="modal-form" onSubmit={saveOwnAccount}><div className="form-grid two"><label>顯示名稱<input name="displayName" defaultValue={identity.display_name} required /></label><label>登入帳號<input name="username" defaultValue={identity.username} required autoCapitalize="none" /></label><label>目前 PIN<input name="currentPin" required type="password" inputMode="numeric" pattern="[0-9]+" minLength={4} /></label><label>新 PIN（不修改可留空）<input name="newPin" type="password" inputMode="numeric" pattern="[0-9]*" minLength={4} maxLength={12} /></label><label>再次輸入新 PIN<input name="confirmPin" type="password" inputMode="numeric" pattern="[0-9]*" minLength={4} maxLength={12} /></label></div><div className="form-note">儲存後會撤銷目前工作階段，請使用新帳密重新登入。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">更新帳密</button></footer></form> : <><div className="account-login-grid"><form className="modal-form account-login-card" onSubmit={login}><p className="eyebrow">MANAGEMENT</p><h3>客服／店長／Admin</h3><label>登入帳號<input name="username" required autoCapitalize="none" autoComplete="username" placeholder="例如：admin" /></label><label>數字 PIN<input name="pin" required type="password" inputMode="numeric" pattern="[0-9]+" minLength={4} autoComplete="current-password" /></label><button className="primary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '管理帳號登入'}</button></form><form className="modal-form account-login-card" onSubmit={loginStaff}><p className="eyebrow">STAFF</p><h3>師傅手機 ID 登入</h3><label>手機 ID<input name="staffPhone" required inputMode="tel" pattern="09[0-9]{8}" autoComplete="tel" placeholder="09xxxxxxxx" /></label><button className="secondary-button full" disabled={loginBusy}>{loginBusy ? '登入中…' : '以員工身分進入'}</button></form></div>{loginError && <div className="auth-error modal-auth-error">{loginError}</div>}<div className="form-note">從 LINE Bot 開啟師傅後台時會以安全連結直接登入，不會再出現登入畫面。</div></>}</Modal>}
+
+      {modal?.type === 'roomEdit' && selectedRoom && <Modal title={`編輯房間 ${selectedRoom.name}`} subtitle="房間名稱會同步套用到預約、排班與結帳資料。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => saveRoom(event, selectedRoom)}><label>房間名稱<input name="name" defaultValue={selectedRoom.name} required maxLength={120} /></label><div className="form-note">店內正式房間目前為 657上、657下；修改後會保存至 MySQL。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存房間</button></footer></form></Modal>}
+
+      {modal?.type === 'venueEdit' && selectedVenue && <Modal title={`編輯場地 ${selectedVenue.name}`} subtitle="外租旅館與外出場地可由管理端手動維護，預約選單會即時使用最新資料。" onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={(event) => saveVenue(event, selectedVenue)}><div className="form-grid two"><label>場地名稱<input name="name" defaultValue={selectedVenue.name} required maxLength={160} /></label><label>對應房間（可留空）<input name="roomName" defaultValue={selectedVenue.room_name || ''} placeholder="例如：657上" maxLength={120} /></label><label className="span-two">地址（可留空）<input name="address" defaultValue={selectedVenue.address || ''} maxLength={500} placeholder="輸入外租旅館或外出場地地址" /></label><label>場租／費用<input name="rentalCost" type="number" min="0" step="100" defaultValue={selectedVenue.rental_cost || 0} /></label></div><label>內部備註（可留空）<textarea name="notes" rows={3} defaultValue={selectedVenue.notes || ''} /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存場地設定</button></footer></form></Modal>}
 
       {modal?.type === 'appointment' && <Modal title="新增預約" subtitle={canOverrideTimeRules ? '目前帳號可略過提前時間及師傅／房間撞期限制。' : '一般帳號最少提前 90 分鐘，並檢查師傅與房間衝突。'} onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={addAppointment}><div className="form-grid two"><label>客戶姓名<input name="customer" required placeholder="例如：王先生" /></label><label>手機號碼<input name="phone" required inputMode="numeric" pattern="09[0-9]{8}" placeholder="09xxxxxxxx" /></label><label>日期<input name="date" type="date" min={canOverrideTimeRules ? undefined : todayIso} defaultValue={bookingDefault.date} required /></label><label>開始時間<input name="start" type="time" defaultValue={bookingDefault.time} required /></label><label>服務方案<select name="serviceId" defaultValue={plans.find((item) => item.code === 'C')?.id}>{plans.filter((item) => item.active).map((plan) => <option value={plan.id} key={plan.id}>{plan.code}・{plan.name}｜{plan.duration} 分｜{formatCurrency(plan.price)}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue="0"><option value="0">不使用優惠</option>{promotions.filter((item) => item.active && item.kind.includes('折扣')).map((item) => <option key={item.id} value={item.apiId}>{item.name}｜{item.kind === '百分比折扣' ? `${item.value}%` : `折 ${formatCurrency(item.value)}`}</option>)}</select></label><label>指派師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label>場地／房間<select name="room" defaultValue={rooms[0]?.name}>{rooms.map((room) => <option key={room.id}>{room.name}</option>)}{venues.filter((venue) => venue.active).map((venue) => <option key={`venue-${venue.id}`}>{venue.name}</option>)}<option>待確認</option></select></label><label className="span-two">客服備註<textarea name="note" rows={3} placeholder="不公開給客戶的內部備註" /></label></div><div className="form-note">{canOverrideTimeRules ? '這筆訂單會以管理強制權限建立，仍會留下稽核紀錄。' : '例如 09:00 當下最早可預約 10:30；後端也會阻止重疊或過近的時間。'}</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">建立預約</button></footer></form></Modal>}
 
