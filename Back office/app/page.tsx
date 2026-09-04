@@ -202,6 +202,8 @@ export default function Home() {
   const [customerSearch, setCustomerSearch] = useState('');
   const [staffCategoryFilter, setStaffCategoryFilter] = useState<'全部' | StaffMember['category']>('全部');
   const [staffPage, setStaffPage] = useState(1);
+  const [scheduleCategoryFilter, setScheduleCategoryFilter] = useState<'全部' | StaffMember['category']>('全部');
+  const [schedulePage, setSchedulePage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Partial<Record<BulkEntity, number[]>>>({});
   const [week, setWeek] = useState<'current' | 'next'>('current');
   const [appMode, setAppMode] = useState<'checking' | 'unavailable' | 'login' | 'live' | 'staff' | 'staffLink'>('checking');
@@ -450,6 +452,14 @@ export default function Home() {
   const pagedStaff = filteredStaff.slice((staffPage - 1) * 10, staffPage * 10);
   useEffect(() => { setStaffPage((current) => Math.min(current, staffPageCount)); }, [staffPageCount]);
   useEffect(() => { setStaffPage(1); }, [staffCategoryFilter]);
+  const filteredScheduleStaff = useMemo(() => staff.filter((member) => (
+    (appMode === 'live' || member.status === '在職')
+    && (scheduleCategoryFilter === '全部' || member.category === scheduleCategoryFilter)
+  )), [appMode, scheduleCategoryFilter, staff]);
+  const schedulePageCount = Math.max(1, Math.ceil(filteredScheduleStaff.length / 10));
+  const pagedScheduleStaff = filteredScheduleStaff.slice((schedulePage - 1) * 10, schedulePage * 10);
+  useEffect(() => { setSchedulePage((current) => Math.min(current, schedulePageCount)); }, [schedulePageCount]);
+  useEffect(() => { setSchedulePage(1); }, [scheduleCategoryFilter]);
 
   const toggleSelected = (entity: BulkEntity, id: number) => {
     setSelectedIds((current) => {
@@ -1182,14 +1192,18 @@ export default function Home() {
 
   const renderSchedule = () => {
     const days = week === 'current' ? currentWeekDays : followingWeekDays;
-    const rosterStaff = appMode === 'live' ? staff : staff.filter((item) => item.status === '在職');
+    const rosterStaff = pagedScheduleStaff;
     const visibleDates = new Set(days.map((item) => item.date));
-    const visibleShiftIds = shifts.filter((item) => visibleDates.has(item.date)).flatMap((item) => item.apiId ? [item.apiId] : []);
+    const visibleStaffIds = new Set(rosterStaff.map((item) => item.id));
+    const visibleStaffNames = new Set(rosterStaff.map((item) => item.name));
+    const visibleShiftIds = shifts
+      .filter((item) => visibleDates.has(item.date) && (item.staffId ? visibleStaffIds.has(item.staffId) : visibleStaffNames.has(item.staff)))
+      .flatMap((item) => item.apiId ? [item.apiId] : []);
     return (
       <>
         <section className="rule-banner"><div><strong>90 分鐘鎖定規則</strong><span>師傅端距開始 90 分鐘內不可新增、修改或撤銷；店長與 Admin 可填寫原因強制處理。</span></div>{appMode === 'live' && <button onClick={() => navigateTo('staffPortal')}>預覽師傅畫面</button>}</section>
         <section className="panel roster-panel">
-          <div className="toolbar"><div className="segmented"><button className={week === 'current' ? 'active' : ''} onClick={() => setWeek('current')}>本週</button><button className={week === 'next' ? 'active' : ''} onClick={() => setWeek('next')}>下週</button></div><div className="filter-note"><strong>{rosterStaff.length}</strong><span>{appMode === 'live' ? '位師傅（全部）' : '位在職師傅'}</span></div><div className="toolbar-spacer" />{appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('shifts')}>⇩ 匯出班表</button>}{(canManageShifts || isStaffUser) && <button className="primary-button" onClick={() => setModal({ type: 'shift', origin: isStaffUser ? 'staff' : 'admin' })}>＋ 新增排班</button>}</div>
+          <div className="toolbar"><div className="segmented"><button className={week === 'current' ? 'active' : ''} onClick={() => setWeek('current')}>本週</button><button className={week === 'next' ? 'active' : ''} onClick={() => setWeek('next')}>下週</button></div><select value={scheduleCategoryFilter} onChange={(event) => setScheduleCategoryFilter(event.target.value as typeof scheduleCategoryFilter)}><option value="全部">全部師傅</option><option value="圈內師傅">圈內</option><option value="直男師傅">直男</option><option value="雙性師傅">雙性</option></select><div className="filter-note"><strong>{filteredScheduleStaff.length}</strong><span>位符合篩選</span></div><div className="toolbar-spacer" />{appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('shifts')}>⇩ 匯出班表</button>}{(canManageShifts || isStaffUser) && <button className="primary-button" onClick={() => setModal({ type: 'shift', origin: isStaffUser ? 'staff' : 'admin' })}>＋ 新增排班</button>}</div>
           <BulkTools entity="shifts" ids={visibleShiftIds} label="排班" />
           <div className="roster-grid" style={{ gridTemplateColumns: `120px repeat(${days.length}, minmax(112px, 1fr))` }}>
             <div className="roster-corner">師傅</div>
@@ -1204,6 +1218,7 @@ export default function Home() {
               </div>
             ))}
           </div>
+          {filteredScheduleStaff.length > 0 && <div className="pagination"><button disabled={schedulePage <= 1} onClick={() => setSchedulePage((page) => page - 1)}>上一頁</button><span>第 {schedulePage} / {schedulePageCount} 頁・每頁 10 位</span><button disabled={schedulePage >= schedulePageCount} onClick={() => setSchedulePage((page) => page + 1)}>下一頁</button></div>}
           <div className="legend"><span><i className="legend-dot normal" />可調整／可跨日</span><span><i className="legend-dot locked" />一般帳號於 90 分鐘內鎖定</span><span>排班沒有最低時數</span></div>
         </section>
       </>
