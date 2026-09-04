@@ -217,7 +217,7 @@ def handle_line_admin_message(text_value: str, user_id: str, db: Session):
         if identity:
             return build_root_admin_menu(identity)
         LINE_ADMIN_PENDING[user_id] = datetime.utcnow() + timedelta(minutes=5)
-        return TextSendMessage(text="請在 5 分鐘內輸入您的管理 PIN。必須先輸入 root 再輸入 PIN，才會綁定這個 LINE。")
+        return TextSendMessage(text="請在 5 分鐘內輸入您的管理 PIN，以綁定這個 LINE。")
     pending_until = LINE_ADMIN_PENDING.get(user_id)
     if pending_until and pending_until < datetime.utcnow():
         LINE_ADMIN_PENDING.pop(user_id, None)
@@ -227,7 +227,7 @@ def handle_line_admin_message(text_value: str, user_id: str, db: Session):
         identity = binder(user_id, text_value, db) if binder else None
         LINE_ADMIN_PENDING.pop(user_id, None)
         if not identity:
-            return TextSendMessage(text="PIN 不正確，未綁定管理員帳戶。請重新輸入 root 再試一次。")
+            return TextSendMessage(text="PIN 不正確，未綁定管理員帳戶。請重新啟動管理員登入後再試一次。")
         return build_root_admin_menu(identity)
     return None
 
@@ -655,7 +655,7 @@ def build_root_admin_menu(identity=None):
                 "type": "box",
                 "layout": "vertical",
                 "contents": [
-                    {"type": "text", "text": "ROOT ADMIN", "weight": "bold", "color": "#FCD34D", "size": "xl"},
+                    {"type": "text", "text": "管理員選單", "weight": "bold", "color": "#FCD34D", "size": "xl"},
                     {"type": "text", "text": f"{display_name}・{role_label}", "color": "#E9D5FF", "size": "sm", "margin": "sm"},
                     {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "查看本日預約", "data": "action=admin_view"}},
                     {"type": "button", "style": "primary", "color": "#312E81", "margin": "sm", "action": {"type": "postback", "label": "串接／解除師傅 LINE", "data": "action=admin_staff&offset=0"}},
@@ -934,7 +934,7 @@ def build_bind_staff_confirmation(staff, *, replacing: bool = False):
             ]},
             "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
                 {"type": "text", "text": f"將目前這個 LINE 綁定為「{staff.name}」？", "weight": "bold", "wrap": True},
-                {"type": "text", "text": "原本的 LINE 會先被撤銷，再改綁目前這個 LINE；系統會傳送成功通知確認連線。" if replacing else "系統會傳送成功通知確認連線；完成後，此 LINE 可同時保有師傅與 Root 管理權限。", "size": "sm", "color": "#6B7280", "wrap": True},
+                {"type": "text", "text": "原本的 LINE 會先被撤銷，再改綁目前這個 LINE；系統會傳送成功通知確認連線。" if replacing else "系統會傳送成功通知確認連線；完成後，此 LINE 可同時保有師傅與管理員權限。", "size": "sm", "color": "#6B7280", "wrap": True},
             ]},
             "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
                 {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "postback", "label": "確認改綁到此 LINE" if replacing else "確認綁定到此 LINE", "data": f"action=confirm_bind_staff&staff_id={staff.id}"}},
@@ -1208,7 +1208,7 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
                 actor_id=identity.get("id") if identity else None,
                 source="Root 撤銷後改綁",
             )
-            return TextSendMessage(text=f"已將目前 LINE 串接為 {staff.name}；測試通知已成功送達。Root 管理權限會同時保留。")
+            return TextSendMessage(text=f"已將目前 LINE 串接為 {staff.name}；測試通知已成功送達。管理員權限會同時保留。")
         except Exception as exc:
             return TextSendMessage(text=getattr(exc, "detail", "LINE 串接失敗。"))
 
@@ -1825,6 +1825,10 @@ if handler_staff:
         if user_id:
             db = SessionLocal()
             try:
+                if text.lower() in {"uid", "我的uid", "取得uid", "uid碼"}:
+                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"您的 LINE UID：\n{user_id}"))
+                    return
+
                 admin_response = handle_line_admin_message(text, user_id, db)
                 if admin_response:
                     bot_staff_api.reply_message(event.reply_token, admin_response)
@@ -1912,7 +1916,7 @@ if handler_staff:
                             TextSendMessage(text=f"基本資料已一次更新完成：\n身高：{staff.height}\n體重：{staff.weight}\n角色：{staff.role}"),
                         )
                 else:
-                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n🟢「上線」／⚫「下線」：設定目前接單狀態\n📋「預約」：查看未來一週自己的預約\n👤「我的檔案」：查看與更新資料\n📅「排班」或「後台」：開啟自己的後台"
+                    guide_txt = "【伊果 SPA 派單小幫手】\n目前支援指令：\n🟢「上線」／⚫「下線」：設定目前接單狀態\n📋「預約」：查看未來一週自己的預約\n👤「我的檔案」：查看與更新資料\n📅「排班」或「後台」：開啟自己的後台\n🪪「UID」：取得自己的 LINE UID"
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=guide_txt))
 
             except Exception:

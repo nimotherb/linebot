@@ -339,7 +339,19 @@ def test_manager_can_only_create_clerk_accounts(client):
     assert all(item["id"] != clerk_id for item in client.get("/api/admin/users", headers=manager_headers).json())
 
     admin_user = next(item for item in client.get("/api/admin/users", headers=manager_headers).json() if item["username"] == "admin")
-    assert client.delete(f"/api/admin/users/{admin_user['id']}", headers=manager_headers).status_code == 422
+    assert client.delete(f"/api/admin/users/{admin_user['id']}", headers=manager_headers).status_code == 403
+    assert client.post(
+        "/api/admin/bulk-delete",
+        headers=manager_headers,
+        json={"entity": "users", "ids": [admin_user["id"]], "reason": "不可刪除 Admin"},
+    ).status_code == 403
+    audit_id = client.get("/api/admin/audit-logs", headers=manager_headers).json()[0]["id"]
+    assert client.delete(f"/api/admin/audit-logs/{audit_id}", headers=manager_headers).status_code == 403
+    assert client.post(
+        "/api/admin/bulk-delete",
+        headers=manager_headers,
+        json={"entity": "audit_logs", "ids": [audit_id], "reason": "店長只能查看"},
+    ).status_code == 403
 
 
 def test_booking_request_waits_for_review_and_can_be_confirmed_without_shift(client):
@@ -492,7 +504,7 @@ def test_staff_profile_line_rebinding_and_root_dual_identity(client, monkeypatch
             db,
             is_staff_side=True,
         )
-        assert "Root 管理權限會同時保留" in root_reply.text
+        assert "管理員權限會同時保留" in root_reply.text
         db.refresh(replacement_target)
         assert replacement_target.line_user_id == second_line_id
         assert db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == old_target_line_id).count() == 1

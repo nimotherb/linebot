@@ -1276,7 +1276,7 @@ export default function Home() {
         <div className="form-grid two"><label>開始日期<input type="date" value={exportStart} onChange={(event) => setExportStart(event.target.value)} /></label><label>結束日期<input type="date" value={exportEnd} min={exportStart} onChange={(event) => setExportEnd(event.target.value)} /></label></div>
         <div className="export-card-grid"><button onClick={() => exportCsv('appointments')}><span>預約與訂單</span><strong>{appointments.length} 筆資料庫紀錄</strong><small>CSV・Excel 可開啟</small></button><button onClick={() => exportCsv('shifts')}><span>師傅排班</span><strong>{shifts.length} 筆資料庫紀錄</strong><small>CSV・Excel 可開啟</small></button><button onClick={() => exportCsv('customers')}><span>客戶資料</span><strong>{customers.length} 筆資料庫紀錄</strong><small>不含私密健康資訊</small></button></div>
       </section>
-      <aside className="panel audit-panel"><p className="eyebrow">AUDIT LOG</p><h2>最近操作紀錄</h2><BulkTools entity="audit_logs" ids={auditLogs.map((item) => item.id)} label="操作紀錄" />{auditLogs.map((item) => <article key={item.id}><label className="selection-check"><input type="checkbox" checked={(selectedIds.audit_logs || []).includes(item.id)} onChange={() => toggleSelected('audit_logs', item.id)} /><span>選取</span></label><span>{item.actorName.slice(0, 1)}</span><div><strong>{item.actorName}・{item.action} {item.entityType}{item.entityId ? ` #${item.entityId}` : ''}</strong><small>{item.reason || '未填寫原因'}・{item.createdAt.replace('T', ' ').slice(0, 16)}</small></div></article>)}{auditLogs.length === 0 && <div className="empty-state">資料庫目前沒有操作紀錄。</div>}</aside>
+      <aside className="panel audit-panel"><p className="eyebrow">AUDIT LOG</p><h2>最近操作紀錄</h2>{role === 'admin' && <BulkTools entity="audit_logs" ids={auditLogs.map((item) => item.id)} label="操作紀錄" />}{auditLogs.map((item) => <article key={item.id}>{role === 'admin' && <label className="selection-check"><input type="checkbox" checked={(selectedIds.audit_logs || []).includes(item.id)} onChange={() => toggleSelected('audit_logs', item.id)} /><span>選取</span></label>}<span>{item.actorName.slice(0, 1)}</span><div><strong>{item.actorName}・{item.action} {item.entityType}{item.entityId ? ` #${item.entityId}` : ''}</strong><small>{item.reason || '未填寫原因'}・{item.createdAt.replace('T', ' ').slice(0, 16)}</small></div></article>)}{auditLogs.length === 0 && <div className="empty-state">資料庫目前沒有操作紀錄。</div>}</aside>
     </div>
   );
 
@@ -1284,13 +1284,14 @@ export default function Home() {
     <div className="users-layout">
       <section className="panel table-panel">
         <div className="panel-heading"><div><p className="eyebrow">ADMIN USERS</p><h2>後台帳號與權限</h2></div>{canCreateUsers && <button className="primary-button" onClick={() => setModal({ type: 'user' })}>＋ 新增使用者</button>}</div>
-        <BulkTools entity="users" ids={adminUsers.filter((item) => item.id !== identity?.id).map((item) => item.id)} label="後台帳號" />
+        <BulkTools entity="users" ids={adminUsers.filter((item) => item.id !== identity?.id && (role === 'admin' || item.roleKey === 'clerk')).map((item) => item.id)} label="後台帳號" />
         <div className="data-table users-table">
           <div className="table-head"><span>使用者</span><span>角色</span><span>狀態</span><span>最近登入</span><span>權限操作</span></div>
           {adminUsers.map((user) => {
-            const canDeactivate = user.isActive && user.id !== identity?.id && (role === 'admin' || role === 'manager');
+            const canSelect = user.id !== identity?.id && (role === 'admin' || (role === 'manager' && user.roleKey === 'clerk'));
+            const canDeactivate = user.isActive && canSelect;
             return <div className="table-row static" key={user.username}>
-              <span>{user.id !== identity?.id && <label className="selection-check"><input type="checkbox" checked={(selectedIds.users || []).includes(user.id)} onChange={() => toggleSelected('users', user.id)} /><span>選取</span></label>}<strong>{user.displayName}</strong><small>@{user.username}{user.id === identity?.id ? '・目前帳號' : ''}</small></span>
+              <span>{canSelect && <label className="selection-check"><input type="checkbox" checked={(selectedIds.users || []).includes(user.id)} onChange={() => toggleSelected('users', user.id)} /><span>選取</span></label>}<strong>{user.displayName}</strong><small>@{user.username}{user.id === identity?.id ? '・目前帳號' : ''}</small></span>
               <span><strong>{user.role}</strong></span>
               <span><StatusPill status={user.status} /></span>
               <span><strong>{user.lastLogin}</strong></span>

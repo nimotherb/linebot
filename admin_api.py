@@ -1022,6 +1022,8 @@ def register_admin_api(
             raise HTTPException(status_code=404, detail="找不到後台帳號")
         if item.id == actor.id:
             raise HTTPException(status_code=422, detail="不能刪除目前登入中的自己")
+        if actor.role == "manager" and item.role != "clerk":
+            raise HTTPException(status_code=403, detail="店長只能刪除客服帳號")
         if item.role == "admin" and db.query(AdminUser).filter(AdminUser.role == "admin", AdminUser.id != item.id).count() == 0:
             raise HTTPException(status_code=422, detail="系統至少必須保留一個 Admin")
         db.query(AdminSession).filter(AdminSession.admin_user_id == user_id).delete(synchronize_session=False)
@@ -3264,7 +3266,7 @@ def register_admin_api(
         return result
 
     @app.delete("/api/admin/audit-logs/{audit_id}")
-    def delete_audit_log(audit_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+    def delete_audit_log(audit_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin"))):
         _ = actor
         item = db.query(AuditLog).filter(AuditLog.id == audit_id).first()
         if not item:
@@ -3275,6 +3277,8 @@ def register_admin_api(
 
     @app.post("/api/admin/bulk-delete")
     def bulk_delete(payload: BulkDeleteIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        if payload.entity == "audit_logs" and actor.role != "admin":
+            raise HTTPException(status_code=403, detail="只有 Admin 可以刪除操作紀錄")
         ids = list(dict.fromkeys(payload.ids))
         deleted: list[int] = []
         for item_id in ids:
