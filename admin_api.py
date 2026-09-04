@@ -1850,6 +1850,9 @@ def register_admin_api(
                 room = db.query(Room).filter(Room.name == old_name).first()
                 if room and not db.query(Room).filter(Room.name == new_name).first():
                     room.name = new_name
+            # SessionLocal disables autoflush; persist renames before deciding
+            # whether the canonical room rows still need to be inserted.
+            db.flush()
             existing_room_names = {row[0] for row in db.query(Room.name).all()}
             for room_name in ("657上", "657下"):
                 if room_name not in existing_room_names:
