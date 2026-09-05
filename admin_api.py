@@ -1491,9 +1491,9 @@ def register_admin_api(
             "status": canonical_status,
             "status_label": STATUS_TO_ZH[canonical_status],
             "room_id": detail.room_id if detail else None,
-            "room_name": room.name if room else (getattr(detail, "room_name_snapshot", None) if detail else None),
+            "room_name": room.name if room else (getattr(detail, "room_name_snapshot", None) if detail and detail.location_type == "onsite" else None),
             "venue_id": detail.venue_id if detail else None,
-            "venue_name": venue.name if venue else (getattr(detail, "venue_name_snapshot", None) if detail else None),
+            "venue_name": venue.name if venue else (getattr(detail, "venue_name_snapshot", None) if detail and detail.location_type == "external" else None),
             "location_type": detail.location_type if detail else "pending",
             "base_price": detail.base_price if detail else appointment_price_from_legacy(item),
             "discount_amount": detail.discount_amount if detail else 0,
@@ -2671,8 +2671,10 @@ def register_admin_api(
             detail.total_amount = max(0, detail.base_price - detail.discount_amount + detail.extra_amount)
         if "room_id" in changes:
             detail.room_id = payload.room_id
+            detail.room_name_snapshot = db.query(Room).filter(Room.id == payload.room_id).first().name if payload.room_id else None
         if "venue_id" in changes:
             detail.venue_id = payload.venue_id
+            detail.venue_name_snapshot = db.query(Venue).filter(Venue.id == payload.venue_id).first().name if payload.venue_id else None
         if payload.location_type is not None:
             detail.location_type = payload.location_type
         if payload.notes is not None:
