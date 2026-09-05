@@ -1861,7 +1861,7 @@ if handler_staff:
         if user_id:
             db = SessionLocal()
             try:
-                if text.lower() in {"uid", "我的uid", "取得uid", "uid碼"}:
+                if re.fullmatch(r"(?:我的\s*)?(?:line\s*)?uid(?:碼)?", text, re.IGNORECASE):
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"您的 LINE UID：\n{user_id}"))
                     return
 
