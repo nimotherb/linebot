@@ -36,6 +36,8 @@ type RawAppointment = {
   status_label: AppointmentStatus;
   room_id?: number;
   room_name?: string;
+  venue_id?: number;
+  venue_name?: string;
   location_type: 'onsite' | 'external' | 'pending';
   total_amount: number;
   base_price?: number;
@@ -223,8 +225,9 @@ export const mapAppointment = (item: RawAppointment): Appointment => {
     staffId: item.staff_id ? String(item.staff_id) : undefined,
     serviceId: item.service_plan_id ? String(item.service_plan_id) : '',
     service: item.service_name,
-    room: item.room_name || (item.location_type === 'external' ? '外出場地' : '待確認'),
+    room: item.room_name || item.venue_name || (item.location_type === 'external' ? '外出場地' : '待確認'),
     roomId: item.room_id,
+    venueId: item.venue_id,
     location: item.location_type === 'onsite' ? '店內' : item.location_type === 'external' ? '外出' : '待確認',
     status: item.status_label,
     total: item.total_amount,

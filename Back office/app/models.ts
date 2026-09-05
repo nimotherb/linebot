@@ -27,6 +27,7 @@ export type Appointment = {
   service: string;
   room: string;
   roomId?: number;
+  venueId?: number;
   location: '店內' | '外出' | '待確認';
   status: AppointmentStatus;
   total: number;
