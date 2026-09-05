@@ -914,7 +914,7 @@ def build_staff_bubble(staff):
             "type": "image",
             "url": photo_url,
             "size": "full",
-            "aspectRatio": "4:5",
+            "aspectRatio": "1:1",
             "aspectMode": "cover",
         }
     return bubble
@@ -1537,7 +1537,7 @@ if handler_customer:
                     photo_url = public_https_url(s.photo_url)
                     if photo_url:
                         staff_bubble["hero"] = {
-                            "type": "image", "size": "full", "aspectRatio": "4:5", "aspectMode": "cover", "url": photo_url
+                            "type": "image", "size": "full", "aspectRatio": "1:1", "aspectMode": "cover", "url": photo_url
                         }
                     bubbles.append(staff_bubble)
 
@@ -1598,7 +1598,7 @@ if handler_customer:
                     }
                     photo_url = public_https_url(staff_obj.photo_url)
                     if photo_url:
-                        bubble["hero"] = {"type": "image", "size": "full", "aspectRatio": "4:5", "aspectMode": "cover", "url": photo_url}
+                        bubble["hero"] = {"type": "image", "size": "full", "aspectRatio": "1:1", "aspectMode": "cover", "url": photo_url}
                     bubbles.append(bubble)
                 if has_more:
                     bubbles.append({
