@@ -38,6 +38,7 @@ type RawAppointment = {
   room_name?: string;
   venue_id?: number;
   venue_name?: string;
+  venue_address?: string;
   location_type: 'onsite' | 'external' | 'pending';
   total_amount: number;
   base_price?: number;
@@ -66,6 +67,9 @@ type RawStaff = {
   category?: 'straight' | 'gay' | 'bisexual';
   employment_status: 'active' | 'retired';
   line_connected: boolean;
+  phone?: string;
+  phone_change_pending?: boolean;
+  requested_phone?: string;
   is_online?: boolean;
   return_rule_set_id?: number;
   photo_url?: string;
@@ -225,7 +229,7 @@ export const mapAppointment = (item: RawAppointment): Appointment => {
     staffId: item.staff_id ? String(item.staff_id) : undefined,
     serviceId: item.service_plan_id ? String(item.service_plan_id) : '',
     service: item.service_name,
-    room: item.room_name || item.venue_name || (item.location_type === 'external' ? '外出場地' : '待確認'),
+    room: item.room_name || (item.venue_name ? `${item.venue_name}${item.venue_address ? `-${item.venue_address}` : ''}` : (item.location_type === 'external' ? '外出場地' : '待確認')),
     roomId: item.room_id,
     venueId: item.venue_id,
     location: item.location_type === 'onsite' ? '店內' : item.location_type === 'external' ? '外出' : '待確認',
@@ -266,6 +270,9 @@ export const mapStaff = (item: RawStaff): StaffMember => ({
   category: categoryLabel(item.category),
   status: item.employment_status === 'retired' ? '暫時退役' : '在職',
   lineConnected: item.line_connected,
+  phone: item.phone,
+  phoneChangePending: item.phone_change_pending,
+  requestedPhone: item.requested_phone,
   isOnline: item.is_online === true,
   privateProfile: true,
   returnRuleSetId: item.return_rule_set_id,
@@ -430,6 +437,10 @@ export class SpaApi {
 
   staffBootstrap() { return this.request<BootstrapData>('/api/staff/bootstrap'); }
 
+  requestStaffPhoneChange(phone: string) {
+    return this.request<RawStaff>('/api/staff/profile/phone-request', { method: 'POST', body: JSON.stringify({ phone }) });
+  }
+
   logout(path: 'admin' | 'staff' = 'admin') {
     return this.request<{ ok: boolean }>(`/api/${path}/auth/logout`, { method: 'POST' });
   }
@@ -473,6 +484,14 @@ export class SpaApi {
 
   updateStaff(id: number, payload: Record<string, unknown>) {
     return this.request<RawStaff>(`/api/admin/staff/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
+  approveStaffPhoneChange(id: number) {
+    return this.request<RawStaff>(`/api/admin/staff/${id}/phone-request/approve`, { method: 'POST' });
+  }
+
+  rejectStaffPhoneChange(id: number) {
+    return this.request<RawStaff>(`/api/admin/staff/${id}/phone-request/reject`, { method: 'POST' });
   }
 
   uploadStaffPhoto(id: number, dataUrl: string) {

@@ -669,9 +669,9 @@ def build_root_admin_menu(identity=None):
 
 def build_staff_backend_link(staff, db: Session):
     dashboard_url = ADMIN_DASHBOARD_URL.rstrip("/")
-    issuer = getattr(getattr(app, "state", None), "issue_staff_magic_link", None)
-    login_token = issuer(staff, db) if issuer else None
-    target_url = f"{dashboard_url}/?staff_login={login_token}" if login_token else dashboard_url
+    issuer = getattr(getattr(app, "state", None), "issue_staff_schedule_link", None)
+    schedule_token = issuer(staff, db) if issuer else None
+    target_url = f"{dashboard_url}/?staff_token={schedule_token}" if schedule_token else dashboard_url
     return FlexSendMessage(
         alt_text="開啟伊果 SPA 師傅後台",
         contents={
@@ -1874,7 +1874,7 @@ if handler_staff:
                     RevokedStaffLine = getattr(app.state, "admin_models", {}).get("RevokedStaffLine")
                     revoked = db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == user_id).first() if RevokedStaffLine else None
                     if revoked:
-                        bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="這個 LINE 的師傅連結已由管理端解除。如需重新連結，請聯絡店長或 Admin。"))
+                        bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=f"這個 LINE 的師傅連結已由管理端解除。\nLINE UID：{user_id}\n請將 UID 提供給店長或 Admin 重新綁定。"))
                         return
                     staff = Staff(line_user_id=user_id, name="新進員工")
                     db.add(staff)

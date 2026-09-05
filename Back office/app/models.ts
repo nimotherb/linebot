@@ -49,6 +49,9 @@ export type StaffMember = {
   category: '直男師傅' | '圈內師傅' | '雙性師傅';
   status: '在職' | '暫時退役';
   lineConnected: boolean;
+  phone?: string;
+  phoneChangePending?: boolean;
+  requestedPhone?: string;
   isOnline: boolean;
   privateProfile: boolean;
   returnRuleSetId?: number;

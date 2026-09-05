@@ -299,6 +299,10 @@ class StaffPatchIn(BaseModel):
     role: Literal["攻擊手", "守備方", "無特定", "攻守兼備"] | None = None
 
 
+class StaffPhoneChangeIn(BaseModel):
+    phone: str = Field(min_length=8, max_length=30)
+
+
 class StaffLineLinkIn(BaseModel):
     line_user_id: str = Field(min_length=33, max_length=33)
 
@@ -880,7 +884,20 @@ def register_admin_api(
         db.commit()
         return raw_token
 
+    def issue_staff_schedule_link(staff_obj, db: Session) -> str:
+        raw_token = secrets.token_urlsafe(32)
+        existing = db.query(StaffScheduleToken).filter(StaffScheduleToken.staff_id == staff_obj.id).first()
+        if existing:
+            existing.token_hash = _token_hash(raw_token)
+            existing.revoked_at = None
+            existing.created_at = now_taipei_naive()
+        else:
+            db.add(StaffScheduleToken(staff_id=staff_obj.id, token_hash=_token_hash(raw_token)))
+        db.commit()
+        return raw_token
+
     app.state.issue_staff_magic_link = issue_staff_magic_link
+    app.state.issue_staff_schedule_link = issue_staff_schedule_link
 
     allowed_origins = [value.strip() for value in os.getenv("ADMIN_ALLOWED_ORIGINS", "http://localhost:3000").split(",") if value.strip()]
     app.add_middleware(
@@ -1337,6 +1354,8 @@ def register_admin_api(
             "id": item.id,
             "name": item.name,
             "phone": item.phone,
+            "phone_change_pending": bool(getattr(item, "phone", None) and getattr(item, "phone_temp", None)),
+            "requested_phone": getattr(item, "phone_temp", None) if getattr(item, "phone", None) else None,
             "category": getattr(item, "category", None),
             "employment_status": getattr(item, "employment_status", "active"),
             "line_connected": not item.line_user_id.startswith(("pending:", "seeded:")) if item.line_user_id else False,
@@ -1494,6 +1513,7 @@ def register_admin_api(
             "room_name": room.name if room else (getattr(detail, "room_name_snapshot", None) if detail and detail.location_type == "onsite" else None),
             "venue_id": detail.venue_id if detail else None,
             "venue_name": venue.name if venue else (getattr(detail, "venue_name_snapshot", None) if detail and detail.location_type == "external" else None),
+            "venue_address": venue.address if venue else None,
             "location_type": detail.location_type if detail else "pending",
             "base_price": detail.base_price if detail else appointment_price_from_legacy(item),
             "discount_amount": detail.discount_amount if detail else 0,
@@ -2120,6 +2140,45 @@ def register_admin_api(
             "admin_users": [],
             "return_rule_sets": [],
         }
+
+    @app.post("/api/staff/profile/phone-request")
+    def request_staff_phone_change(payload: StaffPhoneChangeIn, db: Session = Depends(get_db), staff_obj=Depends(current_staff)):
+        phone = unique_staff_phone(db, payload.phone, exclude_staff_id=staff_obj.id)
+        if phone == staff_obj.phone:
+            staff_obj.phone_temp = None
+            db.commit()
+            return staff_dict(staff_obj)
+        staff_obj.phone_temp = phone
+        audit(db, None, "request_phone_change", "staff", staff_obj.id, reason="staff submitted phone ID change", after={"requested_phone": phone})
+        db.commit()
+        return staff_dict(staff_obj)
+
+    @app.post("/api/admin/staff/{staff_id}/phone-request/approve")
+    def approve_staff_phone_change(staff_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(Staff).filter(Staff.id == staff_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到員工")
+        if not item.phone_temp:
+            raise HTTPException(status_code=404, detail="目前沒有待審核的手機 ID 申請")
+        before = staff_dict(item)
+        item.phone = unique_staff_phone(db, item.phone_temp, exclude_staff_id=item.id)
+        item.phone_temp = None
+        audit(db, actor, "approve_phone_change", "staff", item.id, before=before, after=staff_dict(item))
+        db.commit()
+        return staff_dict(item)
+
+    @app.post("/api/admin/staff/{staff_id}/phone-request/reject")
+    def reject_staff_phone_change(staff_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(Staff).filter(Staff.id == staff_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到員工")
+        if not item.phone_temp:
+            raise HTTPException(status_code=404, detail="目前沒有待審核的手機 ID 申請")
+        before = staff_dict(item)
+        item.phone_temp = None
+        audit(db, actor, "reject_phone_change", "staff", item.id, before=before, after=staff_dict(item))
+        db.commit()
+        return staff_dict(item)
 
     @app.patch("/api/staff/appointments/{appointment_id}/complete")
     def staff_complete_appointment(appointment_id: int, db: Session = Depends(get_db), staff_obj=Depends(current_staff)):
