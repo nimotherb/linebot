@@ -132,6 +132,7 @@ class Staff(Base):
     height = Column(String(20), nullable=True)
     weight = Column(String(20), nullable=True)
     photo_url = Column(String(1000), nullable=True)
+    bio = Column(String(255), nullable=True)
     role = Column(String(50), nullable=True)
     category = Column(String(50), nullable=True)
     employment_status = Column(String(30), default="active", nullable=False)
@@ -215,7 +216,7 @@ def handle_line_admin_message(text_value: str, user_id: str, db: Session):
         return TextSendMessage(text=f"客服帳號已建立：\n名稱：{account['display_name']}\n帳號：{account['username']}\nPIN 已依輸入內容設定。")
     if text_value in {"root", "管理員", "管理選單"}:
         if identity:
-            return build_root_admin_menu(identity)
+            return build_root_admin_menu(identity, db)
         LINE_ADMIN_PENDING[user_id] = datetime.utcnow() + timedelta(minutes=5)
         return TextSendMessage(text="請在 5 分鐘內輸入您的管理 PIN，以綁定這個 LINE。")
     pending_until = LINE_ADMIN_PENDING.get(user_id)
@@ -228,7 +229,7 @@ def handle_line_admin_message(text_value: str, user_id: str, db: Session):
         LINE_ADMIN_PENDING.pop(user_id, None)
         if not identity:
             return TextSendMessage(text="PIN 不正確，未綁定管理員帳戶。請重新啟動管理員登入後再試一次。")
-        return build_root_admin_menu(identity)
+        return build_root_admin_menu(identity, db)
     return None
 
 bot_customer_api = LineBotApi(LINE_TOKEN_CUSTOMER) if LINE_TOKEN_CUSTOMER else None
@@ -643,9 +644,18 @@ def build_phone_confirm_flex(phone_num, action_prefix):
     )
 
 # --- 共用：Root Admin 管理員選單 Flex ---
-def build_root_admin_menu(identity=None):
+def build_root_admin_menu(identity=None, db=None):
     display_name = identity.get("display_name", "管理員") if isinstance(identity, dict) else "管理員"
     role_label = "系統管理員" if isinstance(identity, dict) and identity.get("role") == "admin" else "店長"
+    dashboard_url = ADMIN_DASHBOARD_URL.rstrip("/")
+    issuer = getattr(getattr(app, "state", None), "issue_admin_link", None)
+    admin_token = issuer(identity.get("id"), db) if issuer and db and isinstance(identity, dict) else None
+    link_suffix = f"?admin_token={admin_token}" if admin_token else ""
+    admin_links = [
+        {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "uri", "label": "後台排班", "uri": f"{dashboard_url}/{link_suffix}&section=schedule" if admin_token else f"{dashboard_url}/?section=schedule"}},
+        {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "uri", "label": "新增員工", "uri": f"{dashboard_url}/{link_suffix}&section=staff&action=new" if admin_token else f"{dashboard_url}/?section=staff&action=new"}},
+        {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "uri", "label": "員工資料", "uri": f"{dashboard_url}/{link_suffix}&section=staff" if admin_token else f"{dashboard_url}/?section=staff"}},
+    ]
     return FlexSendMessage(
         alt_text="系統管理員選單",
         contents={
@@ -657,9 +667,11 @@ def build_root_admin_menu(identity=None):
                 "contents": [
                     {"type": "text", "text": "管理員選單", "weight": "bold", "color": "#FCD34D", "size": "xl"},
                     {"type": "text", "text": f"{display_name}・{role_label}", "color": "#E9D5FF", "size": "sm", "margin": "sm"},
+                    {"type": "text", "text": "員工照片請用後台上傳：JPG／PNG／WebP，最大 3 MB；也可填公開 http(s) 網址。", "color": "#E9D5FF", "size": "xs", "wrap": True, "margin": "sm"},
                     {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "查看本日預約", "data": "action=admin_view"}},
                     {"type": "button", "style": "primary", "color": "#312E81", "margin": "sm", "action": {"type": "postback", "label": "串接／解除師傅 LINE", "data": "action=admin_staff&offset=0"}},
                     {"type": "button", "style": "primary", "color": "#1E3A8A", "margin": "sm", "action": {"type": "postback", "label": "管理客服帳號", "data": "action=admin_users"}},
+                    *admin_links,
                     {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "登出管理員", "data": "action=admin_logout"}}
                 ]
             }
@@ -1931,8 +1943,24 @@ if handler_staff:
                     role = valid_staff_role(staff.role)
                     if role:
                         profile_lines.append(f"角色：{role}")
-                    profile_txt = "\n".join(profile_lines) + "\n\n如需修改，請一次貼上：\n身高=170\n體重=65\n角色=攻擊手\n\n角色僅可填：攻擊手／守備方／無特定／攻守兼備"
+                    profile_txt = "\n".join(profile_lines) + "\n\n如需修改，請一次貼上：\n身高=170\n體重=65\n角色=攻擊手\n\n也可申請手機 ID 變更：手機=0912345678\n\n角色僅可填：攻擊手／守備方／無特定／攻守兼備"
                     bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=profile_txt))
+                elif re.search(r"(?:手機(?:\s*ID)?|電話)\s*[:：=]?\s*09\d{8}", text):
+                    matched_phone = re.search(r"09\d{8}", text)
+                    try:
+                        requested_phone = normalize_phone(matched_phone.group(0) if matched_phone else "")
+                    except ValueError as exc:
+                        bot_staff_api.reply_message(event.reply_token, TextSendMessage(text=str(exc)))
+                    else:
+                        duplicate = db.query(Staff).filter(Staff.phone == requested_phone, Staff.id != staff.id).first()
+                        if duplicate:
+                            bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="這支手機 ID 已綁定其他師傅，請改用其他手機。"))
+                        elif requested_phone == staff.phone:
+                            bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="這就是目前的手機 ID，無需重新申請。"))
+                        else:
+                            staff.phone_temp = requested_phone
+                            db.commit()
+                            bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="手機 ID 修改申請已送出，待店長或 Admin 核准；核准前仍可使用目前手機登入。"))
                 elif any(label in text for label in ("身高", "體重", "角色")):
                     try:
                         profile = parse_staff_profile_text(text)
@@ -2140,6 +2168,7 @@ def on_startup():
             "ALTER TABLE staffs ADD COLUMN height VARCHAR(20);",
             "ALTER TABLE staffs ADD COLUMN weight VARCHAR(20);",
             "ALTER TABLE staffs ADD COLUMN photo_url VARCHAR(1000);",
+            "ALTER TABLE staffs ADD COLUMN bio VARCHAR(255);",
             "ALTER TABLE staffs ADD COLUMN role VARCHAR(50);",
             "ALTER TABLE staffs ADD COLUMN category VARCHAR(50);",
             "ALTER TABLE staffs ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active';",

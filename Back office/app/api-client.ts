@@ -76,6 +76,7 @@ type RawStaff = {
   height?: string;
   weight?: string;
   role?: '攻擊手' | '守備方' | '無特定' | '攻守兼備';
+  bio?: string;
 };
 
 type RawShift = {
@@ -280,6 +281,7 @@ export const mapStaff = (item: RawStaff): StaffMember => ({
   height: item.height,
   weight: item.weight,
   role: item.role,
+  bio: item.bio,
 });
 
 export const mapShift = (item: RawShift): Shift => {

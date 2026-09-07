@@ -59,6 +59,7 @@ export type StaffMember = {
   height?: string;
   weight?: string;
   role?: '攻擊手' | '守備方' | '無特定' | '攻守兼備';
+  bio?: string;
 };
 
 export type Shift = {

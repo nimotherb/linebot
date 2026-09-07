@@ -4,7 +4,7 @@ import { type CSSProperties, useEffect, useMemo, useState } from 'react';
 import { usePublishedSiteDraft } from './PublishedSiteContent';
 
 type Category = 'straight' | 'community' | 'bisexual';
-type Therapist = { id?: number; name: string; slug: string; category: Category; height?: string | number; weight?: string | number; role?: string; photoUrl?: string };
+type Therapist = { id?: number; name: string; slug: string; category: Category; height?: string | number; weight?: string | number; role?: string; bio?: string; photoUrl?: string };
 
 const categoryMeta: Record<Category, { label: string; english: string }> = {
   straight: { label: '直男師傅', english: 'STRAIGHT' },
@@ -99,7 +99,7 @@ export default function TherapistCatalog() {
   useEffect(() => {
     fetch(`${apiBaseUrl}/api/public/therapists`)
       .then((response) => response.ok ? response.json() : Promise.reject(new Error('therapist api unavailable')))
-      .then((items: Array<{ id: number; name: string; category?: string; height?: string; weight?: string; role?: string; photo_url?: string }>) => {
+      .then((items: Array<{ id: number; name: string; category?: string; height?: string; weight?: string; role?: string; bio?: string; photo_url?: string }>) => {
         const mapped = items.map((item) => ({
           id: item.id,
           name: item.name,
@@ -108,6 +108,7 @@ export default function TherapistCatalog() {
           height: item.height,
           weight: item.weight,
           role: item.role,
+          bio: item.bio,
           photoUrl: item.photo_url,
         } as Therapist));
         if (mapped.length) setProfiles(mapped);
@@ -143,7 +144,7 @@ export default function TherapistCatalog() {
       <header><small>CATALOG / {visible.length} PROFILES</small><h2>THERAPIST<br />SELECTION.</h2></header>
       <div className="therapist-product-grid">{visible.map((therapist, index) => <article key={`${therapist.category}-${therapist.slug}`}>
         <div className="therapist-product-image">{portrait(therapist, `${therapist.name}師傅`)}<span className="profile-index">{String(index + 1).padStart(2, '0')}</span></div>
-        <div className="therapist-product-copy"><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3>{therapistSettings?.showMeasurements !== false && (therapist.height || therapist.weight || therapist.role) && <dl>{therapist.height && <div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div>}{therapist.weight && <div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div>}{therapist.role && <div><dt>ROLE</dt><dd>{therapist.role}</dd></div>}</dl>}<p>{categoryNotes[therapist.category]}</p><a href={therapistBookingUrl(bookingUrl, therapist)} target="_blank" rel="noreferrer">指定 {therapist.name}／送出預約通知 ↗</a></div>
+        <div className="therapist-product-copy"><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3>{therapistSettings?.showMeasurements !== false && (therapist.height || therapist.weight || therapist.role) && <dl>{therapist.height && <div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div>}{therapist.weight && <div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div>}{therapist.role && <div><dt>ROLE</dt><dd>{therapist.role}</dd></div>}</dl>}<p>{therapist.bio || categoryNotes[therapist.category]}</p><a href={therapistBookingUrl(bookingUrl, therapist)} target="_blank" rel="noreferrer">指定 {therapist.name}／送出預約通知 ↗</a></div>
       </article>)}</div>
     </section>
   </>;

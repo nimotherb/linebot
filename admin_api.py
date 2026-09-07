@@ -272,6 +272,7 @@ class ReturnRulePatchIn(BaseModel):
 
 
 class StaffCreateIn(BaseModel):
+    bio: str | None = Field(default=None, max_length=60)
     name: str = Field(min_length=1, max_length=120)
     category: Literal["straight", "gay", "bisexual"]
     line_user_id: str | None = Field(default=None, max_length=255)
@@ -297,6 +298,7 @@ class StaffPatchIn(BaseModel):
     height: str | int | None = None
     weight: str | int | None = None
     role: Literal["攻擊手", "守備方", "無特定", "攻守兼備"] | None = None
+    bio: str | None = Field(default=None, max_length=60)
 
 
 class StaffPhoneChangeIn(BaseModel):
@@ -1277,6 +1279,25 @@ def register_admin_api(
         db.commit()
         return identity
 
+    def issue_admin_link(admin_id: int, db: Session):
+        """Issue a short-lived bearer token for a manager/Admin LINE deep link."""
+        user = db.query(AdminUser).filter(
+            AdminUser.id == admin_id,
+            AdminUser.is_active.is_(True),
+            AdminUser.role.in_(["admin", "manager"]),
+        ).first()
+        if not user:
+            return None
+        raw_token = secrets.token_urlsafe(40)
+        db.add(AdminSession(
+            admin_user_id=user.id,
+            token_hash=_token_hash(raw_token),
+            expires_at=now_taipei_naive() + timedelta(minutes=30),
+            user_agent="LINE admin deep link",
+        ))
+        db.commit()
+        return raw_token
+
     def create_line_clerk(
         actor_id: int,
         username: str,
@@ -1317,6 +1338,7 @@ def register_admin_api(
     app.state.line_admin_identity = line_admin_identity
     app.state.bind_line_admin = bind_line_admin
     app.state.unbind_line_admin = unbind_line_admin
+    app.state.issue_admin_link = issue_admin_link
     app.state.create_line_clerk = create_line_clerk
 
     def service_dict(item) -> dict[str, Any]:
@@ -1364,6 +1386,7 @@ def register_admin_api(
             "height": item.height,
             "weight": item.weight,
             "photo_url": getattr(item, "photo_url", None),
+            "bio": getattr(item, "bio", None),
             "role": item.role,
             "return_rule_set_id": getattr(item, "return_rule_set_id", None),
         }
@@ -1951,6 +1974,7 @@ def register_admin_api(
             "height": item.height,
             "weight": item.weight,
             "role": item.role,
+            "bio": getattr(item, "bio", None),
             "photo_url": item.photo_url,
         } for item in items]
 
@@ -1992,6 +2016,7 @@ def register_admin_api(
                 "height": item.height,
                 "weight": item.weight,
                 "photo_url": item.photo_url,
+                "bio": getattr(item, "bio", None),
             } for item in db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.name).all()],
             "minimum_lead_minutes": 90,
             "support_url": os.getenv("CUSTOMER_SERVICE_URL", "https://lin.ee/vOq3Xvt"),
@@ -3001,6 +3026,7 @@ def register_admin_api(
             height=normalize_staff_measurement(payload.height, label="身高", minimum=100, maximum=250),
             weight=normalize_staff_measurement(payload.weight, label="體重", minimum=30, maximum=250),
             role=payload.role,
+            bio=(payload.bio or "").strip()[:60] or None,
         )
         db.add(item)
         db.flush()
@@ -3034,6 +3060,8 @@ def register_admin_api(
             changes["height"] = normalize_staff_measurement(changes["height"], label="身高", minimum=100, maximum=250)
         if "weight" in changes:
             changes["weight"] = normalize_staff_measurement(changes["weight"], label="體重", minimum=30, maximum=250)
+        if "bio" in changes:
+            changes["bio"] = (changes["bio"] or "").strip()[:60] or None
         if "return_rule_set_id" in changes and changes["return_rule_set_id"] is not None:
             if not db.query(ReturnRuleSet).filter(ReturnRuleSet.id == changes["return_rule_set_id"], ReturnRuleSet.active.is_(True)).first():
                 raise HTTPException(status_code=404, detail="找不到回帳表")
