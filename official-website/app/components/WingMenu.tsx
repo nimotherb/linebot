@@ -18,12 +18,12 @@ const menuItems = [
 
 export function EqualMark({ className = '' }: { className?: string }) {
   return (
-    <span className={`equal-mark ${className}`.trim()} aria-hidden="true">
-      <i className="equal-mark-stem" />
-      <i className="equal-mark-bar equal-mark-bar-top" />
-      <i className="equal-mark-bar equal-mark-bar-middle" />
-      <i className="equal-mark-bar equal-mark-bar-bottom" />
-    </span>
+    <svg className={`equal-mark ${className}`.trim()} viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+      <path className="equal-mark-stem" d="M14 8V92" />
+      <path className="equal-mark-bar equal-mark-bar-top" d="M14 8H88" />
+      <path className="equal-mark-bar equal-mark-bar-middle" d="M14 50H72" />
+      <path className="equal-mark-bar equal-mark-bar-bottom" d="M14 92H88" />
+    </svg>
   );
 }
 
@@ -98,3 +98,4 @@ export function WingMenu() {
     </div>
   );
 }
+
