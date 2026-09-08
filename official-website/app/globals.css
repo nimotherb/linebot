@@ -1228,3 +1228,144 @@ button { font: inherit; }
   0%, 100% { transform: translateY(0) rotate(0deg); box-shadow: 0 0 0 rgba(231,186,99,0); }
   50% { transform: translateY(-3px) rotate(-4deg); box-shadow: 0 0 24px rgba(231,186,99,.42); }
 }
+
+/* Geometric EQUAL intro: the E is built from four bars so it can become the menu mark. */
+.equal-mark {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  color: inherit;
+}
+.equal-mark > i {
+  position: absolute;
+  display: block;
+  margin: 0;
+  border-radius: 999px;
+  background: currentColor;
+  font-style: normal;
+  will-change: top, left, width, height, opacity, transform;
+}
+.equal-mark-stem { left: 0; top: 0; width: var(--equal-stem-width, .07em); height: 100%; }
+.equal-mark-bar { left: 0; height: var(--equal-bar-height, .07em); }
+.equal-mark-bar-top { top: 0; width: 100%; }
+.equal-mark-bar-middle { top: 50%; width: 78%; transform: translateY(-50%); }
+.equal-mark-bar-bottom { top: 100%; width: 100%; transform: translateY(-100%); }
+
+.kinetic-wordmark {
+  font-family: "Acumin Variable Concept", "Acumin Pro", "Arial Narrow", sans-serif;
+  font-stretch: condensed;
+}
+.kinetic-wordmark .letter-e {
+  position: relative;
+  display: block;
+  flex: 0 0 .42em;
+  width: .42em;
+  height: .72em;
+  color: var(--ink-deep);
+  transform-origin: 50% 50%;
+  animation: equal-e-journey 4.8s cubic-bezier(.18,.82,.18,1) .04s both;
+}
+.kinetic-wordmark .letter-e .equal-mark-stem {
+  animation: equal-e-stem 4.8s ease .04s both;
+}
+.kinetic-wordmark .letter-e .equal-mark-bar-top {
+  animation: equal-e-top 4.8s cubic-bezier(.18,.82,.18,1) .04s both;
+}
+.kinetic-wordmark .letter-e .equal-mark-bar-middle {
+  animation: equal-e-middle 4.8s cubic-bezier(.18,.82,.18,1) .04s both;
+}
+.kinetic-wordmark .letter-e .equal-mark-bar-bottom {
+  animation: equal-e-bottom 4.8s cubic-bezier(.18,.82,.18,1) .04s both;
+}
+@keyframes equal-e-journey {
+  0% { opacity: 0; transform: translate3d(-34vw, 0, 0) scale(.78) rotate(-3deg); }
+  27% { opacity: 1; transform: translate3d(0, 0, 0) scale(1) rotate(0); }
+  43% { opacity: 1; transform: translate3d(0, 0, 0) scale(1) rotate(0); }
+  100% { opacity: 1; transform: translate3d(calc(-46vw + 25px), calc(-42vh + 25px), 0) scale(.3,.18) rotate(0); }
+}
+@keyframes equal-e-stem {
+  0%, 79% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes equal-e-top {
+  0%, 78% { top: 0; left: 0; width: 100%; transform: none; }
+  100% { top: 12%; left: 0; width: 100%; transform: none; }
+}
+@keyframes equal-e-middle {
+  0%, 78% { top: 50%; left: 0; width: 78%; transform: translateY(-50%); }
+  100% { top: 50%; left: 0; width: 100%; transform: translateY(-50%); }
+}
+@keyframes equal-e-bottom {
+  0%, 78% { top: 100%; left: 0; width: 100%; transform: translateY(-100%); }
+  100% { top: 88%; left: 0; width: 100%; transform: translateY(-100%); }
+}
+.kinetic-wordmark .letter-q,
+.kinetic-wordmark .letter-u,
+.kinetic-wordmark .letter-a,
+.kinetic-wordmark .letter-l {
+  font-family: "Acumin Variable Concept", "Acumin Pro", "Arial Narrow", sans-serif;
+  font-weight: 100;
+  will-change: transform, opacity;
+  animation: equal-qual-journey 3.9s cubic-bezier(.18,.82,.18,1) var(--delay) both;
+}
+.kinetic-wordmark .letter-q { --scatter-x: -34vw; --scatter-y: -29vh; --scatter-r: -34deg; }
+.kinetic-wordmark .letter-u { --scatter-x: -26vw; --scatter-y: 32vh; --scatter-r: 26deg; }
+.kinetic-wordmark .letter-a { --scatter-x: 31vw; --scatter-y: -27vh; --scatter-r: 38deg; }
+.kinetic-wordmark .letter-l { --scatter-x: 34vw; --scatter-y: 30vh; --scatter-r: -31deg; }
+@keyframes equal-qual-journey {
+  0% { opacity: 0; transform: translate3d(var(--entry-x), var(--entry-y), 0) rotate(-4deg); }
+  35% { opacity: 1; transform: translate3d(0, 0, 0) rotate(0); }
+  48% { opacity: 1; transform: translate3d(0, 0, 0) rotate(0); }
+  100% { opacity: 0; transform: translate3d(var(--scatter-x), var(--scatter-y), 0) rotate(var(--scatter-r)) scale(.76); }
+}
+
+/* The fixed menu receives the arriving E and keeps the three-line final state usable. */
+.home-shell .menu-dock .logo-tile {
+  opacity: 0;
+  font-size: 0;
+  animation: menu-mark-reveal 4.8s ease 0s both;
+}
+.home-shell .menu-dock .menu-mark {
+  width: 29px;
+  height: 29px;
+  --equal-stem-width: 2px;
+  --equal-bar-height: 2px;
+}
+.home-shell .menu-dock .menu-mark .equal-mark-stem { opacity: 0; }
+.home-shell .menu-dock .menu-mark .equal-mark-bar-top { top: 12%; width: 100%; transform: none; }
+.home-shell .menu-dock .menu-mark .equal-mark-bar-middle { top: 50%; width: 100%; transform: translateY(-50%); }
+.home-shell .menu-dock .menu-mark .equal-mark-bar-bottom { top: 88%; width: 100%; transform: translateY(-100%); }
+.menu-dock.is-open .logo-tile { opacity: 1; animation: none; }
+@keyframes menu-mark-reveal {
+  0%, 78% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+/* The compact mobile sequence keeps the same geometric E, even though the desktop hero is hidden. */
+.mobile-equal-e {
+  position: relative;
+  flex: 0 0 .42em;
+  width: .42em;
+  height: .72em;
+  color: inherit;
+}
+.mobile-equal-e .equal-mark { --equal-stem-width: .07em; --equal-bar-height: .07em; }
+
+@media (prefers-reduced-motion: reduce) {
+  .kinetic-wordmark .letter-e,
+  .kinetic-wordmark .letter-e .equal-mark-stem,
+  .kinetic-wordmark .letter-e .equal-mark-bar,
+  .kinetic-wordmark .letter-q,
+  .kinetic-wordmark .letter-u,
+  .kinetic-wordmark .letter-a,
+  .kinetic-wordmark .letter-l,
+  .home-shell .menu-dock .logo-tile { animation: none; }
+  .kinetic-wordmark .letter-e { transform: none; }
+  .kinetic-wordmark .letter-e .equal-mark-stem { opacity: 1; }
+  .kinetic-wordmark .letter-q,
+  .kinetic-wordmark .letter-u,
+  .kinetic-wordmark .letter-a,
+  .kinetic-wordmark .letter-l { opacity: 1; transform: none; }
+  .home-shell .menu-dock .logo-tile { opacity: 1; }
+}

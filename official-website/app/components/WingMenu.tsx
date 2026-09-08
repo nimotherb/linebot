@@ -16,6 +16,17 @@ const menuItems = [
   ['酬賓計畫', '/loyalty', 'LOYALTY'],
 ] as const;
 
+export function EqualMark({ className = '' }: { className?: string }) {
+  return (
+    <span className={`equal-mark ${className}`.trim()} aria-hidden="true">
+      <i className="equal-mark-stem" />
+      <i className="equal-mark-bar equal-mark-bar-top" />
+      <i className="equal-mark-bar equal-mark-bar-middle" />
+      <i className="equal-mark-bar equal-mark-bar-bottom" />
+    </span>
+  );
+}
+
 export function PointerLight() {
   useEffect(() => {
     const updateGlow = (event: PointerEvent) => {
@@ -63,7 +74,7 @@ export function WingMenu() {
   return (
     <div ref={dockRef} className={`menu-dock ${menuOpen ? 'is-open' : ''}`}>
       <button className="logo-trigger" type="button" aria-label={menuOpen ? '關閉網站選單' : '開啟網站選單'} aria-expanded={menuOpen} aria-controls="site-menu" onClick={() => setMenuOpen((open) => !open)}>
-        <span className="logo-tile">E</span>
+        <span className="logo-tile"><EqualMark className="menu-mark" /></span>
       </button>
       <span className="menu-thread" aria-hidden="true" />
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { PointerLight, SiteHeader, WingMenu } from './components/WingMenu';
+import { EqualMark, PointerLight, SiteHeader, WingMenu } from './components/WingMenu';
 import { usePublishedSiteDraft } from './components/PublishedSiteContent';
 
 const fallbackBookingUrl = 'https://equalspa-admin.pages.dev/booking';
@@ -27,7 +27,7 @@ function MobileSequence({ content }: { content: ReturnType<typeof usePublishedSi
       <section className="mobile-panel mobile-intro">
         <p className="mobile-index">01 / EQUAL SPA</p>
         <h2 className="mobile-equal-wordmark" aria-label="EQUAL">
-          <span className="mobile-equal-e">E</span>
+          <span className="mobile-equal-e"><EqualMark /></span>
           <span className="mobile-equal-q">Q</span>
           <span className="mobile-equal-u">U</span>
           <span className="mobile-equal-a">A</span>
@@ -103,7 +103,7 @@ export default function Home() {
       <section className="kinetic-stage" aria-labelledby="hero-title">
         <p className="hero-eyebrow">TAIPEI · XIMEN · 10:00—24:00</p>
         <h1 id="hero-title" className="kinetic-wordmark" aria-label="EQUAL">
-          <span className="letter letter-e">E</span><span className="letter letter-q">Q</span>
+          <span className="letter letter-e"><EqualMark /></span><span className="letter letter-q">Q</span>
           <span className="letter letter-u">U</span><span className="letter letter-a">A</span>
           <span className="letter letter-l">L</span>
         </h1>
