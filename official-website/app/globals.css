@@ -916,9 +916,16 @@ button { font: inherit; }
 /* Continuous therapist loop. */
 .therapist-carousel > header > span { font-size: 8px; letter-spacing: .18em; opacity: .55; }
 .portrait-rail { display: block; overflow: hidden; scroll-snap-type: none; }
+.therapist-carousel { --rail-duration: 168s; }
 .portrait-track { display: flex; width: max-content; will-change: transform; animation: portrait-loop var(--rail-duration) linear infinite; }
 .portrait-set { display: flex; flex: none; gap: clamp(20px, 3vw, 54px); padding-right: clamp(20px, 3vw, 54px); }
 @keyframes portrait-loop { to { transform: translateX(-50%); } }
+@media (max-width: 1199px) {
+  .therapist-carousel { --rail-duration: 192s; }
+}
+@media (max-width: 760px) {
+  .therapist-carousel { --rail-duration: 216s; }
+}
 
 /* No-code content workspace backed by the authenticated FastAPI/MySQL content API. */
 .site-studio-shell { min-height: 100svh; background: #e8ece7; color: #082f29; }

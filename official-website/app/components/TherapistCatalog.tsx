@@ -1,6 +1,6 @@
 'use client';
 
-import { type CSSProperties, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { usePublishedSiteDraft } from './PublishedSiteContent';
 
 type Category = 'straight' | 'community' | 'bisexual';
@@ -137,7 +137,7 @@ export default function TherapistCatalog() {
 
     <section className="therapist-carousel" aria-label="師傅照片輪播">
       <header><div><small>PORTRAIT RAIL</small><p>{category === 'all' ? 'ALL THERAPISTS' : categoryMeta[category].english}</p></div><span>CONTINUOUS AUTOMATIC LOOP</span></header>
-      <div className="portrait-rail"><div key={category} className="portrait-track" style={{ '--rail-duration': `${therapistSettings?.carouselSpeed || Math.max(34, visible.length * 2.8)}s` } as CSSProperties}>{portraitSet()}{portraitSet(true)}</div></div>
+      <div className="portrait-rail"><div key={category} className="portrait-track">{portraitSet()}{portraitSet(true)}</div></div>
     </section>
 
     <section className="therapist-catalog" aria-live="polite">
