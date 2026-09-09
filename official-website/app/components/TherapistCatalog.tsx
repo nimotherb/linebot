@@ -20,6 +20,7 @@ const categoryFallbackNotes: Record<Category, string> = {
 
 const fallbackBookingUrl = 'https://equalspa-admin.pages.dev/booking';
 const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com').replace(/\/$/, '');
+const therapistOrderStorageKey = 'equalspa:therapist-order:v1';
 
 const therapists: Therapist[] = [
   { name: 'Eason', slug: 'eason', category: 'straight', height: 180, weight: 72 },
@@ -85,6 +86,45 @@ function therapistBookingUrl(baseUrl: string, therapist: Therapist) {
   return `${urlWithoutHash}${urlWithoutHash.includes('?') ? '&' : '?'}${query.toString()}${hash}`;
 }
 
+function shuffle<T>(items: T[]) {
+  const shuffled = [...items];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  return shuffled;
+}
+
+function orderTherapists(items: Therapist[]) {
+  const identified = items.filter((item) => item.id !== undefined && item.id !== null);
+  if (!identified.length || typeof window === 'undefined') return items;
+
+  const byId = new Map(identified.map((item) => [String(item.id), item]));
+  const apiIds = identified.map((item) => String(item.id));
+  const today = new Date().toLocaleDateString('en-CA');
+  let cachedIds: string[] = [];
+  try {
+    const cached = JSON.parse(window.localStorage.getItem(therapistOrderStorageKey) || 'null') as { date?: string; ids?: unknown } | null;
+    if (cached?.date === today && Array.isArray(cached.ids)) {
+      cachedIds = cached.ids.map(String).filter((id, index, ids) => byId.has(id) && ids.indexOf(id) === index);
+    }
+  } catch {
+    cachedIds = [];
+  }
+
+  const orderedIds = cachedIds.length ? cachedIds : shuffle(apiIds);
+  const knownIds = new Set(orderedIds);
+  const newIds = apiIds.filter((id) => !knownIds.has(id));
+  const finalIds = [...orderedIds, ...newIds];
+  try {
+    window.localStorage.setItem(therapistOrderStorageKey, JSON.stringify({ date: today, ids: finalIds }));
+  } catch {
+    // Private browsing or storage limits should not prevent the directory from rendering.
+  }
+
+  return [...finalIds.map((id) => byId.get(id)).filter((item): item is Therapist => Boolean(item)), ...items.filter((item) => item.id === undefined || item.id === null)];
+}
+
 export default function TherapistCatalog() {
   const [category, setCategory] = useState<'all' | Category>('all');
   const [profiles, setProfiles] = useState<Therapist[]>(therapists);
@@ -111,7 +151,7 @@ export default function TherapistCatalog() {
           bio: item.bio,
           photoUrl: item.photo_url,
         } as Therapist));
-        if (mapped.length) setProfiles(mapped);
+        if (mapped.length) setProfiles(orderTherapists(mapped));
       })
       .catch(() => undefined);
   }, []);
@@ -121,9 +161,9 @@ export default function TherapistCatalog() {
     ? <img src={imagePath(therapist)} alt={alt} loading="lazy" />
     : <span className="portrait-monogram" aria-label={alt}>{therapist.name.slice(0, 1)}</span>;
 
-  const portraitSet = (duplicate = false) => <div className="portrait-set" aria-hidden={duplicate || undefined}>{visible.map((therapist, index) => <article className="portrait-product" key={`${therapist.category}-${therapist.slug}-${duplicate ? 'copy' : 'original'}`}>
+  const portraitSet = (duplicate = false) => <div className="portrait-set" aria-hidden={duplicate || undefined}>{visible.map((therapist) => <article className="portrait-product" key={`${therapist.category}-${therapist.slug}-${duplicate ? 'copy' : 'original'}`}>
     <div className="portrait-frame">{portrait(therapist, duplicate ? '' : `${therapist.name}師傅公開形象照`)}</div>
-    <span>{String(index + 1).padStart(2, '0')}</span><div><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3></div>
+    <div><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3></div>
   </article>)}</div>;
 
   return <>
@@ -142,8 +182,8 @@ export default function TherapistCatalog() {
 
     <section className="therapist-catalog" aria-live="polite">
       <header><small>CATALOG / {visible.length} PROFILES</small><h2>THERAPIST<br />SELECTION.</h2></header>
-      <div className="therapist-product-grid">{visible.map((therapist, index) => <article key={`${therapist.category}-${therapist.slug}`}>
-        <div className="therapist-product-image">{portrait(therapist, `${therapist.name}師傅`)}<span className="profile-index">{String(index + 1).padStart(2, '0')}</span></div>
+      <div className="therapist-product-grid">{visible.map((therapist) => <article key={`${therapist.category}-${therapist.slug}`}>
+        <div className="therapist-product-image">{portrait(therapist, `${therapist.name}師傅`)}</div>
         <div className="therapist-product-copy"><small>{categoryMeta[therapist.category].english}</small><h3>{therapist.name}</h3>{therapistSettings?.showMeasurements !== false && (therapist.height || therapist.weight || therapist.role) && <dl>{therapist.height && <div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div>}{therapist.weight && <div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div>}{therapist.role && <div><dt>ROLE</dt><dd>{therapist.role}</dd></div>}</dl>}<p>{therapist.bio || categoryNotes[therapist.category]}</p><a href={therapistBookingUrl(bookingUrl, therapist)} target="_blank" rel="noreferrer">指定 {therapist.name}／送出預約通知 ↗</a></div>
       </article>)}</div>
     </section>
