@@ -555,10 +555,10 @@ button { font: inherit; }
   animation-play-state: paused;
 }
 @keyframes menu-invite-letter {
-  0%, 50%, 100% { color: var(--ink-deep); text-shadow: 0 0 0 rgba(231,186,99,0); transform: translateX(0); }
-  60% { color: #7c510d; text-shadow: 0 0 18px rgba(231,186,99,.8); transform: translateX(-4px); }
-  72% { color: #7c510d; text-shadow: 0 0 20px rgba(231,186,99,.88); transform: translateX(4px); }
-  84% { color: var(--ink-deep); text-shadow: 0 0 8px rgba(231,186,99,.34); transform: translateX(0); }
+  0%, 50%, 100% { transform: translateX(0); }
+  60% { transform: translateX(-4px); }
+  72% { transform: translateX(4px); }
+  84% { transform: translateX(0); }
 }
 
 @media (max-width: 760px) {
@@ -789,16 +789,13 @@ button { font: inherit; }
   width: 50px;
   height: 50px;
   padding: 0;
-  border: 1px solid rgba(195,139,38,.58);
+  border: 1px solid rgba(7,50,43,.2);
   border-radius: 50%;
-  background: radial-gradient(circle at 32% 23%, rgba(255,255,255,.7), transparent 38%), rgba(231,186,99,.2);
-  box-shadow: 0 10px 30px rgba(7,50,43,.08), inset 0 0 16px rgba(255,255,255,.45);
+  background: transparent;
+  box-shadow: none;
   transform: none;
-  backdrop-filter: blur(18px) saturate(120%);
-  transition: background .35s, box-shadow .35s, transform .35s;
+  backdrop-filter: none;
 }
-.logo-trigger:hover,
-.menu-dock.is-open .logo-trigger { background-color: rgba(231,186,99,.34); box-shadow: 0 10px 34px rgba(7,50,43,.12), inset 0 0 18px rgba(255,255,255,.58); }
 .logo-trigger:active { filter: brightness(.97); }
 .logo-tile {
   position: relative;
