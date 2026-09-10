@@ -63,6 +63,7 @@ export function WingMenu() {
   return (
     <div ref={dockRef} className={`menu-dock ${menuOpen ? 'is-open' : ''}`}>
       <button className="logo-trigger" type="button" aria-label={menuOpen ? '關閉網站選單' : '開啟網站選單'} aria-expanded={menuOpen} aria-controls="site-menu" onClick={() => setMenuOpen((open) => !open)}>
+        <span className="logo-orbit" aria-hidden="true" />
         <span className="logo-tile">E</span>
       </button>
       <span className="menu-thread" aria-hidden="true" />
