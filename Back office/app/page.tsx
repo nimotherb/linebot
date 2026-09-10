@@ -30,6 +30,7 @@ type ModalState =
   | { type: 'shift'; origin: 'admin' | 'staff' }
   | { type: 'shiftEdit'; id: string }
   | { type: 'shiftDetail'; id: string; origin: 'admin' | 'staff' }
+  | { type: 'shiftMore'; staffKey: string; staffName: string; day: string }
   | { type: 'checkout'; id: string }
   | { type: 'serviceCreate' }
   | { type: 'service'; id: string }
@@ -168,10 +169,10 @@ const isShiftLocked = (shift: Shift) => {
   return shiftStart <= cutoff;
 };
 
-function Modal({ title, subtitle, children, onClose, wide = false }: { title: string; subtitle?: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
+function Modal({ title, subtitle, children, onClose, wide = false, className = '' }: { title: string; subtitle?: string; children: ReactNode; onClose: () => void; wide?: boolean; className?: string }) {
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className={wide ? 'modal-card wide' : 'modal-card'} role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}>
+      <section className={`${wide ? 'modal-card wide' : 'modal-card'} ${className}`.trim()} role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}>
         <header className="modal-header">
           <div><p className="eyebrow">EQUAL SPA</p><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>
           <button className="close-button" onClick={onClose} aria-label="關閉">×</button>
@@ -462,6 +463,9 @@ export default function Home() {
   const completedRevenue = todayAppointments.filter((item) => item.status === '已完成' || item.payment === '已付款').reduce((sum, item) => sum + item.total, 0);
   const selectedAppointment = modal && 'id' in modal ? appointments.find((item) => item.id === modal.id) : undefined;
   const selectedShift = modal && 'id' in modal ? shifts.find((item) => item.id === modal.id) : undefined;
+  const selectedShiftMore = modal?.type === 'shiftMore'
+    ? shifts.filter((item) => (item.staffId ? item.staffId === modal.staffKey : item.staff === modal.staffName) && shiftSegmentsForDay(item, modal.day).length > 0)
+    : [];
   const selectedCustomer = modal?.type === 'customer' ? customers.find((item) => item.id === modal.id) : undefined;
   const selectedRoom = modal?.type === 'roomEdit' ? rooms.find((item) => item.id === modal.id) : undefined;
   const selectedVenue = modal?.type === 'venueEdit' ? venues.find((item) => item.id === modal.id) : undefined;
@@ -1356,7 +1360,16 @@ export default function Home() {
                 <div className="roster-name"><span className="staff-avatar">{member.name.slice(0, 1)}</span><div><strong>{member.name}</strong><small>{member.category.replace('師傅', '')}</small></div></div>
                 {days.map((day) => {
                   const dayShifts = shifts.filter((item) => item.staffId ? item.staffId === member.id : item.staff === member.name).flatMap((item) => shiftSegmentsForDay(item, day.date));
-                  return <div className="roster-cell" key={day.date}>{dayShifts.map(({ shift, label, crossDay }) => <button className={`${isShiftLocked(shift) ? 'shift-card locked' : 'shift-card'}${crossDay ? ' cross-day' : ''}${shift.modifiedByAdminId ? ' admin-modified' : ''}`} key={`${shift.id}-${day.date}`} onClick={() => (canManageShifts || isStaffUser) && setModal({ type: 'shiftDetail', id: shift.id, origin: isStaffUser ? 'staff' : 'admin' })}>{canManageAll && shift.apiId && <label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={(selectedIds.shifts || []).includes(shift.apiId)} onChange={() => toggleSelected('shifts', shift.apiId!)} /><span>選取</span></label>}<strong>{label}</strong><small>{shift.modifiedByAdminName ? `管理者：${shift.modifiedByAdminName}` : crossDay ? '跨天排班' : isShiftLocked(shift) && !canOverrideTimeRules ? '已鎖定' : shift.source}</small></button>)}</div>;
+                  const normalShifts = dayShifts.filter(({ crossDay }) => !crossDay);
+                  const crossDayShifts = dayShifts.filter(({ crossDay }) => crossDay);
+                  const visibleSegments = normalShifts.length > 0 && crossDayShifts.length > 0
+                    ? [normalShifts[0], crossDayShifts[0]]
+                    : dayShifts.slice(0, 2);
+                  const visibleNormal = visibleSegments.filter(({ crossDay }) => !crossDay);
+                  const visibleCrossDay = visibleSegments.filter(({ crossDay }) => crossDay);
+                  const hiddenCount = dayShifts.length - visibleSegments.length;
+                  const renderShiftCard = ({ shift, label, crossDay }: { shift: Shift; label: string; crossDay: boolean }) => <button className={`${isShiftLocked(shift) ? 'shift-card locked' : 'shift-card'}${crossDay ? ' cross-day' : ''}${shift.modifiedByAdminId ? ' admin-modified' : ''}`} key={`${shift.id}-${day.date}`} onClick={() => (canManageShifts || isStaffUser) && setModal({ type: 'shiftDetail', id: shift.id, origin: isStaffUser ? 'staff' : 'admin' })}>{canManageAll && shift.apiId && <label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={(selectedIds.shifts || []).includes(shift.apiId)} onChange={() => toggleSelected('shifts', shift.apiId!)} /><span>選取</span></label>}<strong>{label}</strong><small>{shift.modifiedByAdminName ? `管理者：${shift.modifiedByAdminName}` : crossDay ? '跨天排班' : isShiftLocked(shift) && !canOverrideTimeRules ? '已鎖定' : shift.source}</small></button>;
+                  return <div className="roster-cell" key={day.date}><div className="shift-lane normal-lane">{visibleNormal.map(renderShiftCard)}</div><div className="shift-lane cross-day-lane">{visibleCrossDay.map(renderShiftCard)}</div>{hiddenCount > 0 && <button className="shift-more-button" type="button" onClick={() => setModal({ type: 'shiftMore', staffKey: member.id, staffName: member.name, day: day.date })}>＋{hiddenCount} 筆更多</button>}</div>;
                 })}
               </div>
             ))}
@@ -1517,6 +1530,8 @@ export default function Home() {
       {modal?.type === 'shiftDetail' && selectedShift && <Modal title={`${selectedShift.staff} 的排班`} subtitle={`${selectedShift.date} ${selectedShift.start} 至 ${selectedShift.endDate} ${selectedShift.end}`} onClose={() => setModal(null)}><div className="detail-stack"><div className="detail-hero"><div><span>建立來源</span><strong>{selectedShift.source}</strong><small>共 {Number((shiftDurationMinutes(selectedShift) / 60).toFixed(2))} 小時</small></div><StatusPill status={isShiftLocked(selectedShift) && !canOverrideTimeRules ? '已鎖定' : '可調整'} /></div>{isShiftLocked(selectedShift) && !canOverrideTimeRules && <div className="locked-message">此班已進入開始前 90 分鐘範圍。請由店長、Admin 或具強制權限的客服處理。</div>}{modal.origin === 'staff' ? <button className="danger-button full" onClick={() => removeShift(selectedShift, 'staff')}>{isShiftLocked(selectedShift) ? '聯絡店長處理' : '撤銷這段排班'}</button> : <><form onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget); removeShift(selectedShift, 'admin', String(data.get('reason') || '')); }}><label className="field-label">撤銷備註<textarea name="reason" rows={3} placeholder="選填，例如：師傅臨時請假" /></label><button className="danger-button full" type="submit">撤銷排班</button></form>{canManageAll && <button className="secondary-button full" type="button" onClick={() => setModal({ type: 'shiftEdit', id: selectedShift.id })}>編輯排班</button>}</>}</div></Modal>}
 
       {modal?.type === 'shiftEdit' && selectedShift && <Modal title={`編輯 ${selectedShift.staff} 的排班`} subtitle="管理者可直接覆寫時間；修改會記錄管理者與原因。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => saveShiftEdit(event, selectedShift)}><div className="form-grid two"><label>開始日期<input name="startDate" type="date" defaultValue={selectedShift.date} required /></label><label>開始時間<ClockSelect name="start" defaultValue={selectedShift.start} /></label><label>結束日期<input name="endDate" type="date" defaultValue={selectedShift.endDate} required /></label><label>結束時間<ClockSelect name="end" defaultValue={selectedShift.isNextDay ? `${String(Number(selectedShift.end.slice(0, 2)) + 24).padStart(2, '0')}:${selectedShift.end.slice(3)}` : selectedShift.end} /></label></div><div className="form-note">跨天排班支援輸入至 48:00；例如隔日凌晨 3 點請輸入 27:00。</div><label>修改原因<input name="reason" required placeholder="例如：店長調整師傅班表" /></label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">儲存管理者修改</button></footer></form></Modal>}
+
+      {modal?.type === 'shiftMore' && <Modal className="schedule-more-modal" title={`${modal.staffName}・${modal.day} 排班`} subtitle={`完整清單，共 ${selectedShiftMore.length} 筆`} onClose={() => setModal(null)} wide><div className="schedule-more-list">{selectedShiftMore.map((shift) => <button className={`${isShiftLocked(shift) ? 'shift-card locked' : 'shift-card'}${shift.isNextDay || shift.endDate !== shift.date ? ' cross-day' : ''}${shift.modifiedByAdminId ? ' admin-modified' : ''}`} key={shift.id} onClick={() => (canManageShifts || isStaffUser) && setModal({ type: 'shiftDetail', id: shift.id, origin: isStaffUser ? 'staff' : 'admin' })}><strong>{shiftTimeLabel(shift)}</strong><small>{shift.modifiedByAdminName ? `管理者：${shift.modifiedByAdminName}` : shift.isNextDay || shift.endDate !== shift.date ? '跨天排班' : shift.source}</small></button>)}</div></Modal>}
 
       {modal?.type === 'checkout' && selectedAppointment && <Modal title="完成訂單" subtitle={`${selectedAppointment.id}・${selectedAppointment.customer}`} onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => finishCheckout(event, selectedAppointment.id)}><div className="receipt"><div><span>{selectedAppointment.service}</span><strong>{formatCurrency(selectedAppointment.basePrice || selectedAppointment.total)}</strong></div><div><span>{selectedAppointment.promotionName || '優惠折扣'}</span><strong>− {formatCurrency(selectedAppointment.discountAmount || 0)}</strong></div><div><span>其他加價</span><strong>＋ {formatCurrency(selectedAppointment.extraAmount || 0)}</strong></div><div className="receipt-total"><span>應收總額</span><strong>{formatCurrency(selectedAppointment.total)}</strong></div></div><label>付款方式<select name="paymentMethod" defaultValue="現金"><option>現金</option><option>轉帳</option></select></label><label>完成備註<textarea name="note" rows={3} placeholder="例如：現金已收妥" /></label><div className="form-note">按下完成後即視為款項已回帳，不再需要師傅或第三人另外確認。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>稍後處理</button><button className="primary-button" type="submit">確認完成訂單</button></footer></form></Modal>}
 
