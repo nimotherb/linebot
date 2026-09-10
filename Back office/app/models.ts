@@ -35,7 +35,9 @@ export type Appointment = {
   discountAmount?: number;
   extraAmount?: number;
   promotionId?: string;
+  promotionIds?: number[];
   promotionName?: string;
+  commissionAmount?: number;
   expectedReturn?: number;
   returnStatus?: string;
   payment: '未付款' | '已付款' | '部分付款';
@@ -73,6 +75,9 @@ export type Shift = {
   end: string;
   source: '師傅連結' | '師傅上線' | '客服' | '店長' | 'Admin';
   locked?: boolean;
+  isNextDay?: boolean;
+  modifiedByAdminId?: number;
+  modifiedByAdminName?: string;
 };
 
 export type Customer = {

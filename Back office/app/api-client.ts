@@ -30,6 +30,7 @@ type RawAppointment = {
   service_plan_id?: number;
   service_name: string;
   promotion_id?: number;
+  promotion_ids?: number[];
   promotion_name?: string;
   start_time: string;
   end_time: string;
@@ -44,6 +45,7 @@ type RawAppointment = {
   base_price?: number;
   discount_amount?: number;
   extra_amount?: number;
+  commission_amount?: number;
   expected_return_amount?: number;
   staff_return_status?: string;
   notes?: string;
@@ -87,6 +89,9 @@ type RawShift = {
   end_time: string;
   source: 'staff_link' | 'line_online' | 'admin' | 'manager' | 'clerk';
   locked: boolean;
+  is_next_day?: boolean;
+  modified_by_admin_id?: number;
+  modified_by_admin_name?: string;
 };
 
 export type PromotionView = {
@@ -239,7 +244,9 @@ export const mapAppointment = (item: RawAppointment): Appointment => {
     basePrice: item.base_price ?? item.total_amount,
     discountAmount: item.discount_amount ?? 0,
     extraAmount: item.extra_amount ?? 0,
+    commissionAmount: item.commission_amount ?? 0,
     promotionId: item.promotion_id ? String(item.promotion_id) : undefined,
+    promotionIds: item.promotion_ids || (item.promotion_id ? [item.promotion_id] : []),
     promotionName: item.promotion_name,
     expectedReturn: item.expected_return_amount ?? 0,
     returnStatus: item.staff_return_status,
@@ -298,6 +305,9 @@ export const mapShift = (item: RawShift): Shift => {
     end: end.time,
     source: item.source === 'staff_link' ? '師傅連結' : item.source === 'line_online' ? '師傅上線' : item.source === 'manager' ? '店長' : item.source === 'clerk' ? '客服' : 'Admin',
     locked: item.locked,
+    isNextDay: item.is_next_day === true,
+    modifiedByAdminId: item.modified_by_admin_id,
+    modifiedByAdminName: item.modified_by_admin_name,
   };
 };
 
@@ -463,6 +473,10 @@ export class SpaApi {
     return this.request<RawShift>('/api/admin/shifts', { method: 'POST', body: JSON.stringify(payload) });
   }
 
+  updateShift(id: number, payload: Record<string, unknown>) {
+    return this.request<RawShift>(`/api/admin/shifts/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
   deleteShift(id: number, reason = '') {
     const query = reason ? `?reason=${encodeURIComponent(reason)}` : '';
     return this.request<{ ok: boolean }>(`/api/admin/shifts/${id}${query}`, { method: 'DELETE' });
@@ -589,7 +603,7 @@ export class SpaApi {
     return this.request<RawAppointment>(`/api/staff/appointments/${id}/complete`, { method: 'PATCH' });
   }
 
-  staffCreateShift(payload: { start_time: string; end_time: string }) {
+  staffCreateShift(payload: { start_time: string; end_time: string; is_next_day?: boolean }) {
     return this.request<RawShift>('/api/staff/shifts', { method: 'POST', body: JSON.stringify(payload) });
   }
 
@@ -615,7 +629,7 @@ export class SpaApi {
     return this.request<{ staff: { id: number; name: string }; rules: { minimum_hours: number; lock_minutes: number }; shifts: RawShift[] }>(`/api/staff/schedule/${encodeURIComponent(token)}`);
   }
 
-  publicCreateShift(token: string, payload: { start_time: string; end_time: string }) {
+  publicCreateShift(token: string, payload: { start_time: string; end_time: string; is_next_day?: boolean }) {
     return this.request<RawShift>(`/api/staff/schedule/${encodeURIComponent(token)}`, { method: 'POST', body: JSON.stringify(payload) });
   }
 

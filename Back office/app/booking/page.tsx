@@ -174,7 +174,7 @@ export default function BookingPage() {
   const service = options?.services.find((item) => String(item.id) === serviceId);
   const promotion = options?.promotions.find((item) => String(item.id) === promotionId);
   const staff = (requestOnly ? options?.staff : availability?.staff)?.find((item) => String(item.id) === staffId);
-  const discount = !promotion || !service ? 0 : promotion.calculation_type === 'fixed_discount'
+  const discount = !promotion || !service || service.duration_minutes < 90 ? 0 : promotion.calculation_type === 'fixed_discount'
     ? Math.min(service.price, promotion.value)
     : promotion.calculation_type === 'percent_discount'
       ? Math.min(service.price, Math.round(service.price * promotion.value / 100))
@@ -290,7 +290,7 @@ export default function BookingPage() {
 
         <section>
           <div className={styles.sectionTitle}><span>03</span><div><h2>優惠與聯絡資料</h2><p>優惠資格將由現場或客服確認</p></div></div>
-          <label className={styles.field}>優惠方案<select value={promotionId} onChange={(event) => setPromotionId(event.target.value)}><option value="">不使用優惠</option>{options?.promotions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+          <label className={service && service.duration_minutes < 90 ? styles.promotionWarning : styles.field}>優惠方案<select value={promotionId} onChange={(event) => setPromotionId(event.target.value)}><option value="">不使用優惠</option>{options?.promotions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>{service && service.duration_minutes < 90 && <small>未滿 90 分鐘不適用優惠；管理端可強制套用。</small>}</label>
           <div className={styles.twoColumns}>
             <label className={styles.field}>您的稱呼<input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：王先生" maxLength={120} required /></label>
             <label className={styles.field}>手機號碼<input value={phone} onChange={(event) => setPhone(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="09xxxxxxxx" inputMode="numeric" pattern="09\d{8}" required /></label>

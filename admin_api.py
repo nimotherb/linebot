@@ -42,6 +42,8 @@ from scheduling import (
     staff_may_change_shift,
     validate_booking_start,
     validate_shift_period,
+    validate_extended_shift_period,
+    parse_extended_local_datetime,
 )
 from identifiers import customer_serial
 
@@ -108,8 +110,10 @@ class AppointmentCreateIn(BaseModel):
     room_id: int | None = None
     venue_id: int | None = None
     promotion_id: int | None = None
+    promotion_ids: list[int] = Field(default_factory=list, max_length=10)
     location_type: Literal["onsite", "external", "pending"] = "onsite"
     notes: str | None = Field(default=None, max_length=2000)
+    is_admin_override: bool = False
 
 
 class AppointmentPatchIn(BaseModel):
@@ -120,27 +124,40 @@ class AppointmentPatchIn(BaseModel):
     room_id: int | None = None
     venue_id: int | None = None
     start_time: datetime | None = None
+    end_time: datetime | str | None = None
     service_plan_id: int | None = None
     promotion_id: int | None = None
+    promotion_ids: list[int] | None = Field(default=None, max_length=10)
     location_type: Literal["onsite", "external", "pending"] | None = None
     base_price: int | None = Field(default=None, ge=0)
     discount_amount: int | None = Field(default=None, ge=0)
     extra_amount: int | None = Field(default=None, ge=0)
     total_amount: int | None = Field(default=None, ge=0)
+    commission_amount: int | None = Field(default=None, ge=0)
     notes: str | None = Field(default=None, max_length=2000)
     force_reason: str | None = Field(default=None, max_length=500)
+    is_admin_override: bool = False
 
 
 class ShiftCreateIn(BaseModel):
     staff_id: int
-    start_time: datetime
-    end_time: datetime
+    start_time: datetime | str
+    end_time: datetime | str
+    is_next_day: bool = False
     source: Literal["admin", "manager", "staff_link"] = "admin"
 
 
 class PublicShiftCreateIn(BaseModel):
-    start_time: datetime
-    end_time: datetime
+    start_time: datetime | str
+    end_time: datetime | str
+    is_next_day: bool = False
+
+
+class ShiftPatchIn(BaseModel):
+    start_time: datetime | str | None = None
+    end_time: datetime | str | None = None
+    is_next_day: bool | None = None
+    force_reason: str | None = Field(default=None, max_length=500)
 
 
 class ServiceCreateIn(BaseModel):
@@ -508,6 +525,8 @@ def register_admin_api(
         status = Column(String(30), nullable=False, default="active")
         source = Column(String(30), nullable=False, default="admin")
         created_by_user_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+        modified_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
+        is_next_day = Column(Boolean, nullable=False, default=False)
         change_reason = Column(String(500), nullable=True)
         created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
         updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
@@ -518,6 +537,7 @@ def register_admin_api(
         appointment_id = Column(Integer, ForeignKey("appointments.id"), unique=True, nullable=False, index=True)
         service_plan_id = Column(Integer, ForeignKey("service_plans.id"), nullable=True)
         promotion_id = Column(Integer, ForeignKey("promotions.id"), nullable=True)
+        promotion_ids_json = Column(Text, nullable=True)
         room_id = Column(Integer, ForeignKey("rooms.id"), nullable=True)
         venue_id = Column(Integer, ForeignKey("venues.id"), nullable=True)
         service_name_snapshot = Column(String(160), nullable=True)
@@ -529,6 +549,7 @@ def register_admin_api(
         discount_amount = Column(Integer, nullable=False, default=0)
         extra_amount = Column(Integer, nullable=False, default=0)
         total_amount = Column(Integer, nullable=False, default=0)
+        commission_amount = Column(Integer, nullable=True)
         location_type = Column(String(30), nullable=False, default="onsite")
         notes = Column(Text, nullable=True)
         updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
@@ -1422,6 +1443,40 @@ def register_admin_api(
             return min(base_price, round(base_price * item.value / 100))
         return 0
 
+    def calculate_order_totals(*, base_price: int, duration_minutes: int, promotions: list[Any] | None = None, extra_amount: int = 0, admin_override: bool = False) -> dict[str, int]:
+        """Apply fees first, then stacked discounts with integer-safe caps."""
+        base = max(0, int(round(base_price)))
+        fees = max(0, int(round(extra_amount)))
+        discounts = 0
+        early_return_birthday = 0
+        for item in promotions or []:
+            if not item or not item.active:
+                continue
+            value = int(round(item.value or 0))
+            if item.calculation_type == "fixed_fee":
+                fees += value
+            elif item.calculation_type == "per_30_minutes":
+                fees += max(1, int(duration_minutes) // 30) * value
+            elif item.calculation_type == "fixed_discount" and (duration_minutes >= 90 or admin_override):
+                amount = min(base, value)
+                discounts += amount
+            elif item.calculation_type == "percent_discount" and (duration_minutes >= 90 or admin_override):
+                discounts += min(base, int(round(base * value / 100)))
+            if any(keyword in (item.name or "") for keyword in ("早鳥", "回訪", "壽星")):
+                early_return_birthday += value if item.calculation_type == "fixed_discount" else min(base, int(round(base * value / 100)))
+        if not admin_override:
+            if early_return_birthday > 200:
+                discounts = max(0, discounts - (early_return_birthday - 200))
+            discounts = min(500, discounts)
+        total = max(0, base + fees - discounts)
+        return {"base_price": base, "extra_amount": fees, "discount_amount": discounts, "total_amount": int(round(total))}
+
+    def promotion_rows(db: Session, promotion_ids: list[int] | None) -> list[Any]:
+        ids = [int(value) for value in (promotion_ids or []) if value]
+        if not ids:
+            return []
+        return db.query(Promotion).filter(Promotion.id.in_(ids), Promotion.active.is_(True), Promotion.deleted_at.is_(None)).all()
+
     def return_rule_for_appointment(db: Session, appointment, detail=None):
         if not appointment.staff_id:
             return None
@@ -1448,6 +1503,9 @@ def register_admin_api(
             "end_time": _iso(item.end_time),
             "status": item.status,
             "source": item.source,
+            "is_next_day": bool(getattr(item, "is_next_day", False)),
+            "modified_by_admin_id": getattr(item, "modified_by_admin_id", None),
+            "modified_by_admin_name": None,
             "locked": not staff_may_change_shift(item.start_time),
         }
 
@@ -1501,6 +1559,14 @@ def register_admin_api(
         detail = cache["details"].get(item.id)
         plan = cache["plans"].get(detail.service_plan_id) if detail and detail.service_plan_id else None
         promotion = cache["promotions"].get(detail.promotion_id) if detail and detail.promotion_id else None
+        promotion_ids = []
+        if detail and getattr(detail, "promotion_ids_json", None):
+            try:
+                promotion_ids = [int(value) for value in json.loads(detail.promotion_ids_json or "[]")]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                promotion_ids = [promotion.id] if promotion else []
+        elif promotion:
+            promotion_ids = [promotion.id]
         room = cache["rooms"].get(detail.room_id) if detail and detail.room_id else None
         venue = cache["venues"].get(detail.venue_id) if detail and detail.venue_id else None
         user = cache["users"].get(item.user_id)
@@ -1526,7 +1592,8 @@ def register_admin_api(
             "service_plan_id": plan.id if plan else None,
             "service_name": plan.name if plan else (getattr(detail, "service_name_snapshot", None) if detail else None) or item.plan_name or "未知方案",
             "promotion_id": promotion.id if promotion else None,
-            "promotion_name": promotion.name if promotion else (getattr(detail, "promotion_name_snapshot", None) if detail else None),
+            "promotion_name": (getattr(detail, "promotion_name_snapshot", None) if detail and getattr(detail, "promotion_name_snapshot", None) else (promotion.name if promotion else None)),
+            "promotion_ids": promotion_ids,
             "duration_minutes": item.duration,
             "start_time": _iso(item.start_time),
             "end_time": _iso(item.end_time),
@@ -1547,6 +1614,7 @@ def register_admin_api(
             "payment_method": payment.method if payment else None,
             "cash_return_status": payment.cash_return_status if payment else None,
             "expected_return_amount": staff_return.amount if staff_return else (return_rule.amount if return_rule else 0),
+            "commission_amount": getattr(detail, "commission_amount", None) if detail else None,
             "staff_return_status": staff_return.status if staff_return else "not_created",
         }
 
@@ -1712,7 +1780,7 @@ def register_admin_api(
         promotion = None
         if promotion_id:
             promotion = db.query(Promotion).filter(Promotion.id == promotion_id, Promotion.active.is_(True), Promotion.deleted_at.is_(None)).first()
-            if not promotion or promotion_discount(promotion, plan.price) <= 0:
+            if not promotion or plan.duration_minutes < 90 or promotion_discount(promotion, plan.price) <= 0:
                 raise HTTPException(status_code=404, detail="這個優惠目前無法使用")
         staff_obj = None
         if staff_id:
@@ -1787,7 +1855,7 @@ def register_admin_api(
         if customer_conflict:
             raise HTTPException(status_code=409, detail=f"客戶同時段已有訂單 AP-{customer_conflict.id}")
         promotion = db.query(Promotion).filter(Promotion.id == item.promotion_id).first() if item.promotion_id else None
-        discount = promotion_discount(promotion, plan.price)
+        discount = 0 if plan.duration_minutes < 90 else promotion_discount(promotion, plan.price)
         appointment = Appointment(
             user_id=item.user_id,
             staff_id=item.requested_staff_id,
@@ -2457,11 +2525,11 @@ def register_admin_api(
         plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id, ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).first()
         if not plan:
             raise HTTPException(status_code=404, detail="找不到啟用中的服務方案")
-        promotion = None
-        if payload.promotion_id:
-            promotion = db.query(Promotion).filter(Promotion.id == payload.promotion_id, Promotion.active.is_(True), Promotion.deleted_at.is_(None)).first()
-            if not promotion:
-                raise HTTPException(status_code=404, detail="找不到啟用中的優惠")
+        promotion_ids = payload.promotion_ids or ([payload.promotion_id] if payload.promotion_id else [])
+        promotions = promotion_rows(db, promotion_ids)
+        if len(promotions) != len(set(promotion_ids)):
+            raise HTTPException(status_code=404, detail="找不到啟用中的優惠")
+        promotion = promotions[0] if promotions else None
         start_dt = parse_local_datetime(payload.start_time)
         override_time_rules = actor_can_override_time_rules(actor, db)
         if not override_time_rules:
@@ -2520,6 +2588,11 @@ def register_admin_api(
         )
         db.add(appointment)
         db.flush()
+        totals = calculate_order_totals(base_price=plan.price, duration_minutes=plan.duration_minutes, promotions=promotions, admin_override=payload.is_admin_override)
+        if payload.is_admin_override and actor.role in {"admin", "manager"}:
+            for key in ("base_price", "discount_amount", "extra_amount", "total_amount"):
+                if hasattr(payload, key) and getattr(payload, key) is not None:
+                    totals[key] = int(getattr(payload, key))
         detail = AppointmentDetail(
             appointment_id=appointment.id,
             service_plan_id=plan.id,
@@ -2527,13 +2600,15 @@ def register_admin_api(
             room_id=payload.room_id,
             venue_id=payload.venue_id,
             service_name_snapshot=plan.name,
-            promotion_name_snapshot=promotion.name if promotion else None,
+            promotion_name_snapshot="、".join(item.name for item in promotions) if promotions else None,
+            promotion_ids_json=json.dumps([item.id for item in promotions]),
             room_name_snapshot=(db.query(Room).filter(Room.id == payload.room_id).first().name if payload.room_id else None),
             venue_name_snapshot=(db.query(Venue).filter(Venue.id == payload.venue_id).first().name if payload.venue_id else None),
             contact_phone=contact_phone,
-            base_price=plan.price,
-            discount_amount=promotion_discount(promotion, plan.price),
-            total_amount=plan.price - promotion_discount(promotion, plan.price),
+            base_price=totals["base_price"],
+            discount_amount=totals["discount_amount"],
+            extra_amount=totals["extra_amount"],
+            total_amount=totals["total_amount"],
             location_type=payload.location_type,
             notes=payload.notes,
         )
@@ -2541,7 +2616,7 @@ def register_admin_api(
         audit(db, actor, "create", "appointment", appointment.id, after={"start": start_dt, "end": end_dt, "staff_id": payload.staff_id, "room_id": payload.room_id, "promotion_id": payload.promotion_id})
         db.commit()
         db.refresh(appointment)
-        if appointment_notifier:
+        if appointment_notifier and not payload.is_admin_override:
             try:
                 appointment_notifier(appointment, db, origin="後台建立")
             except Exception:
@@ -2573,7 +2648,7 @@ def register_admin_api(
         promotion = None
         if payload.promotion_id:
             promotion = db.query(Promotion).filter(Promotion.id == payload.promotion_id, Promotion.active.is_(True), Promotion.deleted_at.is_(None)).first()
-            if not promotion or promotion_discount(promotion, plan.price) <= 0:
+            if not promotion or plan.duration_minutes < 90 or promotion_discount(promotion, plan.price) <= 0:
                 raise HTTPException(status_code=404, detail="這個優惠目前無法使用")
 
         start_dt = parse_local_datetime(payload.start_time)
@@ -2626,7 +2701,7 @@ def register_admin_api(
         )
         db.add(appointment)
         db.flush()
-        discount = promotion_discount(promotion, plan.price)
+        discount = 0 if plan.duration_minutes < 90 else promotion_discount(promotion, plan.price)
         source_label = "LINE LIFF 網頁預約" if source == "liff" else "網頁預約"
         notes = f"來源：{source_label}"
         if payload.notes and payload.notes.strip():
@@ -2690,6 +2765,9 @@ def register_admin_api(
         detail = db.query(AppointmentDetail).filter(AppointmentDetail.appointment_id == appointment.id).first()
         before = appointment_dict(db, appointment)
         changes = _model_dump_unset(payload)
+        admin_override = bool(changes.pop("is_admin_override", False))
+        if admin_override and actor.role not in {"admin", "manager"}:
+            raise HTTPException(status_code=403, detail="只有店長或 Admin 可以使用管理覆寫")
         monetary_fields = {"base_price", "discount_amount", "extra_amount", "total_amount"}
         if actor.role == "clerk" and monetary_fields.intersection(changes):
             raise HTTPException(status_code=403, detail="客服不能直接覆寫金額，請由店長或 Admin 處理")
@@ -2710,21 +2788,30 @@ def register_admin_api(
             plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id, ServicePlan.deleted_at.is_(None)).first()
             if not plan:
                 raise HTTPException(status_code=404, detail="找不到服務方案")
-        promotion = None
-        promotion_changed = "promotion_id" in changes
-        if promotion_changed and payload.promotion_id:
-            promotion = db.query(Promotion).filter(Promotion.id == payload.promotion_id, Promotion.active.is_(True), Promotion.deleted_at.is_(None)).first()
-            if not promotion:
-                raise HTTPException(status_code=404, detail="找不到啟用中的優惠")
+        promotion_changed = "promotion_id" in changes or "promotion_ids" in changes
+        promotion_ids = payload.promotion_ids if payload.promotion_ids is not None else ([payload.promotion_id] if payload.promotion_id else None)
+        promotions = promotion_rows(db, promotion_ids) if promotion_changed else []
+        if promotion_changed and len(promotions) != len(set(promotion_ids or [])):
+            raise HTTPException(status_code=404, detail="找不到啟用中的優惠")
+        promotion = promotions[0] if promotions else None
         start_dt = parse_local_datetime(payload.start_time) if payload.start_time else appointment.start_time
-        override_time_rules = actor_can_override_time_rules(actor, db)
+        override_time_rules = admin_override or actor_can_override_time_rules(actor, db)
         if payload.start_time is not None and not override_time_rules:
             try:
                 validate_booking_start(start_dt)
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         duration = plan.duration_minutes if plan else appointment.duration
-        end_dt = appointment_end(start_dt, duration)
+        if payload.end_time is not None:
+            try:
+                end_dt, _ = parse_extended_local_datetime(payload.end_time)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if end_dt <= start_dt:
+                raise HTTPException(status_code=422, detail="結束時間必須晚於開始時間")
+            duration = max(1, int(round((end_dt - start_dt).total_seconds() / 60)))
+        else:
+            end_dt = appointment_end(start_dt, duration)
         staff_id = payload.staff_id if "staff_id" in changes else appointment.staff_id
         room_id = payload.room_id if "room_id" in changes else (detail.room_id if detail else None)
         if not override_time_rules and staff_id and staff_appointment_conflict(db, staff_id, start_dt, end_dt, appointment.id):
@@ -2748,11 +2835,15 @@ def register_admin_api(
             appointment.plan_name = f"{plan.code}-{plan.name}"
         if promotion_changed:
             detail.promotion_id = promotion.id if promotion else None
-            detail.discount_amount = promotion_discount(promotion, detail.base_price)
+            detail.promotion_ids_json = json.dumps([item.id for item in promotions])
+            detail.promotion_name_snapshot = "、".join(item.name for item in promotions) if promotions else None
         if plan or promotion_changed:
-            current_promotion = promotion if promotion_changed else (db.query(Promotion).filter(Promotion.id == detail.promotion_id).first() if detail.promotion_id else None)
-            detail.discount_amount = promotion_discount(current_promotion, detail.base_price)
-            detail.total_amount = max(0, detail.base_price - detail.discount_amount + detail.extra_amount)
+            current_ids = promotion_ids if promotion_changed else ([detail.promotion_id] if detail.promotion_id else [])
+            current_promotions = promotion_rows(db, current_ids)
+            totals = calculate_order_totals(base_price=detail.base_price, duration_minutes=duration, promotions=current_promotions, extra_amount=detail.extra_amount, admin_override=admin_override)
+            detail.discount_amount = totals["discount_amount"]
+            detail.extra_amount = totals["extra_amount"]
+            detail.total_amount = totals["total_amount"]
         if "room_id" in changes:
             detail.room_id = payload.room_id
             detail.room_name_snapshot = db.query(Room).filter(Room.id == payload.room_id).first().name if payload.room_id else None
@@ -2767,6 +2858,8 @@ def register_admin_api(
             for field in monetary_fields:
                 if field in changes:
                     setattr(detail, field, changes[field])
+            if "commission_amount" in changes:
+                detail.commission_amount = changes["commission_amount"]
             if monetary_fields.intersection(changes) and "total_amount" not in changes:
                 detail.total_amount = max(0, detail.base_price - detail.discount_amount + detail.extra_amount)
         after = appointment_dict(db, appointment)
@@ -2784,12 +2877,16 @@ def register_admin_api(
         result = []
         for item in query.order_by(Shift.start_time).all():
             staff_obj = db.query(Staff).filter(Staff.id == item.staff_id).first()
-            result.append(shift_dict(item) | {"staff_name": staff_obj.name if staff_obj else "未知"})
+            admin = db.query(AdminUser).filter(AdminUser.id == item.modified_by_admin_id).first() if getattr(item, "modified_by_admin_id", None) else None
+            result.append(shift_dict(item) | {"staff_name": staff_obj.name if staff_obj else "未知", "modified_by_admin_name": admin.display_name if admin else None})
         return result
 
     @app.post("/api/admin/shifts", status_code=201)
     def create_shift(payload: ShiftCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
-        start_dt, end_dt = validate_shift_period(payload.start_time, payload.end_time)
+        try:
+            start_dt, end_dt, is_next_day = validate_extended_shift_period(payload.start_time, payload.end_time, is_next_day=payload.is_next_day)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         override_time_rules = actor_can_override_time_rules(actor, db)
         staff_obj = db.query(Staff).filter(Staff.id == payload.staff_id).with_for_update().first()
         if not staff_obj or getattr(staff_obj, "employment_status", "active") != "active":
@@ -2798,12 +2895,40 @@ def register_admin_api(
             raise HTTPException(status_code=422, detail="開始時間已進入 90 分鐘鎖定範圍，請聯絡店長或開啟客服強制權限")
         if not override_time_rules and shift_conflict(db, payload.staff_id, start_dt, end_dt):
             raise HTTPException(status_code=409, detail="此師傅的排班時間重疊")
-        item = Shift(staff_id=payload.staff_id, start_time=start_dt, end_time=end_dt, source=actor.role, created_by_user_id=actor.id)
+        item = Shift(staff_id=payload.staff_id, start_time=start_dt, end_time=end_dt, is_next_day=is_next_day, source=actor.role, created_by_user_id=actor.id)
         db.add(item)
         db.flush()
         audit(db, actor, "create", "shift", item.id, after={"staff_id": item.staff_id, "start": start_dt, "end": end_dt})
         db.commit()
-        return shift_dict(item) | {"staff_name": staff_obj.name}
+        result = shift_dict(item) | {"staff_name": staff_obj.name}
+        result["modified_by_admin_name"] = actor.display_name if getattr(item, "modified_by_admin_id", None) else None
+        return result
+
+    @app.patch("/api/admin/shifts/{shift_id}")
+    def update_shift(shift_id: int, payload: ShiftPatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
+        item = db.query(Shift).filter(Shift.id == shift_id, Shift.status == "active").with_for_update().first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到排班")
+        if actor.role not in {"admin", "manager"}:
+            raise HTTPException(status_code=403, detail="只有店長或 Admin 可以編輯排班")
+        start_value = payload.start_time if payload.start_time is not None else item.start_time
+        end_value = payload.end_time if payload.end_time is not None else item.end_time
+        try:
+            start_dt, end_dt, is_next_day = validate_extended_shift_period(start_value, end_value, is_next_day=bool(payload.is_next_day) if payload.is_next_day is not None else bool(item.is_next_day))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if shift_conflict(db, item.staff_id, start_dt, end_dt, item.id):
+            raise HTTPException(status_code=409, detail="此師傅的排班時間重疊")
+        before = shift_dict(item)
+        item.start_time = start_dt
+        item.end_time = end_dt
+        item.is_next_day = is_next_day
+        item.modified_by_admin_id = actor.id
+        item.change_reason = payload.force_reason
+        audit(db, actor, "update", "shift", item.id, reason=payload.force_reason, before=before, after=shift_dict(item))
+        db.commit()
+        staff_obj = db.query(Staff).filter(Staff.id == item.staff_id).first()
+        return shift_dict(item) | {"staff_name": staff_obj.name if staff_obj else "未知", "modified_by_admin_name": actor.display_name}
 
     @app.delete("/api/admin/shifts/{shift_id}")
     def delete_shift(shift_id: int, reason: str | None = Query(default=None, max_length=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
@@ -3506,12 +3631,15 @@ def register_admin_api(
     @app.post("/api/staff/schedule/{token}", status_code=201)
     def public_staff_create_shift(token: str, payload: PublicShiftCreateIn, db: Session = Depends(get_db)):
         staff_obj = staff_from_token(token, db)
-        start_dt, end_dt = validate_shift_period(payload.start_time, payload.end_time)
+        try:
+            start_dt, end_dt, is_next_day = validate_extended_shift_period(payload.start_time, payload.end_time, is_next_day=payload.is_next_day)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         if not staff_may_change_shift(start_dt):
             raise HTTPException(status_code=422, detail="開始時間已進入 90 分鐘鎖定範圍，請聯絡店長")
         if shift_conflict(db, staff_obj.id, start_dt, end_dt):
             raise HTTPException(status_code=409, detail="排班時間重疊")
-        item = Shift(staff_id=staff_obj.id, start_time=start_dt, end_time=end_dt, source="staff_link")
+        item = Shift(staff_id=staff_obj.id, start_time=start_dt, end_time=end_dt, is_next_day=is_next_day, source="staff_link")
         db.add(item)
         db.flush()
         audit(db, None, "create", "shift", item.id, reason="staff schedule link", after=shift_dict(item))
@@ -3534,12 +3662,15 @@ def register_admin_api(
 
     @app.post("/api/staff/shifts", status_code=201)
     def staff_session_create_shift(payload: PublicShiftCreateIn, db: Session = Depends(get_db), staff_obj=Depends(current_staff)):
-        start_dt, end_dt = validate_shift_period(payload.start_time, payload.end_time)
+        try:
+            start_dt, end_dt, is_next_day = validate_extended_shift_period(payload.start_time, payload.end_time, is_next_day=payload.is_next_day)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         if not staff_may_change_shift(start_dt):
             raise HTTPException(status_code=422, detail="開始時間已進入 90 分鐘鎖定範圍，請聯絡店長")
         if shift_conflict(db, staff_obj.id, start_dt, end_dt):
             raise HTTPException(status_code=409, detail="排班時間重疊")
-        item = Shift(staff_id=staff_obj.id, start_time=start_dt, end_time=end_dt, source="staff_link")
+        item = Shift(staff_id=staff_obj.id, start_time=start_dt, end_time=end_dt, is_next_day=is_next_day, source="staff_link")
         db.add(item)
         db.flush()
         audit(db, None, "create", "shift", item.id, reason=f"staff session {staff_obj.id}", after=shift_dict(item))

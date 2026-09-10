@@ -28,6 +28,7 @@ type ModalState =
   | { type: 'appointmentDetail'; id: string }
   | { type: 'appointmentEdit'; id: string }
   | { type: 'shift'; origin: 'admin' | 'staff' }
+  | { type: 'shiftEdit'; id: string }
   | { type: 'shiftDetail'; id: string; origin: 'admin' | 'staff' }
   | { type: 'checkout'; id: string }
   | { type: 'serviceCreate' }
@@ -95,22 +96,28 @@ const toMinutes = (clock: string) => {
   const [hours, minutes] = clock.split(':').map(Number);
   return hours * 60 + minutes;
 };
-const CLOCK_OPTIONS = Array.from({ length: 48 }, (_, index) => {
+const CLOCK_OPTIONS = Array.from({ length: 97 }, (_, index) => {
   const hour = String(Math.floor(index / 2)).padStart(2, '0');
   const minute = index % 2 ? '30' : '00';
   return `${hour}:${minute}`;
 });
+const normalizeShiftInput = (date: string, clock: string) => {
+  const [rawHour, minute] = clock.split(':').map(Number);
+  const nextDay = rawHour >= 24;
+  const normalizedHour = rawHour % 24;
+  const day = new Date(`${date}T00:00:00Z`);
+  if (nextDay) day.setUTCDate(day.getUTCDate() + 1);
+  return { iso: `${day.toISOString().slice(0, 10)}T${String(normalizedHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`, isNextDay: nextDay };
+};
 const shiftDurationMinutes = (shift: Shift) => Math.max(0, Math.round((
   new Date(`${shift.endDate}T${shift.end}:00+08:00`).getTime()
   - new Date(`${shift.date}T${shift.start}:00+08:00`).getTime()
 ) / 60000));
-const shiftTimeLabel = (shift: Shift) => `${shift.start}–${shift.endDate === shift.date ? '' : `${shift.endDate.slice(5).replace('-', '/')} `}${shift.end}`;
+const shiftTimeLabel = (shift: Shift) => `${shift.start}–${shift.end}`;
 const shiftSegmentsForDay = (shift: Shift, day: string) => {
-  if (day < shift.date || day > shift.endDate) return [];
-  if (shift.date === shift.endDate) return [{ shift, label: `${shift.start}–${shift.end}`, crossDay: false }];
-  if (day === shift.date) return [{ shift, label: `${shift.start}–跨天`, crossDay: true }];
-  if (day === shift.endDate) return [{ shift, label: `00:00–${shift.end}`, crossDay: true }];
-  return [{ shift, label: '00:00–跨天', crossDay: true }];
+  if (day !== shift.date) return [];
+  const crossDay = Boolean(shift.isNextDay || shift.endDate !== shift.date);
+  return [{ shift, label: crossDay ? `${shift.start}–${shift.end}` : `${shift.start}–${shift.end}`, crossDay }];
 };
 const staffPhotoDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
   if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) return reject(new Error('只接受 JPEG、PNG 或 WebP 圖片。'));
@@ -588,32 +595,36 @@ export default function Home() {
     const mode = String(data.get('shiftMode') || shiftMode);
     const selectedMember = origin === 'staff' ? staff.find((item) => item.name === staffPortalName) : staff.find((item) => item.id === String(data.get('staff')));
     const staffName = origin === 'staff' ? staffPortalName : selectedMember?.name || '未指定';
-    const createOneShift = async (startIso: string, endIso: string) => {
-      if (appMode === 'staffLink' && origin === 'staff') return new SpaApi().publicCreateShift(staffToken, { start_time: startIso, end_time: endIso });
-      if (appMode === 'staff' && origin === 'staff') return api.staffCreateShift({ start_time: startIso, end_time: endIso });
-      if (appMode === 'live' && origin === 'admin' && selectedMember?.apiId) return api.createShift({ staff_id: selectedMember.apiId, start_time: startIso, end_time: endIso });
+    const createOneShift = async (startIso: string, endIso: string, isNextDay = false) => {
+      if (appMode === 'staffLink' && origin === 'staff') return new SpaApi().publicCreateShift(staffToken, { start_time: startIso, end_time: endIso, is_next_day: isNextDay });
+      if (appMode === 'staff' && origin === 'staff') return api.staffCreateShift({ start_time: startIso, end_time: endIso, is_next_day: isNextDay });
+      if (appMode === 'live' && origin === 'admin' && selectedMember?.apiId) return api.createShift({ staff_id: selectedMember.apiId, start_time: startIso, end_time: endIso, is_next_day: isNextDay });
       throw new Error('目前未連線至資料庫，不能新增排班。');
     };
     if (mode === 'bulk') {
       if (end === start) return notify('批量每日排班的每日結束時間不可與開始時間相同。');
       if (origin === 'admin' && !selectedMember?.apiId) return notify('請先選擇師傅。');
-      const ranges: { startIso: string; endIso: string }[] = [];
+      const ranges: { startIso: string; endIso: string; isNextDay: boolean }[] = [];
       const cursor = new Date(`${startDate}T00:00:00Z`);
       const last = new Date(`${endDate}T00:00:00Z`);
       while (cursor <= last) {
         const date = cursor.toISOString().slice(0, 10);
-        let endDateText = date;
-        if (end < start) {
-          const overnight = new Date(`${date}T00:00:00Z`);
+        const startInput = normalizeShiftInput(date, start);
+        const endInput = normalizeShiftInput(date, end);
+        let endIso = endInput.iso;
+        let isNextDay = endInput.isNextDay;
+        if (!isNextDay && end < start) {
+          const overnight = new Date(`${endIso.slice(0, 10)}T00:00:00Z`);
           overnight.setUTCDate(overnight.getUTCDate() + 1);
-          endDateText = overnight.toISOString().slice(0, 10);
+          endIso = `${overnight.toISOString().slice(0, 10)}T${end}:00`;
+          isNextDay = true;
         }
-        ranges.push({ startIso: `${date}T${start}:00`, endIso: `${endDateText}T${end}:00` });
+        ranges.push({ startIso: startInput.iso, endIso, isNextDay: isNextDay || startInput.isNextDay });
         cursor.setUTCDate(cursor.getUTCDate() + 1);
       }
       if (origin === 'staff' && ranges.some(({ startIso }) => new Date(`${startIso}+08:00`).getTime() <= Date.now() + 90 * 60 * 1000)) return notify('批量排班包含已進入 90 分鐘鎖定範圍的日期，請調整開始日期或聯絡店長。');
       try {
-        const createdRows = await Promise.all(ranges.map(({ startIso, endIso }) => createOneShift(startIso, endIso)));
+        const createdRows = await Promise.all(ranges.map(({ startIso, endIso, isNextDay }) => createOneShift(startIso, endIso, isNextDay)));
         setShifts((current) => [...current, ...createdRows.map((created) => mapShift({ ...created, staff_name: origin === 'staff' ? staffName : created.staff_name }))]);
         if (modal?.type === 'shift') setModal(null);
         notify(`已建立 ${createdRows.length} 筆 ${staffName} 的每日排班。`);
@@ -622,14 +633,17 @@ export default function Home() {
       }
       return;
     }
-    const startIso = `${startDate}T${start}:00`;
-    const endIso = `${endDate}T${end}:00`;
+    const startInput = normalizeShiftInput(startDate, start);
+    const endInput = normalizeShiftInput(endDate, end);
+    const startIso = startInput.iso;
+    const endIso = endInput.iso;
+    const isNextDay = endInput.isNextDay || startInput.isNextDay;
     const startAt = new Date(`${startIso}+08:00`).getTime();
     const endAt = new Date(`${endIso}+08:00`).getTime();
     if (!Number.isFinite(startAt) || !Number.isFinite(endAt) || endAt <= startAt) return notify('排班結束時間必須晚於開始時間。');
     if (origin === 'staff' && startAt <= Date.now() + 90 * 60 * 1000) return notify('開始時間已進入 90 分鐘鎖定範圍，請聯絡店長。');
     try {
-      const created = await createOneShift(startIso, endIso);
+      const created = await createOneShift(startIso, endIso, isNextDay);
       setShifts((current) => [...current, mapShift({ ...created, staff_name: origin === 'staff' ? staffName : created.staff_name })]);
       if (modal?.type === 'shift') setModal(null);
       if (origin === 'staff') {
@@ -640,6 +654,24 @@ export default function Home() {
       }
     } catch (error) {
       notify(error instanceof Error ? error.message : '新增排班失敗');
+    }
+  };
+
+  const saveShiftEdit = async (event: FormEvent<HTMLFormElement>, shift: Shift) => {
+    event.preventDefault();
+    if (appMode !== 'live' || !shift.apiId || !canManageAll) return;
+    const data = new FormData(event.currentTarget);
+    const startDate = String(data.get('startDate'));
+    const endDate = String(data.get('endDate'));
+    const startInput = normalizeShiftInput(startDate, String(data.get('start')));
+    const endInput = normalizeShiftInput(endDate, String(data.get('end')));
+    try {
+      const updated = await api.updateShift(shift.apiId, { start_time: startInput.iso, end_time: endInput.iso, is_next_day: endInput.isNextDay || startInput.isNextDay, force_reason: String(data.get('reason') || '') });
+      setShifts((current) => current.map((item) => item.id === shift.id ? mapShift({ ...updated, staff_name: shift.staff }) : item));
+      setModal(null);
+      notify('排班已由管理者修改並留下記錄。');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '排班修改失敗');
     }
   };
 
@@ -838,6 +870,9 @@ export default function Home() {
       start_time: `${data.get('date')}T${data.get('start')}:00`,
       service_plan_id: Number(data.get('serviceId')),
       promotion_id: Number(data.get('promotionId') || 0),
+      promotion_ids: data.getAll('promotionId').map((value) => Number(value)).filter(Boolean),
+      end_time: `${data.get('date')}T${data.get('end') || appointment.end}:00`,
+      is_admin_override: canManageAll,
       staff_id: Number(data.get('staffId')),
       room_id: roomRecord?.id || null,
       venue_id: venueRecord?.id || null,
@@ -851,6 +886,7 @@ export default function Home() {
       payload.discount_amount = Number(data.get('discountAmount') || 0);
       payload.extra_amount = Number(data.get('extraAmount') || 0);
       payload.total_amount = Number(data.get('totalAmount') || 0);
+      payload.commission_amount = Number(data.get('commissionAmount') || 0);
     }
     try {
       const updated = await api.updateAppointment(appointment.apiId, payload);
@@ -1320,7 +1356,7 @@ export default function Home() {
                 <div className="roster-name"><span className="staff-avatar">{member.name.slice(0, 1)}</span><div><strong>{member.name}</strong><small>{member.category.replace('師傅', '')}</small></div></div>
                 {days.map((day) => {
                   const dayShifts = shifts.filter((item) => item.staffId ? item.staffId === member.id : item.staff === member.name).flatMap((item) => shiftSegmentsForDay(item, day.date));
-                  return <div className="roster-cell" key={day.date}>{dayShifts.map(({ shift, label, crossDay }) => <button className={`${isShiftLocked(shift) ? 'shift-card locked' : 'shift-card'}${crossDay ? ' cross-day' : ''}`} key={`${shift.id}-${day.date}`} onClick={() => (canManageShifts || isStaffUser) && setModal({ type: 'shiftDetail', id: shift.id, origin: isStaffUser ? 'staff' : 'admin' })}>{canManageAll && shift.apiId && <label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={(selectedIds.shifts || []).includes(shift.apiId)} onChange={() => toggleSelected('shifts', shift.apiId!)} /><span>選取</span></label>}<strong>{label}</strong><small>{crossDay ? '跨天排班' : isShiftLocked(shift) && !canOverrideTimeRules ? '已鎖定' : shift.source}</small></button>)}</div>;
+                  return <div className="roster-cell" key={day.date}>{dayShifts.map(({ shift, label, crossDay }) => <button className={`${isShiftLocked(shift) ? 'shift-card locked' : 'shift-card'}${crossDay ? ' cross-day' : ''}${shift.modifiedByAdminId ? ' admin-modified' : ''}`} key={`${shift.id}-${day.date}`} onClick={() => (canManageShifts || isStaffUser) && setModal({ type: 'shiftDetail', id: shift.id, origin: isStaffUser ? 'staff' : 'admin' })}>{canManageAll && shift.apiId && <label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={(selectedIds.shifts || []).includes(shift.apiId)} onChange={() => toggleSelected('shifts', shift.apiId!)} /><span>選取</span></label>}<strong>{label}</strong><small>{shift.modifiedByAdminName ? `管理者：${shift.modifiedByAdminName}` : crossDay ? '跨天排班' : isShiftLocked(shift) && !canOverrideTimeRules ? '已鎖定' : shift.source}</small></button>)}</div>;
                 })}
               </div>
             ))}
@@ -1474,9 +1510,9 @@ export default function Home() {
 
       {modal?.type === 'appointmentDetail' && selectedAppointment && <Modal title={selectedAppointment.id} subtitle={`${selectedAppointment.date}　${selectedAppointment.start}–${selectedAppointment.end}`} onClose={() => setModal(null)}><div className="detail-stack"><div className="detail-hero"><div><span>客戶</span><strong>{selectedAppointment.customer}</strong><small>{selectedAppointment.customerSerial ? `客人識別 ${selectedAppointment.customerSerial}・` : ''}{selectedAppointment.phone}</small></div><StatusPill status={selectedAppointment.status} /></div><dl><div><dt>師傅</dt><dd>{selectedAppointment.staff}</dd></div><div><dt>服務方案</dt><dd>{selectedAppointment.service}</dd></div><div><dt>優惠</dt><dd>{selectedAppointment.promotionName || '未使用'}</dd></div><div><dt>場地</dt><dd>{selectedAppointment.location}・{selectedAppointment.room}</dd></div><div><dt>應收金額</dt><dd>{formatCurrency(selectedAppointment.total)}</dd></div><div><dt>付款狀態</dt><dd>{selectedAppointment.payment}</dd></div></dl>{selectedAppointment.note && <div className="detail-note"><strong>客服備註</strong><p>{selectedAppointment.note}</p></div>}<div className="status-actions">{canEditAppointments && <button onClick={() => setModal({ type: 'appointmentEdit', id: selectedAppointment.id })}>編輯整張訂單</button>}{canEditAppointments && selectedAppointment.status !== '已完成' && <button onClick={() => setModal({ type: 'checkout', id: selectedAppointment.id })}>記錄付款並完成</button>}</div></div></Modal>}
 
-      {modal?.type === 'appointmentEdit' && selectedAppointment && <Modal title={`編輯 ${selectedAppointment.id}`} subtitle={canManageAll ? '店長與 Admin 可修改整張訂單所有欄位。' : '客服可調整預約與服務內容，金額需由店長或 Admin 處理。'} onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={(event) => saveAppointmentEdit(event, selectedAppointment)}><div className="form-grid two"><label>客戶姓名<input name="customer" defaultValue={selectedAppointment.customer} required /></label><label>手機號碼<input name="phone" defaultValue={selectedAppointment.phone} required /></label><label>日期<input name="date" type="date" defaultValue={selectedAppointment.date} required /></label><label>開始時間<input name="start" type="time" defaultValue={selectedAppointment.start} required /></label><label>服務方案<select name="serviceId" defaultValue={selectedAppointment.serviceId}>{plans.map((plan) => <option key={plan.id} value={plan.apiId}>{plan.code}・{plan.name}</option>)}</select></label><label>優惠<select name="promotionId" defaultValue={selectedAppointment.promotionId || '0'}><option value="0">不使用優惠</option>{promotions.map((promotion) => <option key={promotion.id} value={promotion.apiId}>{promotion.name}</option>)}</select></label><label>指派師傅<select name="staffId" defaultValue={selectedAppointment.staffId}>{staff.filter((item) => item.status === '在職').map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label><label>場地／房間<select name="room" defaultValue={selectedAppointment.venueId ? venueOptionValue(selectedAppointment.venueId) : selectedAppointment.roomId ? roomOptionValue(selectedAppointment.roomId) : 'pending'}>{rooms.map((room) => <option key={roomOptionValue(room.id)} value={roomOptionValue(room.id)}>{room.name}</option>)}{venues.filter((venue) => venue.active || venue.id === selectedAppointment.venueId).map((venue) => <option key={venueOptionValue(venue.id)} value={venueOptionValue(venue.id)}>{venueOptionLabel(venue)}</option>)}<option value="pending">待確認</option></select></label><label>訂單狀態<select name="status" defaultValue={selectedAppointment.status}>{['待確認', '已確認', '已完成'].map((status) => <option key={status}>{status}</option>)}</select></label>{canManageAll && <><label>原價<input name="basePrice" type="number" min="0" defaultValue={selectedAppointment.basePrice || 0} /></label><label>折扣<input name="discountAmount" type="number" min="0" defaultValue={selectedAppointment.discountAmount || 0} /></label><label>加價<input name="extraAmount" type="number" min="0" defaultValue={selectedAppointment.extraAmount || 0} /></label><label>訂單總額<input name="totalAmount" type="number" min="0" defaultValue={selectedAppointment.total} /></label></>}<label className="span-two">客服備註<textarea name="note" rows={3} defaultValue={selectedAppointment.note || ''} /></label><label className="span-two">修改原因<input name="reason" placeholder="例如：客戶改期、人工修正優惠" /></label></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存訂單</button></footer></form></Modal>}
+      {modal?.type === 'appointmentEdit' && selectedAppointment && <Modal title={`編輯 ${selectedAppointment.id}`} subtitle={canManageAll ? '店長與 Admin 可修改整張訂單所有欄位。' : '客服可調整預約與服務內容，金額需由店長或 Admin 處理。'} onClose={() => setModal(null)} wide><form className="modal-form" onSubmit={(event) => saveAppointmentEdit(event, selectedAppointment)}><div className="form-grid two"><label>客戶姓名<input name="customer" defaultValue={selectedAppointment.customer} required /></label><label>手機號碼<input name="phone" defaultValue={selectedAppointment.phone} required /></label><label>日期<input name="date" type="date" defaultValue={selectedAppointment.date} required /></label><label>開始時間<input name="start" type="time" defaultValue={selectedAppointment.start} required /></label><label>結束時間<input name="end" type="time" defaultValue={selectedAppointment.end} required /></label><label>服務方案<select name="serviceId" defaultValue={selectedAppointment.serviceId}>{plans.map((plan) => <option key={plan.id} value={plan.apiId}>{plan.code}・{plan.name}</option>)}</select></label><label>優惠<select name="promotionId" multiple defaultValue={selectedAppointment.promotionIds?.map(String) || (selectedAppointment.promotionId ? [selectedAppointment.promotionId] : [])}>{promotions.map((promotion) => <option key={promotion.id} value={promotion.apiId}>{promotion.name}</option>)}</select></label><label>指派師傅<select name="staffId" defaultValue={selectedAppointment.staffId}>{staff.filter((item) => item.status === '在職').map((item) => <option key={item.id} value={item.apiId}>{item.name}</option>)}</select></label><label>場地／房間<select name="room" defaultValue={selectedAppointment.venueId ? venueOptionValue(selectedAppointment.venueId) : selectedAppointment.roomId ? roomOptionValue(selectedAppointment.roomId) : 'pending'}>{rooms.map((room) => <option key={roomOptionValue(room.id)} value={roomOptionValue(room.id)}>{room.name}</option>)}{venues.filter((venue) => venue.active || venue.id === selectedAppointment.venueId).map((venue) => <option key={venueOptionValue(venue.id)} value={venueOptionValue(venue.id)}>{venueOptionLabel(venue)}</option>)}<option value="pending">待確認</option></select></label><label>訂單狀態<select name="status" defaultValue={selectedAppointment.status}>{['待確認', '已確認', '已完成'].map((status) => <option key={status}>{status}</option>)}</select></label>{canManageAll && <><label>原價<input name="basePrice" type="number" min="0" defaultValue={selectedAppointment.basePrice || 0} /></label><label>折扣<input name="discountAmount" type="number" min="0" defaultValue={selectedAppointment.discountAmount || 0} /></label><label>加價<input name="extraAmount" type="number" min="0" defaultValue={selectedAppointment.extraAmount || 0} /></label><label>訂單總額<input name="totalAmount" type="number" min="0" defaultValue={selectedAppointment.total} /></label><label>師傅抽成<input name="commissionAmount" type="number" min="0" defaultValue={selectedAppointment.commissionAmount || 0} /></label></>}<label className="span-two">客服備註<textarea name="note" rows={3} defaultValue={selectedAppointment.note || ''} /></label><label className="span-two">修改原因<input name="reason" placeholder="例如：客戶改期、人工修正優惠" /></label></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存訂單</button></footer></form></Modal>}
 
-      {modal?.type === 'shift' && <Modal title={modal.origin === 'staff' ? '新增我的排班' : '新增師傅排班'} subtitle={modal.origin === 'staff' || !canOverrideTimeRules ? '可跨日且沒有最低時數；一般帳號需遵守 90 分鐘鎖定與撞期規則。' : '可跨日且沒有最低時數；目前帳號可略過時間與撞期限制。'} onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => addShift(event, modal.origin)}>{(modal.origin === 'admin' || modal.origin === 'staff') && <label>排班方式<select name="shiftMode" value={shiftMode} onChange={(event) => setShiftMode(event.target.value as 'single' | 'bulk')}><option value="single">單次排班（可跨天）</option><option value="bulk">批量每日排班</option></select></label>}<div className="form-grid">{modal.origin === 'admin' && <label>師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<div className="form-grid two"><label>{shiftMode === 'bulk' && (modal.origin === 'admin' || modal.origin === 'staff') ? '開始日' : '開始日期'}<input name="startDate" type="date" min={modal.origin === 'staff' || !canOverrideTimeRules ? todayIso : undefined} defaultValue={bookingDefault.date} required /></label>{shiftMode !== 'bulk' || (modal.origin !== 'admin' && modal.origin !== 'staff') ? <label>開始時間<ClockSelect name="start" defaultValue={bookingDefault.time} /></label> : <label>每日開始時間<ClockSelect name="start" defaultValue={bookingDefault.time} /></label>}{shiftMode === 'bulk' && (modal.origin === 'admin' || modal.origin === 'staff') ? <label>結束日<input name="endDate" type="date" min={bookingDefault.date} defaultValue={shiftEndDefault.date} required /></label> : <label>結束日期<input name="endDate" type="date" defaultValue={shiftEndDefault.date} required /></label>}<label>{shiftMode === 'bulk' && (modal.origin === 'admin' || modal.origin === 'staff') ? '每日結束時間' : '結束時間'}<ClockSelect name="end" defaultValue={shiftEndDefault.time} /></label></div></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">確認排班</button></footer></form></Modal>}
+      {modal?.type === 'shift' && <Modal title={modal.origin === 'staff' ? '新增我的排班' : '新增師傅排班'} subtitle={modal.origin === 'staff' || !canOverrideTimeRules ? '可跨日且沒有最低時數；一般帳號需遵守 90 分鐘鎖定與撞期規則。' : '可跨日且沒有最低時數；目前帳號可略過時間與撞期限制。'} onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => addShift(event, modal.origin)}>{(modal.origin === 'admin' || modal.origin === 'staff') && <label>排班方式<select name="shiftMode" value={shiftMode} onChange={(event) => setShiftMode(event.target.value as 'single' | 'bulk')}><option value="single">單次排班（可跨天）</option><option value="bulk">批量每日排班</option></select></label>}<div className="form-grid">{modal.origin === 'admin' && <label>師傅<select name="staff" defaultValue={staff.find((item) => item.status === '在職')?.id}>{staff.filter((item) => item.status === '在職').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>}<div className="form-grid two"><label>{shiftMode === 'bulk' && (modal.origin === 'admin' || modal.origin === 'staff') ? '開始日' : '開始日期'}<input name="startDate" type="date" min={modal.origin === 'staff' || !canOverrideTimeRules ? todayIso : undefined} defaultValue={bookingDefault.date} required /></label>{shiftMode !== 'bulk' || (modal.origin !== 'admin' && modal.origin !== 'staff') ? <label>開始時間<ClockSelect name="start" defaultValue={bookingDefault.time} /></label> : <label>每日開始時間<ClockSelect name="start" defaultValue={bookingDefault.time} /></label>}{shiftMode === 'bulk' && (modal.origin === 'admin' || modal.origin === 'staff') ? <label>結束日<input name="endDate" type="date" min={bookingDefault.date} defaultValue={shiftEndDefault.date} required /></label> : <label>結束日期<input name="endDate" type="date" defaultValue={shiftEndDefault.date} required /></label>}<label>{shiftMode === 'bulk' && (modal.origin === 'admin' || modal.origin === 'staff') ? '每日結束時間' : '結束時間'}<ClockSelect name="end" defaultValue={shiftEndDefault.time} /></label></div></div><div className="form-note">跨天排班支援輸入至 48:00；例如隔日凌晨 3 點請輸入 27:00。</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button" type="submit">確認排班</button></footer></form></Modal>}
 
       {modal?.type === 'shiftDetail' && selectedShift && <Modal title={`${selectedShift.staff} 的排班`} subtitle={`${selectedShift.date} ${selectedShift.start} 至 ${selectedShift.endDate} ${selectedShift.end}`} onClose={() => setModal(null)}><div className="detail-stack"><div className="detail-hero"><div><span>建立來源</span><strong>{selectedShift.source}</strong><small>共 {Number((shiftDurationMinutes(selectedShift) / 60).toFixed(2))} 小時</small></div><StatusPill status={isShiftLocked(selectedShift) && !canOverrideTimeRules ? '已鎖定' : '可調整'} /></div>{isShiftLocked(selectedShift) && !canOverrideTimeRules && <div className="locked-message">此班已進入開始前 90 分鐘範圍。請由店長、Admin 或具強制權限的客服處理。</div>}{modal.origin === 'staff' ? <button className="danger-button full" onClick={() => removeShift(selectedShift, 'staff')}>{isShiftLocked(selectedShift) ? '聯絡店長處理' : '撤銷這段排班'}</button> : <form onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget); removeShift(selectedShift, 'admin', String(data.get('reason') || '')); }}><label className="field-label">撤銷備註<textarea name="reason" rows={3} placeholder="選填，例如：師傅臨時請假" /></label><button className="danger-button full" type="submit">撤銷排班</button></form>}</div></Modal>}
 

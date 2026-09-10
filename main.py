@@ -2190,6 +2190,10 @@ def on_startup():
             "ALTER TABLE appointments ADD COLUMN customer_name_snapshot VARCHAR(255);",
             "ALTER TABLE appointments ADD COLUMN customer_phone_snapshot VARCHAR(20);",
             "ALTER TABLE appointments ADD COLUMN staff_name_snapshot VARCHAR(255);",
+            "ALTER TABLE shifts ADD COLUMN is_next_day BOOLEAN NOT NULL DEFAULT FALSE;",
+            "ALTER TABLE shifts ADD COLUMN modified_by_admin_id INTEGER NULL;",
+            "ALTER TABLE appointment_details ADD COLUMN promotion_ids_json TEXT NULL;",
+            "ALTER TABLE appointment_details ADD COLUMN commission_amount INTEGER NULL;",
         ]
         for q in queries:
             try:
