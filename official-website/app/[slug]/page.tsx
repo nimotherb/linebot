@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import TherapistCatalog from '../components/TherapistCatalog';
-import { PublishedOffers, PublishedServices } from '../components/PublishedSiteContent';
+import { PublishedOffers, PublishedPageBody, PublishedPageHeader, PublishedPageTitle, PublishedServices } from '../components/PublishedSiteContent';
 import { PointerLight, SiteHeader, WingMenu } from '../components/WingMenu';
 
 const pageMeta = {
@@ -57,10 +57,10 @@ const plans = [
 ] as const;
 
 function AboutContent() {
-  return <>
+  return <PublishedPageBody slug="about"><>
     <div className="manifesto"><p>EQUAL 是我們安排每一次服務的起點。</p><p>每個人都能自在選擇適合自己的服務，也在被理解與尊重的空間裡，重新找回身體的節奏。清楚的方案、公開的價格與可被確認的界線，讓舒服不必建立在猜測上。</p></div>
     <div className="value-grid"><article><span>01</span><h2>EQUALITY</h2><p>不預設、不評價，讓每位來訪者都能被好好接住。</p></article><article><span>02</span><h2>PRECISION</h2><p>清楚說明方案與時間，讓需求被準確理解。</p></article><article><span>03</span><h2>EASE</h2><p>像回到熟悉的地方，安靜放下今天累積的重量。</p></article></div>
-  </>;
+  </></PublishedPageBody>;
 }
 
 function ServicesContent() {
@@ -74,15 +74,15 @@ function OffersContent() {
 }
 
 function LocationContent() {
-  return <div className="location-layout"><div className="location-details"><small>STUDIO INFORMATION</small><h2>伊果 SPA · 西門</h2><dl><div><dt>地址</dt><dd>台北市萬華區西寧南路 36 號</dd></div><div><dt>營業時間</dt><dd>每日 10:00—24:00</dd></div><div><dt>預約</dt><dd>LINE @017ktlhm</dd></div><div><dt>聯絡信箱</dt><dd>—</dd></div><div><dt>付款</dt><dd>現金、轉帳</dd></div></dl><a className="outline-link" href="https://www.google.com/maps/search/?api=1&query=%E5%8F%B0%E5%8C%97%E5%B8%82%E8%90%AC%E8%8F%AF%E5%8D%80%E8%A5%BF%E5%AF%A7%E5%8D%97%E8%B7%AF36%E8%99%9F" target="_blank" rel="noreferrer">OPEN IN GOOGLE MAPS ↗</a></div><div className="map-embed"><iframe src="https://www.google.com/maps/d/u/1/embed?mid=1141UqP4pbf1EG49i-Z6_c18pC2EplKQ&ehbc=2E312F&noprof=1" width="640" height="480" title="伊果 SPA Google 地圖" loading="lazy" referrerPolicy="no-referrer-when-downgrade" /></div></div>;
+  return <PublishedPageBody slug="location"><div className="location-layout"><div className="location-details"><small>STUDIO INFORMATION</small><h2>伊果 SPA · 西門</h2><dl><div><dt>地址</dt><dd>台北市萬華區西寧南路 36 號</dd></div><div><dt>營業時間</dt><dd>每日 10:00—24:00</dd></div><div><dt>預約</dt><dd>LINE @017ktlhm</dd></div><div><dt>聯絡信箱</dt><dd>—</dd></div><div><dt>付款</dt><dd>現金、轉帳</dd></div></dl><a className="outline-link" href="https://www.google.com/maps/search/?api=1&query=%E5%8F%B0%E5%8C%97%E5%B8%82%E8%90%AC%E8%8F%AF%E5%8D%80%E8%A5%BF%E5%AF%A7%E5%8D%97%E8%B7%AF36%E8%99%9F" target="_blank" rel="noreferrer">OPEN IN GOOGLE MAPS ↗</a></div><div className="map-embed"><iframe src="https://www.google.com/maps/d/u/1/embed?mid=1141UqP4pbf1EG49i-Z6_c18pC2EplKQ&ehbc=2E312F&noprof=1" width="640" height="480" title="伊果 SPA Google 地圖" loading="lazy" referrerPolicy="no-referrer-when-downgrade" /></div></div></PublishedPageBody>;
 }
 
 function RecruitContent() {
-  return <div className="recruit-layout"><div className="manifesto"><p>WORK WITH EQUAL.</p><p>我們重視專業、誠實溝通與彼此尊重。招募資訊與聯絡信箱目前整理中；正式公開前不會顯示個人聯絡方式。</p></div><div className="recruit-card"><small>CURRENT STATUS</small><h2>內容更新中</h2><p>之後會在這裡放置職缺內容、合作方式、基本條件與聯絡管道。</p><dl><div><dt>職缺</dt><dd>—</dd></div><div><dt>聯絡信箱</dt><dd>—</dd></div></dl></div></div>;
+  return <PublishedPageBody slug="recruit"><div className="recruit-layout"><div className="manifesto"><p>WORK WITH EQUAL.</p><p>我們重視專業、誠實溝通與彼此尊重。招募資訊與聯絡信箱目前整理中；正式公開前不會顯示個人聯絡方式。</p></div><div className="recruit-card"><small>CURRENT STATUS</small><h2>內容更新中</h2><p>之後會在這裡放置職缺內容、合作方式、基本條件與聯絡管道。</p><dl><div><dt>職缺</dt><dd>—</dd></div><div><dt>聯絡信箱</dt><dd>—</dd></div></dl></div></div></PublishedPageBody>;
 }
 
 function UpdatingContent({ type }: { type: 'groups' | 'loyalty' }) {
-  return <div className="updating-card"><span>{type === 'groups' ? 'GROUP' : 'LOYALTY'}</span><div className="update-orbit"><i>UPDATE</i></div><h2>COMING SOON</h2><p>{type === 'groups' ? '群組入口與使用說明將在確認後公開。' : '酬賓資格、回饋方式與使用規則正在整理中。'}</p><a href={bookingUrl} target="_blank" rel="noreferrer">前往線上預約 ↗</a></div>;
+  return <PublishedPageBody slug={type}><div className="updating-card"><span>{type === 'groups' ? 'GROUP' : 'LOYALTY'}</span><div className="update-orbit"><i>UPDATE</i></div><h2>COMING SOON</h2><p>{type === 'groups' ? '群組入口與使用說明將在確認後公開。' : '酬賓資格、回饋方式與使用規則正在整理中。'}</p><a href={bookingUrl} target="_blank" rel="noreferrer">前往線上預約 ↗</a></div></PublishedPageBody>;
 }
 
 function PrivacyContent() {
@@ -121,5 +121,5 @@ export default async function ContentPage({ params }: { params: Promise<{ slug: 
   if (!(slug in pageMeta)) notFound();
   const typedSlug = slug as keyof typeof pageMeta;
   const [english, title, intro] = pageMeta[typedSlug];
-  return <main className={`interior-shell page-${typedSlug}`}><PointerLight /><SiteHeader /><article className="interior-page"><header className="page-title"><p>EQUAL SPA / {String(Object.keys(pageMeta).indexOf(typedSlug) + 1).padStart(2, '0')}</p><h1>{english}</h1><div><h2>{title}</h2><span>{intro}</span></div></header><section className="page-content"><PageContent slug={typedSlug} /></section><footer className="site-footer"><div><b>伊果 SPA</b><span>EQUAL SPA · TAIPEI XIMEN</span></div><a href={bookingUrl} target="_blank" rel="noreferrer">ONLINE BOOKING</a><small>© {new Date().getFullYear()} EQUAL SPA</small></footer></article><WingMenu /></main>;
+  return <main className={`interior-shell page-${typedSlug}`}><PointerLight /><SiteHeader /><article className="interior-page"><header className="page-title"><p>EQUAL SPA / {String(Object.keys(pageMeta).indexOf(typedSlug) + 1).padStart(2, '0')}</p><PublishedPageTitle slug={typedSlug} fallback={english} /><PublishedPageHeader slug={typedSlug} fallbackTitle={title} fallbackIntro={intro} /></header><section className="page-content"><PageContent slug={typedSlug} /></section><footer className="site-footer"><div><b>伊果 SPA</b><span>EQUAL SPA · TAIPEI XIMEN</span></div><a href={bookingUrl} target="_blank" rel="noreferrer">ONLINE BOOKING</a><small>© {new Date().getFullYear()} EQUAL SPA</small></footer></article><WingMenu /></main>;
 }

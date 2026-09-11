@@ -2,10 +2,13 @@
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 
-type Section = 'home' | 'services' | 'therapists' | 'offers' | 'store';
+type Section = 'navigation' | 'home' | 'about' | 'services' | 'therapists' | 'offers' | 'location' | 'recruit' | 'groups' | 'loyalty';
 type CalculationType = 'fixed_discount' | 'percent_discount' | 'fixed_fee' | 'per_30_minutes' | 'per_km';
+type PageSlug = Exclude<Section, 'navigation'>;
 type ServiceDraft = { id?: number; code: string; name: string; summary: string; duration: string; price: string; visible: boolean };
 type OfferDraft = { id?: number; name: string; summary: string; status: '顯示中' | '草稿'; calculationType?: CalculationType; value?: number };
+export type SiteNavigationItem = { id: string; slug: PageSlug; label: string; english: string; desktopVisible: boolean; mobileVisible: boolean };
+export type SitePageDraft = { english: string; title: string; intro: string; body: string; desktopVisible: boolean; mobileVisible: boolean };
 export type ServiceRecord = { id: number; code: string; name: string; duration_minutes: number; price: number; description?: string | null; active: boolean };
 export type PromotionRecord = { id: number; name: string; calculation_type: CalculationType; value: number; description?: string | null; active: boolean };
 export type StaffProfile = {
@@ -20,6 +23,8 @@ export type StaffProfile = {
   bio?: string | null;
 };
 export type SiteDraft = {
+  navigation: SiteNavigationItem[];
+  pages: Record<PageSlug, SitePageDraft>;
   home: { subtitle: string; support: string; heroFontSize: number };
   booking: { lineId: string; url: string };
   services: ServiceDraft[];
@@ -99,6 +104,28 @@ const numberFromLabel = (value: string, fallback: number) => {
 };
 
 const initialDraft: SiteDraft = {
+  navigation: [
+    { id: 'home', slug: 'home', label: '首頁', english: 'HOME', desktopVisible: true, mobileVisible: true },
+    { id: 'about', slug: 'about', label: '關於伊果', english: 'ABOUT', desktopVisible: true, mobileVisible: true },
+    { id: 'services', slug: 'services', label: '服務項目', english: 'SERVICES', desktopVisible: true, mobileVisible: true },
+    { id: 'therapists', slug: 'therapists', label: '專業師傅', english: 'THERAPISTS', desktopVisible: true, mobileVisible: true },
+    { id: 'offers', slug: 'offers', label: '最新優惠', english: 'OFFERS', desktopVisible: true, mobileVisible: true },
+    { id: 'location', slug: 'location', label: '交通資訊', english: 'LOCATION', desktopVisible: true, mobileVisible: true },
+    { id: 'recruit', slug: 'recruit', label: '人才招募', english: 'RECRUIT', desktopVisible: true, mobileVisible: true },
+    { id: 'groups', slug: 'groups', label: '群組', english: 'GROUP', desktopVisible: true, mobileVisible: true },
+    { id: 'loyalty', slug: 'loyalty', label: '酬賓計畫', english: 'LOYALTY', desktopVisible: true, mobileVisible: true },
+  ],
+  pages: {
+    home: { english: 'HOME', title: '首頁', intro: 'EQUAL SPA · MOVE · RESET', body: '', desktopVisible: true, mobileVisible: true },
+    about: { english: 'ABOUT', title: '關於伊果', intro: '平等而細緻，讓每一種身體都能自在被理解。', body: '', desktopVisible: true, mobileVisible: true },
+    services: { english: 'SERVICES', title: '選擇今天需要的節奏', intro: '從六十分鐘的精準釋放，到完整兩小時的深度整理。', body: '', desktopVisible: true, mobileVisible: true },
+    therapists: { english: 'THERAPISTS', title: '選擇適合你的師傅', intro: '不同氣質與手法，都遵循相同的專業與界線。', body: '', desktopVisible: true, mobileVisible: true },
+    offers: { english: 'OFFERS', title: '期間限定企劃', intro: '優惠內容隨期間更新，預約前可由 LINE 客服確認。', body: '', desktopVisible: true, mobileVisible: true },
+    location: { english: 'LOCATION', title: '歡迎來到西門', intro: '從抵達開始放慢速度。', body: '', desktopVisible: true, mobileVisible: true },
+    recruit: { english: 'RECRUIT', title: '與伊果一起工作', intro: '一起建立舒服、尊重且長久的工作關係。', body: '', desktopVisible: true, mobileVisible: true },
+    groups: { english: 'GROUP', title: '社群內容準備中', intro: '最新社群資訊與活動整理。', body: '', desktopVisible: true, mobileVisible: true },
+    loyalty: { english: 'LOYALTY', title: '回訪計畫準備中', intro: '為熟悉伊果的你，準備更完整的回訪體驗。', body: '', desktopVisible: true, mobileVisible: true },
+  },
   home: {
     subtitle: '回到平衡，也回到更自在的自己。',
     support: '精準理解每一種身體需求，讓舒適重新回到應有的位置。',
@@ -135,15 +162,24 @@ const initialDraft: SiteDraft = {
 };
 
 const sections: { id: Section; index: string; label: string; english: string }[] = [
-  { id: 'home', index: '01', label: '首頁文字', english: 'HOME' },
-  { id: 'services', index: '02', label: '服務方案', english: 'SERVICES' },
-  { id: 'therapists', index: '03', label: '師傅目錄', english: 'THERAPISTS' },
-  { id: 'offers', index: '04', label: '優惠內容', english: 'OFFERS' },
-  { id: 'store', index: '05', label: '店鋪資訊', english: 'STORE' },
+  { id: 'navigation', index: '00', label: '頁籤設定', english: 'NAVIGATION' },
+  { id: 'home', index: '01', label: '首頁', english: 'HOME' },
+  { id: 'about', index: '02', label: '關於伊果', english: 'ABOUT' },
+  { id: 'services', index: '03', label: '服務項目', english: 'SERVICES' },
+  { id: 'therapists', index: '04', label: '員工目錄', english: 'THERAPISTS' },
+  { id: 'offers', index: '05', label: '最新優惠', english: 'OFFERS' },
+  { id: 'location', index: '06', label: '交通資訊', english: 'LOCATION' },
+  { id: 'recruit', index: '07', label: '人才招募', english: 'RECRUIT' },
+  { id: 'groups', index: '08', label: '群組', english: 'GROUP' },
+  { id: 'loyalty', index: '09', label: '酬賓計畫', english: 'LOYALTY' },
 ];
 
 function Field({ label, value, onChange, multiline = false, hint }: { label: string; value: string; onChange: (value: string) => void; multiline?: boolean; hint?: string }) {
   return <label className="studio-field"><span>{label}</span>{multiline ? <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={4} /> : <input value={value} onChange={(event) => onChange(event.target.value)} />}{hint && <small>{hint}</small>}</label>;
+}
+
+function PageSettings({ page, onChange }: { page: SitePageDraft; onChange: (patch: Partial<SitePageDraft>) => void }) {
+  return <div className="studio-form-card studio-page-settings"><small>PAGE TEMPLATE</small><h3>頁面標題與副標</h3><Field label="英文頁面標題／標籤" value={page.english} onChange={(english) => onChange({ english })} /><Field label="中文頁面標題" value={page.title} onChange={(title) => onChange({ title })} /><Field label="中文副標（可換行）" value={page.intro} onChange={(intro) => onChange({ intro })} multiline /><Field label="頁面補充內容（每段空一行）" value={page.body} onChange={(body) => onChange({ body })} multiline /><div className="studio-visibility-grid"><label className="studio-check"><input type="checkbox" checked={page.desktopVisible} onChange={(event) => onChange({ desktopVisible: event.target.checked })} />桌機顯示</label><label className="studio-check"><input type="checkbox" checked={page.mobileVisible} onChange={(event) => onChange({ mobileVisible: event.target.checked })} />手機顯示</label></div></div>;
 }
 
 export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAdminApi; notify: (msg: string) => void; userRole: 'admin' | 'manager' }) {
@@ -179,9 +215,16 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
           setPublishedAt(new Date(data.published_at).toLocaleString('zh-TW'));
         }
         const saved = data.draft && Object.keys(data.draft).length > 0 ? data.draft : {};
+        const savedNavigation = Array.isArray(saved.navigation) ? saved.navigation.map((item, index) => ({
+          ...(initialDraft.navigation[index] || initialDraft.navigation[0]),
+          ...item,
+        })) : initialDraft.navigation;
+        const savedPages = Object.fromEntries(Object.entries(initialDraft.pages).map(([slug, page]) => [slug, { ...page, ...(saved.pages?.[slug as PageSlug] || {}) }])) as SiteDraft['pages'];
         const merged: SiteDraft = {
           ...initialDraft,
           ...saved,
+          navigation: savedNavigation.length ? savedNavigation : initialDraft.navigation,
+          pages: savedPages,
           home: { ...initialDraft.home, ...(saved.home || {}) },
           booking: { ...initialDraft.booking, ...(saved.booking || {}) },
           therapists: { ...initialDraft.therapists, ...(saved.therapists || {}) },
@@ -205,16 +248,47 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
 
   const activeMeta = useMemo(() => sections.find((section) => section.id === active) ?? sections[0], [active]);
   const previewPath = useMemo(() => ({
+    navigation: '/',
     home: '/',
+    about: '/about/',
     services: '/services/',
     therapists: '/therapists/',
     offers: '/offers/',
-    store: '/location/',
+    location: '/location/',
+    recruit: '/recruit/',
+    groups: '/groups/',
+    loyalty: '/loyalty/',
   } satisfies Record<Section, string>)[active], [active]);
   
   const markChanged = (next: SiteDraft) => {
     setDraft(next);
     setNotice('有尚未儲存的變更');
+  };
+
+  const updatePage = (slug: PageSlug, patch: Partial<SitePageDraft>) => {
+    markChanged({ ...draft, pages: { ...draft.pages, [slug]: { ...draft.pages[slug], ...patch } } });
+  };
+
+  const updateNavigationItem = (index: number, patch: Partial<SiteNavigationItem>) => {
+    markChanged({ ...draft, navigation: draft.navigation.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item) });
+  };
+
+  const addNavigationItem = () => {
+    const usedIds = new Set(draft.navigation.map((item) => item.id));
+    const id = `custom-${draft.navigation.length + 1}`;
+    let uniqueId = id;
+    let suffix = 2;
+    while (usedIds.has(uniqueId)) uniqueId = `${id}-${suffix++}`;
+    markChanged({
+      ...draft,
+      navigation: [...draft.navigation, { id: uniqueId, slug: 'about', label: '新頁籤', english: 'NEW PAGE', desktopVisible: true, mobileVisible: true }],
+    });
+  };
+
+  const removeNavigationItem = (index: number) => {
+    if (draft.navigation.length <= 1) return notify('至少保留一個官網頁籤。');
+    if (!window.confirm(`確定移除「${draft.navigation[index]?.label || '這個頁籤'}」？`)) return;
+    markChanged({ ...draft, navigation: draft.navigation.filter((_, itemIndex) => itemIndex !== index) });
   };
 
   const persistCatalog = async () => {
@@ -245,6 +319,7 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
       setVersion(res.draft_version);
       const timestamp = new Intl.DateTimeFormat('zh-TW', { hour: '2-digit', minute: '2-digit' }).format(new Date());
       setSavedAt(timestamp);
+      setPreviewRevision(Date.now());
       setNotice('草稿已安全儲存至 MySQL');
       notify(`💾 草稿已儲存，版本更新至 v${res.draft_version}`);
     } catch (error) {
@@ -504,12 +579,24 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
       <section className="studio-workspace">
         <header><div><small>{activeMeta.index} / {activeMeta.english}</small><h2>{activeMeta.label}</h2></div><button type="button" onClick={exportDraft}>匯出設定 JSON</button></header>
 
+        {active === 'navigation' && <div className="studio-navigation-editor">
+          <div className="studio-form-card"><small>OFFICIAL SITE MAP</small><h3>官網頁籤同步</h3><p>這裡的順序、名稱與顯示設定會同步到官網選單。桌機為主要版型；手機只需要勾選是否顯示。</p></div>
+          <div className="studio-navigation-list">{draft.navigation.map((item, index) => <article key={item.id}>
+            <span className="studio-navigation-index">{String(index + 1).padStart(2, '0')}</span>
+            <div className="studio-navigation-fields"><Field label="中文名稱" value={item.label} onChange={(label) => updateNavigationItem(index, { label })} /><Field label="英文標籤" value={item.english} onChange={(english) => updateNavigationItem(index, { english })} /><label className="studio-catalog-field"><span>頁面版型</span><select value={item.slug} onChange={(event) => updateNavigationItem(index, { slug: event.target.value as PageSlug })}>{sections.filter((section) => section.id !== 'navigation').map((section) => <option key={section.id} value={section.id}>{section.english} · {section.label}</option>)}</select></label><div className="studio-visibility-grid"><label className="studio-check"><input type="checkbox" checked={item.desktopVisible} onChange={(event) => updateNavigationItem(index, { desktopVisible: event.target.checked })} />桌機</label><label className="studio-check"><input type="checkbox" checked={item.mobileVisible} onChange={(event) => updateNavigationItem(index, { mobileVisible: event.target.checked })} />手機</label></div></div>
+            <button className="danger" type="button" onClick={() => removeNavigationItem(index)}>移除</button>
+          </article>)}</div>
+          <button className="studio-add-page" type="button" onClick={addNavigationItem}>＋ 新增官網頁籤</button>
+        </div>}
+
         {active === 'home' && <div className="studio-form-grid">
+          <PageSettings page={draft.pages.home} onChange={(patch) => updatePage('home', patch)} />
           <div className="studio-form-card"><small>HERO COPY</small><h3>首頁文字</h3><Field label="主標題副標（可換行）" value={draft.home.subtitle} onChange={(subtitle) => markChanged({ ...draft, home: { ...draft.home, subtitle } })} multiline /><Field label="主視覺輔助說明（可換行）" value={draft.home.support} onChange={(support) => markChanged({ ...draft, home: { ...draft.home, support } })} multiline /><label className="studio-field"><span>主標題最大字級（px）</span><input type="number" min={96} max={480} value={draft.home.heroFontSize} onChange={(event) => markChanged({ ...draft, home: { ...draft.home, heroFontSize: Math.min(480, Math.max(96, Number(event.target.value) || 240)) } })} /><small>其他首頁文字會依主標題比例與響應式版面同步縮放。</small></label></div>
           <div className="studio-form-card"><small>BOOKING ENTRY</small><h3>預約入口</h3><Field label="LINE ID" value={draft.booking.lineId} onChange={(lineId) => markChanged({ ...draft, booking: { ...draft.booking, lineId } })} /><Field label="線上預約網址" value={draft.booking.url} onChange={(url) => markChanged({ ...draft, booking: { ...draft.booking, url } })} hint="點擊官網「立即線上預約」將會導向此網址。" /></div>
         </div>}
 
         {active === 'services' && <div className="studio-catalog-editor">
+          <PageSettings page={draft.pages.services} onChange={(patch) => updatePage('services', patch)} />
           <header className="studio-catalog-toolbar"><div><small>MYSQL SERVICE CATALOG</small><h3>目前方案</h3><p>新增與刪除會同步預約方案。刪除只結束後續使用，舊訂單會保留當時的方案連結。</p></div><button type="button" onClick={() => setShowNewService((current) => !current)}>{showNewService ? '取消新增' : '＋ 新增方案'}</button></header>
           {showNewService && <form className="studio-new-catalog" onSubmit={createService}>
             <label><span>方案代碼</span><input name="code" required maxLength={30} placeholder="例如 F" /></label>
@@ -527,10 +614,11 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
         </div>}
 
         {active === 'therapists' && <div className="studio-form-grid">
-          <div className="studio-form-card"><small>CATALOG</small><h3>師傅目錄設定</h3><Field label="目錄介紹" value={draft.therapists.intro} onChange={(intro) => markChanged({ ...draft, therapists: { ...draft.therapists, intro } })} multiline />{/* 輪播速度暫時固定於前端，保留欄位以相容既有草稿。 */}<label className="studio-check"><input type="checkbox" checked={draft.therapists.showMeasurements} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, showMeasurements: event.target.checked } })} />公開顯示身高、體重與角色</label></div>
+          <PageSettings page={draft.pages.therapists} onChange={(patch) => updatePage('therapists', patch)} />
+          <div className="studio-form-card"><small>CATALOG</small><h3>員工目錄設定</h3><Field label="目錄介紹" value={draft.therapists.intro} onChange={(intro) => markChanged({ ...draft, therapists: { ...draft.therapists, intro } })} multiline />{/* 輪播速度暫時固定於前端，保留欄位以相容既有草稿。 */}<label className="studio-check"><input type="checkbox" checked={draft.therapists.showMeasurements} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, showMeasurements: event.target.checked } })} />公開顯示身高、體重與角色</label></div>
           <div className="studio-form-card studio-upload-card"><small>LIVE DIRECTORY</small><h3>公開名單</h3><div className="upload-placeholder"><span>{staffProfiles.filter((item) => item.employment_status === 'active').length}</span><b>位在職師傅</b><p>名單、身高、體重、角色與照片直接保存到 MySQL；LINE Bot 或此編輯器更新後會同步顯示。</p></div><p className="privacy-note">健康資訊只留在營運後台，不會出現在官網編輯器或公開頁面。</p></div>
           <section className="studio-form-card studio-staff-manager">
-            <header><div><small>THERAPIST PROFILES</small><h3>新增、照片與退役管理</h3><p>照片可貼網址或從電腦上傳。上傳檔案限 JPEG、PNG、WebP，最大 3 MB。</p></div><div className="studio-staff-toolbar"><button type="button" onClick={() => setShowNewStaff((current) => !current)}>{showNewStaff ? '取消新增' : '＋ 新增師傅'}</button>{userRole === 'admin' && <button type="button" className="danger" disabled={staffBusy || selectedStaffIds.length === 0} onClick={deleteSelectedStaff}>永久刪除所選 ({selectedStaffIds.length})</button>}</div></header>
+            <header><div><small>STAFF PROFILES</small><h3>新增、照片與退役管理</h3><p>照片可貼網址或從電腦上傳。上傳檔案限 JPEG、PNG、WebP，最大 3 MB。</p></div><div className="studio-staff-toolbar"><button type="button" onClick={() => setShowNewStaff((current) => !current)}>{showNewStaff ? '取消新增' : '＋ 新增員工'}</button>{userRole === 'admin' && <button type="button" className="danger" disabled={staffBusy || selectedStaffIds.length === 0} onClick={deleteSelectedStaff}>永久刪除所選 ({selectedStaffIds.length})</button>}</div></header>
             {showNewStaff && <form className="studio-new-staff" onSubmit={createStaffProfile}><label><span>姓名／稱呼</span><input name="name" required /></label><label><span>分類</span><select name="category" defaultValue="gay"><option value="straight">直男師傅</option><option value="gay">圈內師傅</option><option value="bisexual">雙性師傅</option></select></label><label><span>身高（cm）</span><input name="height" inputMode="numeric" pattern="[0-9]{3}" placeholder="例：178" /></label><label><span>體重（kg）</span><input name="weight" inputMode="numeric" pattern="[0-9]{2,3}" placeholder="例：72" /></label><label><span>角色</span><select name="role" defaultValue=""><option value="">尚未設定</option>{staffRoles.map((role) => <option key={role} value={role}>{role}</option>)}</select></label><label className="wide"><span>照片網址</span><input name="photoUrl" type="url" placeholder="https://..." /></label><label className="wide"><span>或上傳照片</span><input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label><button type="submit" disabled={staffBusy}>建立師傅</button></form>}
             <div className="studio-staff-grid">{staffProfiles.map((profile) => <article className={profile.employment_status === 'retired' ? 'studio-staff-card retired' : 'studio-staff-card'} key={profile.id}>
               <label className="studio-staff-select"><input type="checkbox" checked={selectedStaffIds.includes(profile.id)} onChange={() => setSelectedStaffIds((current) => current.includes(profile.id) ? current.filter((id) => id !== profile.id) : [...current, profile.id])} /><span>選取</span></label>
@@ -543,6 +631,7 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
         </div>}
 
         {active === 'offers' && <div className="studio-catalog-editor">
+          <PageSettings page={draft.pages.offers} onChange={(patch) => updatePage('offers', patch)} />
           <header className="studio-catalog-toolbar"><div><small>MYSQL PROMOTION CATALOG</small><h3>優惠內容</h3><p>優惠可保留在草稿或設為顯示中；刪除後舊訂單仍會保存原優惠。</p></div><button type="button" onClick={() => setShowNewOffer((current) => !current)}>{showNewOffer ? '取消新增' : '＋ 新增優惠'}</button></header>
           {showNewOffer && <form className="studio-new-catalog studio-new-offer" onSubmit={createOffer}>
             <label><span>優惠名稱</span><input name="name" required /></label>
@@ -554,10 +643,13 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
           <div className="studio-offer-editor">{draft.offers.map((offer, index) => <article key={offer.id || `${offer.name}-${index}`}><span>0{index + 1}</span><div><Field label="優惠名稱（可換行）" value={offer.name} onChange={(name) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, name } : item) })} multiline /><Field label="簡短說明（可換行）" value={offer.summary} onChange={(summary) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, summary } : item) })} multiline /><label className="studio-catalog-field"><span>計算方式</span><select value={offer.calculationType || 'fixed_discount'} onChange={(event) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, calculationType: event.target.value as CalculationType } : item) })}><option value="fixed_discount">固定折扣</option><option value="percent_discount">百分比折扣</option><option value="fixed_fee">固定加價</option><option value="per_30_minutes">每 30 分鐘</option><option value="per_km">每公里</option></select></label><label className="studio-catalog-field"><span>金額／百分比</span><input type="number" min="0" value={offer.value || 0} onChange={(event) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, value: Number(event.target.value) } : item) })} /></label></div><div className="studio-catalog-actions"><button type="button" onClick={() => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, status: item.status === '顯示中' ? '草稿' : '顯示中' } : item) })}>{offer.status}</button><button className="danger" type="button" disabled={catalogBusy} onClick={() => deleteOffer(offer)}>刪除優惠</button></div></article>)}</div>
         </div>}
 
-        {active === 'store' && <div className="studio-form-grid">
+        {active === 'location' && <div className="studio-form-grid">
+          <PageSettings page={draft.pages.location} onChange={(patch) => updatePage('location', patch)} />
           <div className="studio-form-card"><small>STUDIO INFORMATION</small><h3>店鋪資料</h3><Field label="地址" value={draft.store.address} onChange={(address) => markChanged({ ...draft, store: { ...draft.store, address } })} /><Field label="營業時間" value={draft.store.hours} onChange={(hours) => markChanged({ ...draft, store: { ...draft.store, hours } })} /><Field label="付款方式" value={draft.store.payment} onChange={(payment) => markChanged({ ...draft, store: { ...draft.store, payment } })} /></div>
           <div className="studio-form-card"><small>MAP</small><h3>Google 地圖</h3><Field label="嵌入網址" value={draft.store.mapUrl} onChange={(mapUrl) => markChanged({ ...draft, store: { ...draft.store, mapUrl } })} multiline /><p className="privacy-note">請貼上 Google My Maps 的 embed 網址，預覽與發布時會自動更新。</p></div>
         </div>}
+
+        {(active === 'about' || active === 'recruit' || active === 'groups' || active === 'loyalty') && <div className="studio-form-grid"><PageSettings page={draft.pages[active]} onChange={(patch) => updatePage(active, patch)} /><div className="studio-form-card"><small>CONTENT TEMPLATE</small><h3>{activeMeta.label}內容</h3><p>桌機版面以此頁設定為主；手機版只依上方勾選決定是否顯示此頁籤。</p></div></div>}
       </section>
 
       <aside className="studio-preview">

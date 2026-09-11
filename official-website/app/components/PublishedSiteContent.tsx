@@ -1,12 +1,16 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com').replace(/\/$/, '');
 
 export type PublishedService = { id?: number; code: string; name: string; summary: string; duration: string; price: string; visible: boolean };
 export type PublishedOffer = { id?: number; name: string; summary: string; status: '顯示中' | '草稿' };
+export type PublishedNavigationItem = { id: string; slug: string; label: string; english: string; desktopVisible?: boolean; mobileVisible?: boolean };
+export type PublishedPage = { english?: string; title?: string; intro?: string; body?: string; desktopVisible?: boolean; mobileVisible?: boolean };
 export type PublishedSiteDraft = {
+  navigation?: PublishedNavigationItem[];
+  pages?: Record<string, PublishedPage>;
   home?: { subtitle?: string; support?: string; heroFontSize?: number };
   booking?: { lineId?: string; url?: string };
   services?: PublishedService[];
@@ -39,6 +43,24 @@ export function usePublishedSiteDraft() {
   }, []);
 
   return content;
+}
+
+export function PublishedPageHeader({ slug, fallbackTitle, fallbackIntro }: { slug: string; fallbackTitle: string; fallbackIntro: string }) {
+  const content = usePublishedSiteDraft();
+  const page = content?.pages?.[slug];
+  return <div><h2>{page?.title || fallbackTitle}</h2><span>{page?.intro || fallbackIntro}</span></div>;
+}
+
+export function PublishedPageTitle({ slug, fallback }: { slug: string; fallback: string }) {
+  const content = usePublishedSiteDraft();
+  return <h1>{content?.pages?.[slug]?.english || fallback}</h1>;
+}
+
+export function PublishedPageBody({ slug, children }: { slug: string; children: ReactNode }) {
+  const content = usePublishedSiteDraft();
+  const body = content?.pages?.[slug]?.body?.trim();
+  if (!body) return <>{children}</>;
+  return <div className="published-page-copy">{body.split(/\n\s*\n/).filter(Boolean).map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div>;
 }
 
 type ServicePlanView = {
