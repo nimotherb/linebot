@@ -73,6 +73,36 @@
   scrollbar-color: #9db5a8 transparent;
 }
 
+.staffFilter {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #e1ddd2;
+  border-radius: 15px;
+  background: #f7f8f2;
+}
+
+.staffSearch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid #d9d9d0;
+  border-radius: 11px;
+  background: #fff;
+  color: #72807a;
+}
+
+.staffSearch span { font-size: 19px; }
+.staffSearch input { width: 100%; border: 0; outline: 0; background: transparent; color: #123f37; font: inherit; font-size: 13px; }
+
+.staffCategoryFilters { display: flex; flex-wrap: wrap; gap: 8px; }
+.staffCategoryFilters label { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border-radius: 999px; background: #e8eee7; color: #49635d; font-size: 11px; cursor: pointer; }
+.staffCategoryFilters input { accent-color: #123f37; }
+.staffEmpty { min-width: 100%; padding: 34px 14px; color: #74807b; font-size: 12px; text-align: center; }
+
 .requestedCard,
 .requestedCardSelected {
   display: grid;
@@ -150,6 +180,20 @@
   text-align: center;
 }
 
+.staffThumb {
+  display: grid;
+  place-items: center;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #e8eee7;
+}
+
+.staffThumb img { width: 100%; height: 100%; object-fit: cover; }
+.staffThumb i { font-style: normal; font-weight: 800; }
+
 .requestedCardSelected {
   border: 3px solid #123f37;
   box-shadow: 0 10px 24px rgb(18 63 55 / 16%);
@@ -170,4 +214,7 @@
     flex-basis: 154px;
     min-height: 286px;
   }
+
+  .staffCategoryFilters { gap: 6px; }
+  .staffCategoryFilters label { font-size: 10px; }
 }
