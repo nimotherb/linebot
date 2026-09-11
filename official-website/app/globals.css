@@ -1185,3 +1185,6 @@ button { font: inherit; }
   .portrait-rail { overflow-x: auto; }
   .portrait-set[aria-hidden="true"] { display: none; }
 }
+
+
+.hero-copy span, .service-journey h2, .offer-grid h2, .therapist-product-copy h3 { white-space: pre-line; }

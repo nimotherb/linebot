@@ -96,7 +96,7 @@ type RawShift = {
 
 export type PromotionView = {
   id: string;
-  apiId?: number;
+  apiId: number;
   name: string;
   kind: string;
   value: number;

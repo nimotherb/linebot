@@ -102,7 +102,7 @@ export default function Home() {
 
       <section className="kinetic-stage" aria-labelledby="hero-title">
         <p className="hero-eyebrow">TAIPEI · XIMEN · 10:00—24:00</p>
-        <h1 id="hero-title" className="kinetic-wordmark" aria-label="EQUAL">
+        <h1 id="hero-title" className="kinetic-wordmark" aria-label="EQUAL" style={{ fontSize: `clamp(8rem, 22vw, ${content?.home?.heroFontSize || 240}px)` }}>
           <span className="letter letter-e">E</span><span className="letter letter-q">Q</span>
           <span className="letter letter-u">U</span><span className="letter letter-a">A</span>
           <span className="letter letter-l">L</span>

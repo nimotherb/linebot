@@ -34,7 +34,7 @@ export type Appointment = {
   basePrice?: number;
   discountAmount?: number;
   extraAmount?: number;
-  promotionId?: string;
+  promotionId?: string | number;
   promotionIds?: number[];
   promotionName?: string;
   commissionAmount?: number;

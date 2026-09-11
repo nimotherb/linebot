@@ -7,7 +7,7 @@ const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3
 export type PublishedService = { id?: number; code: string; name: string; summary: string; duration: string; price: string; visible: boolean };
 export type PublishedOffer = { id?: number; name: string; summary: string; status: '顯示中' | '草稿' };
 export type PublishedSiteDraft = {
-  home?: { subtitle?: string; support?: string };
+  home?: { subtitle?: string; support?: string; heroFontSize?: number };
   booking?: { lineId?: string; url?: string };
   services?: PublishedService[];
   therapists?: {

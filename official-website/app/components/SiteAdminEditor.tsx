@@ -20,7 +20,7 @@ export type StaffProfile = {
   bio?: string | null;
 };
 export type SiteDraft = {
-  home: { subtitle: string; support: string };
+  home: { subtitle: string; support: string; heroFontSize: number };
   booking: { lineId: string; url: string };
   services: ServiceDraft[];
   therapists: {
@@ -102,6 +102,7 @@ const initialDraft: SiteDraft = {
   home: {
     subtitle: '回到平衡，也回到更自在的自己。',
     support: '精準理解每一種身體需求，讓舒適重新回到應有的位置。',
+    heroFontSize: 240,
   },
   booking: {
     lineId: '@017ktlhm',
@@ -504,7 +505,7 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
         <header><div><small>{activeMeta.index} / {activeMeta.english}</small><h2>{activeMeta.label}</h2></div><button type="button" onClick={exportDraft}>匯出設定 JSON</button></header>
 
         {active === 'home' && <div className="studio-form-grid">
-          <div className="studio-form-card"><small>HERO COPY</small><h3>首頁文字</h3><Field label="單行中文副標" value={draft.home.subtitle} onChange={(subtitle) => markChanged({ ...draft, home: { ...draft.home, subtitle } })} hint="建議 22 個中文字以內，只保留一行。" /><Field label="主視覺輔助說明" value={draft.home.support} onChange={(support) => markChanged({ ...draft, home: { ...draft.home, support } })} multiline /></div>
+          <div className="studio-form-card"><small>HERO COPY</small><h3>首頁文字</h3><Field label="主標題副標（可換行）" value={draft.home.subtitle} onChange={(subtitle) => markChanged({ ...draft, home: { ...draft.home, subtitle } })} multiline /><Field label="主視覺輔助說明（可換行）" value={draft.home.support} onChange={(support) => markChanged({ ...draft, home: { ...draft.home, support } })} multiline /><label className="studio-field"><span>主標題最大字級（px）</span><input type="number" min={96} max={480} value={draft.home.heroFontSize} onChange={(event) => markChanged({ ...draft, home: { ...draft.home, heroFontSize: Math.min(480, Math.max(96, Number(event.target.value) || 240)) } })} /><small>其他首頁文字會依主標題比例與響應式版面同步縮放。</small></label></div>
           <div className="studio-form-card"><small>BOOKING ENTRY</small><h3>預約入口</h3><Field label="LINE ID" value={draft.booking.lineId} onChange={(lineId) => markChanged({ ...draft, booking: { ...draft.booking, lineId } })} /><Field label="線上預約網址" value={draft.booking.url} onChange={(url) => markChanged({ ...draft, booking: { ...draft.booking, url } })} hint="點擊官網「立即線上預約」將會導向此網址。" /></div>
         </div>}
 
@@ -521,7 +522,7 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
           </form>}
           <div className="studio-service-editor">{draft.services.map((service, index) => <article key={service.id || service.code}>
             <header><i>{service.code}</i><div><small>SERVICE {String(index + 1).padStart(2, '0')}</small><h3>{service.name}</h3></div><div className="studio-catalog-actions"><label className="studio-switch"><input type="checkbox" checked={service.visible} onChange={(event) => updateService(index, { visible: event.target.checked })} /><span />{service.visible ? '顯示中' : '已隱藏'}</label><button className="danger" type="button" disabled={catalogBusy} onClick={() => deleteService(service)}>刪除方案</button></div></header>
-            <div><Field label="方案名稱" value={service.name} onChange={(name) => updateService(index, { name })} /><Field label="列表小字簡介" value={service.summary} onChange={(summary) => updateService(index, { summary })} /><Field label="分鐘數" value={service.duration} onChange={(duration) => updateService(index, { duration })} /><Field label="價格" value={service.price} onChange={(price) => updateService(index, { price })} /></div>
+            <div><Field label="方案名稱（可換行）" value={service.name} onChange={(name) => updateService(index, { name })} multiline /><Field label="列表小字簡介（可換行）" value={service.summary} onChange={(summary) => updateService(index, { summary })} multiline /><Field label="分鐘數" value={service.duration} onChange={(duration) => updateService(index, { duration })} /><Field label="價格" value={service.price} onChange={(price) => updateService(index, { price })} /></div>
           </article>)}</div>
         </div>}
 
@@ -550,7 +551,7 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
             <label className="wide"><span>簡短說明</span><textarea name="summary" maxLength={500} rows={4} /></label>
             <button type="submit" disabled={catalogBusy}>建立優惠</button>
           </form>}
-          <div className="studio-offer-editor">{draft.offers.map((offer, index) => <article key={offer.id || `${offer.name}-${index}`}><span>0{index + 1}</span><div><Field label="優惠名稱" value={offer.name} onChange={(name) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, name } : item) })} /><Field label="簡短說明" value={offer.summary} onChange={(summary) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, summary } : item) })} multiline /><label className="studio-catalog-field"><span>計算方式</span><select value={offer.calculationType || 'fixed_discount'} onChange={(event) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, calculationType: event.target.value as CalculationType } : item) })}><option value="fixed_discount">固定折扣</option><option value="percent_discount">百分比折扣</option><option value="fixed_fee">固定加價</option><option value="per_30_minutes">每 30 分鐘</option><option value="per_km">每公里</option></select></label><label className="studio-catalog-field"><span>金額／百分比</span><input type="number" min="0" value={offer.value || 0} onChange={(event) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, value: Number(event.target.value) } : item) })} /></label></div><div className="studio-catalog-actions"><button type="button" onClick={() => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, status: item.status === '顯示中' ? '草稿' : '顯示中' } : item) })}>{offer.status}</button><button className="danger" type="button" disabled={catalogBusy} onClick={() => deleteOffer(offer)}>刪除優惠</button></div></article>)}</div>
+          <div className="studio-offer-editor">{draft.offers.map((offer, index) => <article key={offer.id || `${offer.name}-${index}`}><span>0{index + 1}</span><div><Field label="優惠名稱（可換行）" value={offer.name} onChange={(name) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, name } : item) })} multiline /><Field label="簡短說明（可換行）" value={offer.summary} onChange={(summary) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, summary } : item) })} multiline /><label className="studio-catalog-field"><span>計算方式</span><select value={offer.calculationType || 'fixed_discount'} onChange={(event) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, calculationType: event.target.value as CalculationType } : item) })}><option value="fixed_discount">固定折扣</option><option value="percent_discount">百分比折扣</option><option value="fixed_fee">固定加價</option><option value="per_30_minutes">每 30 分鐘</option><option value="per_km">每公里</option></select></label><label className="studio-catalog-field"><span>金額／百分比</span><input type="number" min="0" value={offer.value || 0} onChange={(event) => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, value: Number(event.target.value) } : item) })} /></label></div><div className="studio-catalog-actions"><button type="button" onClick={() => markChanged({ ...draft, offers: draft.offers.map((item, itemIndex) => itemIndex === index ? { ...item, status: item.status === '顯示中' ? '草稿' : '顯示中' } : item) })}>{offer.status}</button><button className="danger" type="button" disabled={catalogBusy} onClick={() => deleteOffer(offer)}>刪除優惠</button></div></article>)}</div>
         </div>}
 
         {active === 'store' && <div className="studio-form-grid">

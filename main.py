@@ -439,6 +439,18 @@ def build_booking_web_message():
         },
     )
 
+
+def build_customer_appointments_message(user, db):
+    """Return the customer's latest live orders using the same order renderer as staff."""
+    appointments = db.query(Appointment).filter(
+        Appointment.user_id == user.id,
+        Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES),
+    ).order_by(Appointment.start_time.desc()).limit(10).all()
+    if not appointments:
+        return TextSendMessage(text="目前沒有可查詢的預約。需要預約時請點選下方功能或輸入「預約」。")
+    bubbles = [build_appointment_bubble(item, db=db, show_return=False) for item in appointments]
+    return FlexSendMessage(alt_text="我的預約", contents={"type": "carousel", "contents": bubbles[:10]})
+
 # 方案設定字典
 PLANS_INFO = {
     "A": {"name": "A-舒壓方案", "duration": 60, "price": 1500, "desc": "不指定優惠 / 指油壓"},
@@ -523,7 +535,7 @@ def build_booking_preview_flex(*, staff, plan_key: str, promotion, selected_dt: 
         elif promotion.calculation_type == "percent_discount":
             discount = min(base_price, round(base_price * promotion.value / 100))
     staff_name = staff.name if staff else "不指定（由店長安排）"
-    promotion_name = promotion.name if promotion else "不使用優惠"
+    promotion_name = "優惠" if promotion else "無"
     time_text = parse_local_datetime(selected_dt).strftime("%m月%d日 %H:%M")
     staff_value = staff.id if staff else "none"
     promotion_value = promotion.id if promotion else 0
@@ -571,7 +583,7 @@ def build_booking_request_preview_flex(*, staff, plan_key: str, promotion, selec
         ("時間", parse_local_datetime(selected_dt).strftime("%m月%d日 %H:%M")),
         ("方案", f"{plan['name']}・{plan['duration']} 分"),
         ("指定師傅", staff.name),
-        ("優惠", promotion.name if promotion else "不使用優惠"),
+        ("優惠", "優惠" if promotion else "無"),
         ("預估金額", f"NT$ {max(0, base_price - discount)}"),
     ]
     confirm_data = f"action=confirm_booking_request_customer&staff_id={staff.id}&plan={plan_key}&promotion_id={promotion_value}&datetime={selected_dt}"
@@ -725,10 +737,17 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
             customer_phone = getattr(contact, "contact_phone", None) or customer_phone
     
     start_time_str = appointment.start_time.strftime("%m月%d日 %H:%M") if appointment.start_time else "未定"
+    if appointment.end_time:
+        end_time_str = appointment.end_time.strftime("%m月%d日 %H:%M")
+        time_text = f"{start_time_str}–{end_time_str}"
+    else:
+        time_text = start_time_str
     plan_name = appointment.plan_name or "未知方案"
     
     price = 0
     discount = 0
+    extra_amount = 0
+    total_override = None
     promotion_name = "無"
     return_amount = 0
     return_status = "尚未建立"
@@ -743,6 +762,8 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
             service_plan = db.query(models["ServicePlan"]).filter(models["ServicePlan"].id == detail.service_plan_id).first() if detail.service_plan_id else None
             price = detail.base_price
             discount = detail.discount_amount
+            extra_amount = detail.extra_amount or 0
+            total_override = detail.total_amount
             if detail.promotion_id:
                 promotion = db.query(models["Promotion"]).filter(models["Promotion"].id == detail.promotion_id).first()
                 promotion_name = promotion.name if promotion else "優惠"
@@ -764,7 +785,7 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
                 rule = db.query(ReturnRule).filter(ReturnRule.rule_set_id == rule_set_id, ReturnRule.service_code == service_code, ReturnRule.active.is_(True)).first() if rule_set_id else None
                 return_amount = rule.amount if rule else 0
     
-    total = max(0, price - discount) if price > 0 else 0
+    total = max(0, int(total_override if total_override is not None else price + extra_amount - discount)) if price > 0 or total_override is not None else 0
     payment_id = f"#{appointment.created_at.strftime('%y%m%d')}{appointment.id:03d}"
     
     bubble = {
@@ -782,11 +803,12 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客人識別", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_vip_id, "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_name, "size": "sm", "color": "#111111", "align": "end"}]},
                         *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶手機", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": customer_phone, "size": "sm", "color": "#111111", "align": "end"}]}] if customer_phone and is_staff_notify else []),
-                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "時段", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": start_time_str, "size": "sm", "color": "#111111", "align": "end"}]},
+                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "時段", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": time_text, "size": "sm", "color": "#111111", "align": "end", "wrap": True}]},
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "方案", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": plan_name, "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "separator", "margin": "xxl"},
                         {"type": "box", "layout": "horizontal", "margin": "xxl", "contents": [{"type": "text", "text": "方案定價", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {price}", "size": "sm", "color": "#111111", "align": "end"}]},
-                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": f"優惠・{promotion_name}", "size": "sm", "color": "#555555", "flex": 2, "wrap": True}, {"type": "text", "text": f"-NT$ {discount}", "size": "sm", "color": "#111111", "align": "end"}]},
+                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "優惠", "size": "sm", "color": "#555555", "flex": 2, "wrap": True}, {"type": "text", "text": f"-NT$ {discount}", "size": "sm", "color": "#111111", "align": "end"}]},
+                        *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "附加費", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"+NT$ {extra_amount}", "size": "sm", "color": "#111111", "align": "end"}]}] if extra_amount else []),
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "總計", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {total}", "size": "sm", "color": "#111111", "align": "end"}]},
                         *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "師傅應回帳", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {return_amount}・{return_status}", "size": "sm", "color": "#B45309", "align": "end"}]}] if (show_return or is_staff_notify) else [])
                     ]
@@ -850,7 +872,7 @@ def build_booking_request_bubble(booking_request, db: Session, *, customer_copy:
         ("時間", booking_request.start_time.strftime("%m月%d日 %H:%M")),
         ("方案", plan.name if plan else "未知方案"),
         ("指定師傅", staff.name if staff else "未指定"),
-        ("優惠", promotion.name if promotion else "無"),
+        ("優惠", "優惠" if promotion else "無"),
     ]
     if not customer_copy:
         rows.extend([
@@ -1351,6 +1373,14 @@ if handler_customer:
                     )
                     return
 
+                if text in {"查詢預約", "我的預約", "預約查詢"}:
+                    reply_with_fallback(bot_customer_api, event.reply_token, build_customer_appointments_message(user, db), db=db, context="客戶查詢預約")
+                    return
+
+                if text in {"查詢UID", "查詢 UID", "UID", "我的UID", "我的 UID"}:
+                    reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text=f"您的 LINE UID：\n{user_id}"), db=db, context="客戶查詢 UID")
+                    return
+
                 if not user.phone and re.match(r"^09\d{8}$", text):
                     user.phone_temp = normalize_phone(text)
                     db.commit()
@@ -1365,13 +1395,16 @@ if handler_customer:
                             "type": "box", "layout": "vertical",
                             "contents": [
                                 {"type": "text", "text": "歡迎來到伊果 SPA", "weight": "bold", "size": "lg", "color": "#1DB446"},
-                                {"type": "text", "text": "很高興為您服務", "size": "sm", "color": "#555555", "margin": "md"}
+                                {"type": "text", "text": "很高興為您服務", "size": "sm", "color": "#555555", "margin": "md"},
+                                {"type": "text", "text": "可用功能：預約、查詢預約、查詢UID；也可直接輸入文字指令。", "size": "sm", "color": "#555555", "wrap": True, "margin": "md"}
                             ]
                         },
                         "footer": {
                             "type": "box", "layout": "vertical",
                             "contents": [
                                 {"type": "button", "style": "primary", "action": {"type": "uri", "label": "開啟網頁預約", "uri": BOOKING_WEB_URL}},
+                                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "message", "label": "查詢預約", "text": "查詢預約"}},
+                                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "message", "label": "查詢 UID", "text": "查詢UID"}},
                                 {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "uri", "label": "聯絡真人客服", "uri": SUPPORT_URL}},
                             ]
                         }
@@ -2102,6 +2135,26 @@ def notify_appointment_parties(
             logging.exception("派單推送失敗 recipient=師傅 %s appointment_id=%s", appointment.staff.name, appointment.id)
 
 
+def notify_appointment_update(appointment, db: Session, *, time_changed: bool, amount_changed: bool) -> None:
+    """Notify both parties only when a customer's time or amount changed."""
+    changed = "、".join(label for label, active in (("時間", time_changed), ("金額", amount_changed)) if active)
+    text = f"訂單 AP-{appointment.id} 的{changed}已更新，請重新查看預約。"
+    customer_line_id = appointment.user.line_user_id if appointment.user and appointment.user.line_user_id and not appointment.user.line_user_id.startswith(("manual:", "liff:")) else None
+    staff_line_id = appointment.staff.line_user_id if appointment.staff and appointment.staff.line_user_id and not appointment.staff.line_user_id.startswith(("pending:", "seeded:")) else None
+    message = TextSendMessage(text=text)
+    card = FlexSendMessage(alt_text="預約資料已更新", contents=build_appointment_bubble(appointment, db=db, show_return=False))
+    if bot_customer_api and customer_line_id:
+        try:
+            bot_customer_api.push_message(customer_line_id, [message, card])
+        except Exception:
+            logging.exception("預約更新推送失敗 recipient=客戶 appointment_id=%s", appointment.id)
+    if bot_staff_api and staff_line_id:
+        try:
+            bot_staff_api.push_message(staff_line_id, [message, card])
+        except Exception:
+            logging.exception("預約更新推送失敗 recipient=師傅 appointment_id=%s", appointment.id)
+
+
 def notify_booking_request_parties(booking_request, db: Session, *, origin: str = "booking_web") -> None:
     """Notify the customer that review is pending and alert management."""
     AdminUser = getattr(app.state, "admin_models", {}).get("AdminUser")
@@ -2326,6 +2379,7 @@ register_admin_api(
     Staff=Staff,
     Appointment=Appointment,
     appointment_notifier=notify_appointment_parties,
+    appointment_update_notifier=notify_appointment_update,
     booking_request_notifier=notify_booking_request_parties,
     staff_line_notifier=notify_staff_line_linked,
 )
