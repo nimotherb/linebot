@@ -7,7 +7,8 @@ const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3
 export type PublishedService = { id?: number; code: string; name: string; summary: string; duration: string; price: string; visible: boolean };
 export type PublishedOffer = { id?: number; name: string; summary: string; status: '顯示中' | '草稿' };
 export type PublishedNavigationItem = { id: string; slug: string; label: string; english: string; desktopVisible?: boolean; mobileVisible?: boolean };
-export type PublishedPage = { english?: string; title?: string; intro?: string; body?: string; desktopVisible?: boolean; mobileVisible?: boolean };
+export type PublishedPageCard = { number?: string; label?: string; title?: string; body?: string };
+export type PublishedPage = { english?: string; title?: string; intro?: string; body?: string; cards?: PublishedPageCard[]; cardGridEnabled?: boolean; desktopVisible?: boolean; mobileVisible?: boolean };
 export type PublishedSiteDraft = {
   navigation?: PublishedNavigationItem[];
   pages?: Record<string, PublishedPage>;
@@ -60,7 +61,34 @@ export function PublishedPageBody({ slug, children }: { slug: string; children: 
   const content = usePublishedSiteDraft();
   const body = content?.pages?.[slug]?.body?.trim();
   if (!body) return <>{children}</>;
-  return <div className="published-page-copy">{body.split(/\n\s*\n/).filter(Boolean).map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div>;
+  return <>{children}<div className="published-page-copy">{body.split(/\n\s*\n/).filter(Boolean).map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div></>;
+}
+
+export const fallbackAboutCards: PublishedPageCard[] = [
+  { number: '01', label: 'VALUE', title: 'EQUALITY', body: '不預設、不評價，讓每位來訪者都能被好好接住。' },
+  { number: '02', label: 'VALUE', title: 'PRECISION', body: '清楚說明方案與時間，讓需求被準確理解。' },
+  { number: '03', label: 'VALUE', title: 'EASE', body: '像回到熟悉的地方，安靜放下今天累積的重量。' },
+];
+
+export const fallbackRecruitCards: PublishedPageCard[] = [
+  { number: '01', label: 'CURRENT STATUS', title: '內容更新中', body: '之後會在這裡放置職缺內容、合作方式、基本條件與聯絡管道。' },
+];
+
+export const fallbackOfferCards: PublishedPageCard[] = [
+  { number: '01', label: 'CURRENT OFFER', title: '夜間服務費', body: '服務時間落在 00:00—06:00 時，會依當期公告收取夜間服務費。' },
+  { number: '02', label: 'CURRENT OFFER', title: '預先加時', body: '預約時可先提出延長需求，客服會依師傅班表確認可安排的時間。' },
+  { number: '03', label: 'CURRENT OFFER', title: '現場加時', body: '服務進行中若仍有需要，可先與師傅確認，再由客服協助安排。' },
+];
+
+export function PublishedCardGrid({ slug, fallbackCards, onlyWhenEnabled = false }: { slug: string; fallbackCards: readonly PublishedPageCard[]; onlyWhenEnabled?: boolean }) {
+  const content = usePublishedSiteDraft();
+  const page = content?.pages?.[slug];
+  if (onlyWhenEnabled && page?.cardGridEnabled !== true) return null;
+  if (page && page.cardGridEnabled === false) return null;
+  const cards = Array.isArray(page?.cards) && page.cards.length > 0 ? page.cards : fallbackCards;
+  if (!cards.length) return null;
+  const count = cards.length === 1 ? 'single' : cards.length === 3 ? 'triple' : 'multiple';
+  return <div className={`value-grid value-grid--${count}`} data-card-count={cards.length}>{cards.map((card, index) => <article key={`${card.number || index}-${card.title || index}`}><span>{card.number || String(index + 1).padStart(2, '0')}</span><small>{card.label || 'CARD'}</small><h2>{card.title || 'Untitled card'}</h2><p>{card.body || ''}</p></article>)}</div>;
 }
 
 type ServicePlanView = {
@@ -116,9 +144,11 @@ const fallbackOffers: PublishedOffer[] = [
 export function PublishedOffers({ fallbackBookingUrl }: { fallbackBookingUrl: string }) {
   const content = usePublishedSiteDraft();
   const bookingUrl = content?.booking?.url || fallbackBookingUrl;
+  if (content?.pages?.offers?.cardGridEnabled === true) return <PublishedCardGrid slug="offers" fallbackCards={fallbackOfferCards} onlyWhenEnabled />;
   const offers = content && Array.isArray(content.offers) ? content.offers.filter((item) => item.status === '顯示中') : fallbackOffers;
 
   if (offers.length === 0) return <div className="updating-card"><span>OFFERS</span><h2>內容更新中</h2><p>目前優惠正在整理，最新內容可向 LINE 客服確認。</p><a href={bookingUrl} target="_blank" rel="noreferrer">前往線上預約 ↗</a></div>;
 
   return <div className="offer-grid">{offers.map((offer, index) => <article key={offer.id || `${offer.name}-${index}`}><span>{String(index + 1).padStart(2, '0')}</span><small>CURRENT OFFER</small><h2>{offer.name}</h2><p>{offer.summary}</p><em>顯示中</em><a href={bookingUrl} target="_blank" rel="noreferrer">查看可預約時段 ↗</a></article>)}</div>;
 }
+
