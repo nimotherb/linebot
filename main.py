@@ -12,7 +12,7 @@ from datetime import datetime, date, timedelta
 import re
 from urllib.parse import parse_qs, urlencode
 
-from scheduling import appointment_end, now_taipei_naive, parse_local_datetime, validate_booking_start
+from scheduling import CANCELLED_APPOINTMENT_STATUSES, appointment_end, now_taipei_naive, parse_local_datetime, validate_booking_start
 from identifiers import customer_serial
 from therapist_catalog import THERAPIST_PROFILES, therapist_photo_url
 
@@ -496,7 +496,7 @@ def build_customer_appointments_message(user, db):
         Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES),
     ).order_by(Appointment.start_time.desc()).limit(10).all()
     if not appointments:
-        return TextSendMessage(text="目前沒有可查詢的預約。需要預約時請點選下方功能或輸入「預約」。")
+        return TextSendMessage(text="目前沒有可查詢的預約。需要預約時請點選下方功能或輸入「網頁預約」。")
     bubbles = [build_appointment_bubble(item, db=db, show_return=False) for item in appointments]
     return FlexSendMessage(alt_text="我的預約", contents={"type": "carousel", "contents": bubbles[:10]})
 
