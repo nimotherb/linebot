@@ -240,6 +240,8 @@ button { font: inherit; }
 .value-grid--single article h2 { grid-column: 2; margin: 16px 0 14px; font-size: clamp(34px, 4vw, 62px); }
 .value-grid--single article p { grid-column: 2; }
 .value-grid--multiple { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.value-grid--triple { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.recruit-layout > .value-grid { max-width: none; margin-top: 0; }
 .plan-list { border-top: 1px solid rgba(7,50,43,.22); }
 .plan-list article { display: grid; grid-template-columns: 70px minmax(180px, 1fr) 1fr 1fr auto; align-items: center; gap: 30px; min-height: 114px; border-bottom: 1px solid rgba(7,50,43,.22); transition: background .25s, padding .25s; }
 .plan-list article:hover { padding: 0 22px; background: rgba(255,255,255,.38); }
