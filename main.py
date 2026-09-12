@@ -497,7 +497,7 @@ def build_customer_appointments_message(user, db):
     ).order_by(Appointment.start_time.desc()).limit(10).all()
     if not appointments:
         return TextSendMessage(text="目前沒有可查詢的預約。需要預約時請點選下方功能或輸入「預約」。")
-    bubbles = [build_order_flex(item, alt_text="預約資料", db=db, show_return=False).contents for item in appointments]
+    bubbles = [build_appointment_bubble(item, db=db, show_return=False) for item in appointments]
     return FlexSendMessage(alt_text="我的預約", contents={"type": "carousel", "contents": bubbles[:10]})
 
 # 方案設定字典
@@ -1339,7 +1339,7 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         if not appointments:
             return TextSendMessage(text="今日目前無預約")
         
-        bubbles = [build_order_flex(appt, alt_text="本日預約", db=db, show_return=not (identity and identity.get("role") == "clerk")).contents for appt in appointments[:10]]
+        bubbles = [build_appointment_bubble(appt, db=db, show_return=not (identity and identity.get("role") == "clerk")) for appt in appointments[:10]]
         return FlexSendMessage(alt_text="本日預約", contents={"type": "carousel", "contents": bubbles})
     
     elif action_name == "admin_staff":
