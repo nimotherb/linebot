@@ -128,6 +128,7 @@ export type AuditLogView = {
 
 export type BootstrapData = {
   mode?: 'staff';
+  settings?: { customer_service_url?: string };
   user: AdminIdentity | null;
   staff_user?: StaffIdentity;
   appointments: RawAppointment[];
@@ -409,6 +410,12 @@ export class SpaApi {
   }
 
   bootstrap() { return this.request<BootstrapData>('/api/admin/bootstrap'); }
+
+  updateCustomerServiceUrl(url: string) {
+    return this.request<{ customer_service_url: string }>('/api/admin/settings/customer-service', {
+      method: 'PATCH', body: JSON.stringify({ url }),
+    });
+  }
 
   publicBookingOptions() {
     return this.request<PublicBookingOptions>('/api/public/booking/options');
@@ -717,3 +724,4 @@ export class SpaApi {
     }
   }
 }
+

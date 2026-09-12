@@ -59,6 +59,7 @@ PUBLIC_BOOKING_MAX_ATTEMPTS = 8
 _PUBLIC_BOOKING_ATTEMPTS: dict[str, list[datetime]] = {}
 _PUBLIC_BOOKING_LOCK = threading.Lock()
 LINE_USER_ID_PATTERN = re.compile(r"^U[0-9a-fA-F]{32}$")
+DEFAULT_CUSTOMER_SERVICE_URL = "https://line.me/R/ti/p/@684wdola"
 
 STATUS_TO_ZH = {
     "pending": "待確認",
@@ -263,6 +264,8 @@ class PublicBookingCreateIn(BaseModel):
     promotion_id: int | None = None
     notes: str | None = Field(default=None, max_length=1000)
     id_token: str | None = Field(default=None, max_length=4096)
+    line_user_id: str | None = Field(default=None, max_length=255)
+    line_display_name: str | None = Field(default=None, max_length=120)
     idempotency_key: str = Field(min_length=16, max_length=80)
     source: Literal["booking_web", "official_website", "line_all_staff"] = "booking_web"
     website: str = Field(default="", max_length=0)
@@ -270,6 +273,10 @@ class PublicBookingCreateIn(BaseModel):
 
 class PublicBookingIdentityIn(BaseModel):
     id_token: str = Field(min_length=1, max_length=4096)
+
+
+class CustomerServiceSettingIn(BaseModel):
+    url: str = Field(min_length=3, max_length=500)
 
 
 class BookingRequestPatchIn(BaseModel):
@@ -717,6 +724,14 @@ def register_admin_api(
         updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
         published_at = Column(DateTime, nullable=True)
 
+    class SystemSetting(Base):
+        __tablename__ = "system_settings"
+        id = Column(Integer, primary_key=True)
+        setting_key = Column(String(120), unique=True, nullable=False, index=True)
+        setting_value = Column(Text, nullable=False)
+        updated_by_user_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
+        updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
+
     app.state.admin_models = {
         "AdminUser": AdminUser,
         "AdminSession": AdminSession,
@@ -741,7 +756,41 @@ def register_admin_api(
         "PublicBookingRequest": PublicBookingRequest,
         "BookingRequest": BookingRequest,
         "SiteContent": SiteContent,
+        "SystemSetting": SystemSetting,
     }
+
+    def normalize_customer_service_url(value: str) -> str:
+        candidate = (value or "").strip()
+        if re.fullmatch(r"@[A-Za-z0-9._-]{3,80}", candidate):
+            return f"https://line.me/R/ti/p/{candidate}"
+        if not re.fullmatch(r"https://[^\s]+", candidate):
+            raise HTTPException(status_code=422, detail="客服連結請填 @帳號或 https:// 網址")
+        return candidate
+
+    def get_system_setting(key: str, db: Session, default: str | None = None) -> str | None:
+        item = db.query(SystemSetting).filter(SystemSetting.setting_key == key).first()
+        return item.setting_value if item else default
+
+    def update_customer_service_url(actor_id: int, value: str, db: Session) -> str:
+        actor = db.query(AdminUser).filter(AdminUser.id == actor_id, AdminUser.is_active.is_(True), AdminUser.role.in_(["admin", "manager"])).first()
+        if not actor:
+            raise HTTPException(status_code=403, detail="只有 Admin 或店長可更新客服連結")
+        normalized = normalize_customer_service_url(value)
+        item = db.query(SystemSetting).filter(SystemSetting.setting_key == "customer_service_url").first()
+        before = {"url": item.setting_value} if item else None
+        if not item:
+            item = SystemSetting(setting_key="customer_service_url", setting_value=normalized)
+            db.add(item)
+        else:
+            item.setting_value = normalized
+        item.updated_by_user_id = actor.id
+        db.flush()
+        audit(db, actor, "update", "system_setting", "customer_service_url", before=before, after={"url": normalized})
+        db.commit()
+        return normalized
+
+    app.state.get_system_setting = get_system_setting
+    app.state.update_customer_service_url = update_customer_service_url
 
     def normalize_phone(value: str | None) -> str:
         cleaned = re.sub(r"[\s()\-]", "", (value or "").strip())
@@ -823,6 +872,9 @@ def register_admin_api(
     def resolve_public_customer(db: Session, payload: PublicBookingCreateIn):
         phone_customer, contact_phone = customer_for_phone(db, payload.phone)
         line_identity = _verify_line_id_token(payload.id_token) if payload.id_token else None
+        supplied_line_user_id = (payload.line_user_id or "").strip()
+        if supplied_line_user_id and not LINE_USER_ID_PATTERN.fullmatch(supplied_line_user_id):
+            raise HTTPException(status_code=422, detail="LINE UID 格式不正確")
         customer = None
         if line_identity:
             customer = db.query(User).filter(User.line_user_id == line_identity["sub"]).first()
@@ -848,6 +900,31 @@ def register_admin_api(
             if getattr(customer, "customer_grade", "N") not in {"SSR", "SR"}:
                 customer.customer_grade = "R"
             return customer, contact_phone, "liff"
+
+        if supplied_line_user_id:
+            customer = db.query(User).filter(User.line_user_id == supplied_line_user_id).first()
+            if customer and phone_customer and customer.id != phone_customer.id:
+                raise HTTPException(status_code=409, detail="LINE UID 與手機屬於不同客戶，請聯絡真人客服協助合併")
+            if not customer and phone_customer:
+                if not str(phone_customer.line_user_id).startswith("manual:"):
+                    raise HTTPException(status_code=409, detail="此手機已綁定其他 LINE，請聯絡真人客服")
+                phone_customer.line_user_id = supplied_line_user_id
+                customer = phone_customer
+            if not customer:
+                customer = User(
+                    line_user_id=supplied_line_user_id,
+                    phone=contact_phone,
+                    display_name=(payload.line_display_name or payload.customer_name).strip(),
+                    customer_grade="R",
+                )
+                db.add(customer)
+                db.flush()
+            attach_customer_phone(db, customer, contact_phone)
+            if not getattr(customer, "display_name", None):
+                customer.display_name = (payload.line_display_name or payload.customer_name).strip()
+            if getattr(customer, "customer_grade", "N") not in {"SSR", "SR"}:
+                customer.customer_grade = "R"
+            return customer, contact_phone, "line"
 
         customer = phone_customer
         if not customer:
@@ -1277,11 +1354,11 @@ def register_admin_api(
         return bool(account and (account.role in {"admin", "manager"} or account.can_override_time_rules))
 
     def line_admin_identity(line_user_id: str, db: Session):
-        user = db.query(AdminUser).filter(AdminUser.line_user_id == line_user_id, AdminUser.is_active.is_(True), AdminUser.role.in_(["admin", "manager"])).first()
+        user = db.query(AdminUser).filter(AdminUser.line_user_id == line_user_id, AdminUser.is_active.is_(True), AdminUser.role.in_(["admin", "manager", "clerk"])).first()
         return serialize_admin(user) if user else None
 
     def bind_line_admin(line_user_id: str, pin: str, db: Session):
-        candidates = db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.role.in_(["admin", "manager"])).all()
+        candidates = db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.role.in_(["admin", "manager", "clerk"])).all()
         matched = None
         for candidate in candidates:
             if password_hash.verify(pin, candidate.pin_hash):
@@ -1312,7 +1389,7 @@ def register_admin_api(
         user = db.query(AdminUser).filter(
             AdminUser.id == admin_id,
             AdminUser.is_active.is_(True),
-            AdminUser.role.in_(["admin", "manager"]),
+            AdminUser.role.in_(["admin", "manager", "clerk"]),
         ).first()
         if not user:
             return None
@@ -2094,7 +2171,7 @@ def register_admin_api(
                 "bio": getattr(item, "bio", None),
             } for item in db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.name).all()],
             "minimum_lead_minutes": 90,
-            "support_url": os.getenv("CUSTOMER_SERVICE_URL", "https://lin.ee/vOq3Xvt"),
+            "support_url": get_system_setting("customer_service_url", db, os.getenv("CUSTOMER_SERVICE_URL", DEFAULT_CUSTOMER_SERVICE_URL)),
             "liff_id": liff_id or None,
             "line_login_enabled": bool(liff_id and os.getenv("LINE_LOGIN_CHANNEL_ID", "").strip()),
         }
@@ -2350,6 +2427,21 @@ def register_admin_api(
         db.commit()
         return {"ok": True, "user": serialize_admin(user), "login_required": True}
 
+    @app.get("/api/admin/settings")
+    def admin_settings(db: Session = Depends(get_db), user=Depends(require_roles("admin", "manager"))):
+        return {
+            "customer_service_url": get_system_setting(
+                "customer_service_url",
+                db,
+                os.getenv("CUSTOMER_SERVICE_URL", DEFAULT_CUSTOMER_SERVICE_URL),
+            ),
+            "updated_by": user.display_name,
+        }
+
+    @app.patch("/api/admin/settings/customer-service")
+    def update_customer_service_setting(payload: CustomerServiceSettingIn, db: Session = Depends(get_db), user=Depends(require_roles("admin", "manager"))):
+        return {"customer_service_url": update_customer_service_url(user.id, payload.url, db)}
+
     @app.get("/api/admin/bootstrap")
     def bootstrap(db: Session = Depends(get_db), user=Depends(current_admin)):
         appointments = db.query(Appointment).filter(Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES)).order_by(Appointment.start_time.desc()).limit(300).all()
@@ -2372,6 +2464,13 @@ def register_admin_api(
             "customers": customer_dicts(db, customers),
             "admin_users": [serialize_admin(item) for item in db.query(AdminUser).order_by(AdminUser.id).all()] if user.role in {"admin", "manager"} else [],
             "return_rule_sets": return_rule_sets_dict(db),
+            "settings": {
+                "customer_service_url": get_system_setting(
+                    "customer_service_url",
+                    db,
+                    os.getenv("CUSTOMER_SERVICE_URL", DEFAULT_CUSTOMER_SERVICE_URL),
+                ),
+            },
             "audit_logs": [{
                 "id": item.id,
                 "actor_name": audit_actors[item.actor_user_id].display_name if item.actor_user_id in audit_actors else "系統／員工",
@@ -2728,7 +2827,7 @@ def register_admin_api(
         db.add(appointment)
         db.flush()
         discount = 0 if plan.duration_minutes < 90 else promotion_discount(promotion, plan.price)
-        source_label = "LINE LIFF 網頁預約" if source == "liff" else "網頁預約"
+        source_label = "LINE 連結網頁預約" if source in {"liff", "line"} else "網頁預約"
         notes = f"來源：{source_label}"
         if payload.notes and payload.notes.strip():
             notes += f"\n客戶備註：{payload.notes.strip()}"
@@ -3722,3 +3821,4 @@ def register_admin_api(
         audit(db, None, "cancel", "shift", item.id, reason=f"staff session {staff_obj.id}")
         db.commit()
         return {"ok": True}
+

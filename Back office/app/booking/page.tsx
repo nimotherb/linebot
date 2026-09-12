@@ -8,7 +8,6 @@ import flowStyles from './booking-flow.module.css';
 type Stage = 'details' | 'review' | 'success';
 type IdentityMode = 'loading' | 'line' | 'web';
 type BookingMode = 'scheduled' | 'requested';
-type StaffCategory = 'straight' | 'gay' | 'bisexual';
 
 type LiffClient = {
   init: (config: { liffId: string }) => Promise<void>;
@@ -44,14 +43,8 @@ const taipeiInputValue = (leadMinutes = 90) => {
 
 const money = (value: number) => `NT$ ${value.toLocaleString('zh-TW')}`;
 const categoryLabel = (value?: string) => value === 'straight' ? '直男師傅' : value === 'bisexual' ? '雙性師傅' : '圈內師傅';
-const staffCategories: Array<{ key: StaffCategory; label: string }> = [
-  { key: 'straight', label: '直男師傅' },
-  { key: 'gay', label: '圈內師傅' },
-  { key: 'bisexual', label: '雙性師傅' },
-];
 
 const normalizeStaffName = (value: string) => value.normalize('NFKC').replace(/\s+/g, '').toLocaleLowerCase('zh-TW');
-const staffSearchText = (item: { name: string; category?: string; role?: string; bio?: string }) => normalizeStaffName([item.name, item.category, categoryLabel(item.category), item.role, item.bio].filter(Boolean).join(' '));
 
 const readBookingIntent = () => {
   const params = new URLSearchParams(window.location.search);
@@ -61,10 +54,14 @@ const readBookingIntent = () => {
   const value = (key: string) => params.get(key) || hashParams.get(key) || '';
   const requestedId = value('staff_id') || value('requested_staff_id');
   const requestedName = value('staff_name') || value('therapist') || value('therapist_name');
+  const lineUid = value('uid') || value('line_user_id') || value('line_uid');
+  const lineName = value('name') || value('line_name');
   const source = value('source').toLocaleLowerCase();
   return {
     requestedId,
     requestedName,
+    lineUid,
+    lineName,
     requested: Boolean(requestedId || requestedName || source === 'official' || source === 'official_website'),
   };
 };
@@ -79,6 +76,7 @@ export default function BookingPage() {
   const [staffId, setStaffId] = useState('');
   const [startTime, setStartTime] = useState(taipeiInputValue());
   const [name, setName] = useState('');
+  const [lineUserId, setLineUserId] = useState('');
   const [phone, setPhone] = useState('');
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(true);
@@ -93,8 +91,6 @@ export default function BookingPage() {
   const [identityMessage, setIdentityMessage] = useState('正在確認開啟方式');
   const [insideLine, setInsideLine] = useState(false);
   const [bookingMode, setBookingMode] = useState<BookingMode>('scheduled');
-  const [staffSearch, setStaffSearch] = useState('');
-  const [staffCategoryFilter, setStaffCategoryFilter] = useState<StaffCategory[]>(staffCategories.map((item) => item.key));
 
   useEffect(() => {
     api.publicBookingOptions()
@@ -102,6 +98,8 @@ export default function BookingPage() {
         setOptions(data);
         setServiceId(String(data.services[0]?.id || ''));
         const intent = readBookingIntent();
+        if (intent.lineUid) setLineUserId(intent.lineUid);
+        if (intent.lineName) setName((current) => current || intent.lineName);
         if (intent.requested) {
           const requested = data.staff.find((item) => String(item.id) === intent.requestedId)
             || data.staff.find((item) => normalizeStaffName(item.name) === normalizeStaffName(intent.requestedName));
@@ -183,13 +181,6 @@ export default function BookingPage() {
   const service = options?.services.find((item) => String(item.id) === serviceId);
   const promotion = options?.promotions.find((item) => String(item.id) === promotionId);
   const staff = (requestOnly ? options?.staff : availability?.staff)?.find((item) => String(item.id) === staffId);
-  const filteredRequestedStaff = useMemo(() => {
-    const query = normalizeStaffName(staffSearch);
-    return (options?.staff || []).filter((item) => {
-      const categoryMatch = item.category ? staffCategoryFilter.includes(item.category as StaffCategory) : staffCategoryFilter.length === staffCategories.length;
-      return categoryMatch && (!query || staffSearchText(item).includes(query));
-    });
-  }, [options?.staff, staffCategoryFilter, staffSearch]);
   const discount = !promotion || !service || service.duration_minutes < 90 ? 0 : promotion.calculation_type === 'fixed_discount'
     ? Math.min(service.price, promotion.value)
     : promotion.calculation_type === 'percent_discount'
@@ -218,7 +209,8 @@ export default function BookingPage() {
         customer_name: name.trim(), phone, service_plan_id: service.id, start_time: startTime,
         staff_id: staff ? staff.id : null, promotion_id: promotion ? promotion.id : null,
         notes: notes.trim() || null, idempotency_key: idempotencyKey, website: '',
-        id_token: idToken || null, source: requestOnly ? 'official_website' : 'booking_web',
+        id_token: idToken || null, line_user_id: lineUserId || null, line_display_name: name.trim() || null,
+        source: requestOnly ? 'official_website' : 'booking_web',
       };
       if (requestOnly) {
         const result = await api.createPublicBookingRequest(payload);
@@ -285,15 +277,8 @@ export default function BookingPage() {
           </div>
           <label className={styles.field}>預約開始時間<input type="datetime-local" value={startTime} min={taipeiInputValue(options?.minimum_lead_minutes || 90)} step="1800" onChange={(event) => setStartTime(event.target.value)} required /></label>
           <div className={styles.availabilityLine}>{checking ? '正在確認時間…' : availability ? (requestOnly ? `已選擇 ${staff?.name}・預計結束 ${availability.end_time.slice(11, 16)}・等待客服人工確認` : `${availability.staff.length} 位師傅目前可預約・結束時間 ${availability.end_time.slice(11, 16)}`) : requestOnly ? '請從下方卡片選擇希望指定的師傅' : '這個時段暫無可直接預訂的師傅，可切換為「所有師傅預約」送出通知'}</div>
-          {requestOnly && <>
-            <div className={flowStyles.staffFilter}>
-              <label className={flowStyles.staffSearch}><span>⌕</span><input value={staffSearch} onChange={(event) => setStaffSearch(event.target.value)} placeholder="搜尋員工姓名、角色或簡介" aria-label="搜尋員工" /></label>
-              <div className={flowStyles.staffCategoryFilters} role="group" aria-label="員工分類篩選">
-                {staffCategories.map((category) => <label key={category.key}><input type="checkbox" checked={staffCategoryFilter.includes(category.key)} onChange={() => setStaffCategoryFilter((current) => current.includes(category.key) ? current.filter((item) => item !== category.key) : [...current, category.key])} /><span>{category.label}</span></label>)}
-              </div>
-            </div>
-            <div className={flowStyles.requestedRail} role="listbox" aria-label="全部在職員工">
-            {filteredRequestedStaff.map((item) => {
+          {requestOnly && <div className={flowStyles.requestedRail} role="listbox" aria-label="全部在職師傅">
+            {options?.staff.map((item) => {
               const photo = resolveStaffPhotoUrl(item.photo_url);
               const selected = staffId === String(item.id);
               return <button type="button" role="option" aria-selected={selected} key={item.id} onClick={() => setStaffId(String(item.id))} className={selected ? flowStyles.requestedCardSelected : flowStyles.requestedCard}>
@@ -302,12 +287,11 @@ export default function BookingPage() {
                 <b>{selected ? '已選擇' : '選擇這位'}</b>
               </button>;
             })}
-            {!filteredRequestedStaff.length && <div className={flowStyles.staffEmpty}>沒有符合搜尋或分類的員工。</div>}
-          </div></>}
+          </div>}
           {requestOnly && staff && <div className={styles.assignment}>已指定 {staff.name}。不論目前是否排班，都只會先送出通知並保留這位師傅，等待客服確認。</div>}
           {!requestOnly && availability?.can_choose_staff && <div className={styles.staffGrid}>
             <button type="button" onClick={() => setStaffId('')} className={!staffId ? styles.staffSelected : styles.staff}><i>?</i><span><strong>不指定</strong><small>由店長安排</small></span></button>
-            {availability.staff.map((item) => { const profile = options?.staff.find((candidate) => candidate.id === item.id); const photo = resolveStaffPhotoUrl(profile?.photo_url); return <button type="button" key={item.id} onClick={() => setStaffId(String(item.id))} className={staffId === String(item.id) ? styles.staffSelected : styles.staff}><span className={flowStyles.staffThumb}>{photo ? <img src={photo} alt="" loading="lazy" /> : <i>{item.name.slice(0, 1)}</i>}</span><span><strong>{item.name}</strong><small>{categoryLabel(item.category)}</small></span></button>; })}
+            {availability.staff.map((item) => <button type="button" key={item.id} onClick={() => setStaffId(String(item.id))} className={staffId === String(item.id) ? styles.staffSelected : styles.staff}><i>{item.name.slice(0, 1)}</i><span><strong>{item.name}</strong><small>{categoryLabel(item.category)}</small></span></button>)}
           </div>}
           {!requestOnly && availability && !availability.can_choose_staff && <div className={styles.assignment}>此方案不指定師傅，將由店長依班表安排。</div>}
         </section>
@@ -351,3 +335,4 @@ export default function BookingPage() {
     </main>
   );
 }
+

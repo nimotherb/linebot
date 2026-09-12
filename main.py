@@ -10,7 +10,7 @@ import hashlib
 import time
 from datetime import datetime, date, timedelta
 import re
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 
 from scheduling import appointment_end, now_taipei_naive, parse_local_datetime, validate_booking_start
 from identifiers import customer_serial
@@ -76,7 +76,8 @@ Base = declarative_base()
 
 LINE_ADMIN_PENDING: dict[str, datetime] = {}
 VALID_STAFF_ROLES = {"攻擊手", "守備方", "無特定", "攻守兼備"}
-SUPPORT_URL = os.getenv("CUSTOMER_SERVICE_URL", "https://lin.ee/vOq3Xvt")
+DEFAULT_CUSTOMER_SERVICE_URL = "https://line.me/R/ti/p/@684wdola"
+SUPPORT_URL = os.getenv("CUSTOMER_SERVICE_URL", DEFAULT_CUSTOMER_SERVICE_URL)
 BOOKING_WEB_URL = os.getenv("BOOKING_WEB_URL", "https://equalspa-admin.pages.dev/booking")
 ADMIN_DASHBOARD_URL = os.getenv("ADMIN_DASHBOARD_URL", "https://equalspa-admin.pages.dev/")
 PUBLIC_API_BASE_URL = (
@@ -186,6 +187,7 @@ def is_line_manager(user_id: str | None, db: Session) -> bool:
 
 def handle_line_admin_message(text_value: str, user_id: str, db: Session):
     identity = line_admin_identity(user_id, db)
+    can_manage_accounts = bool(identity and identity.get("role") in {"admin", "manager"})
     if text_value in {"管理員登出", "登出管理員"}:
         unbind = getattr(getattr(app, "state", None), "unbind_line_admin", None)
         if identity and unbind:
@@ -193,7 +195,7 @@ def handle_line_admin_message(text_value: str, user_id: str, db: Session):
             LINE_ADMIN_PENDING.pop(user_id, None)
             return TextSendMessage(text="管理員帳戶已從這個 LINE 登出。")
         return TextSendMessage(text="這個 LINE 目前沒有綁定管理員帳戶。")
-    if identity and text_value == "新增客服":
+    if can_manage_accounts and text_value == "新增客服":
         return TextSendMessage(
             text=(
                 "請一次輸入：\n新增客服 顯示名稱 登入帳號 4位PIN\n\n"
@@ -201,7 +203,19 @@ def handle_line_admin_message(text_value: str, user_id: str, db: Session):
                 "只會建立客服帳號，不會新增第二個 Admin 或店長。"
             )
         )
-    if identity and text_value.startswith("新增客服"):
+    if can_manage_accounts and text_value in {"管理客服帳號", "客服帳號設定", "設定客服帳號"}:
+        return build_customer_service_setting_menu(db)
+    if can_manage_accounts and text_value.startswith("設定客服帳號"):
+        matched = re.fullmatch(r"設定客服帳號\s*(?:[:：=]\s*)?(\S+)", text_value)
+        updater = getattr(getattr(app, "state", None), "update_customer_service_url", None)
+        if not matched or not updater:
+            return TextSendMessage(text="格式不正確。請輸入：設定客服帳號 @684wdola\n或貼上完整 https:// 網址。")
+        try:
+            updated = updater(identity["id"], matched.group(1), db)
+            return TextSendMessage(text=f"客服連結已更新：\n{updated}\n主選單與預約頁將立即使用新連結。")
+        except Exception as exc:
+            return TextSendMessage(text=getattr(exc, "detail", "客服連結更新失敗。"))
+    if can_manage_accounts and text_value.startswith("新增客服"):
         matched = re.fullmatch(r"新增客服\s+(.+?)\s+([a-zA-Z0-9._-]{3,80})\s+(\d{4})", text_value)
         if not matched:
             return TextSendMessage(text="格式不正確。請輸入：新增客服 顯示名稱 登入帳號 4位PIN")
@@ -216,7 +230,7 @@ def handle_line_admin_message(text_value: str, user_id: str, db: Session):
         return TextSendMessage(text=f"客服帳號已建立：\n名稱：{account['display_name']}\n帳號：{account['username']}\nPIN 已依輸入內容設定。")
     if text_value in {"root", "管理員", "管理選單"}:
         if identity:
-            return build_root_admin_menu(identity, db)
+            return build_line_management_menu(identity, db)
         LINE_ADMIN_PENDING[user_id] = datetime.utcnow() + timedelta(minutes=5)
         return TextSendMessage(text="請在 5 分鐘內輸入您的管理 PIN，以綁定這個 LINE。")
     pending_until = LINE_ADMIN_PENDING.get(user_id)
@@ -229,7 +243,7 @@ def handle_line_admin_message(text_value: str, user_id: str, db: Session):
         LINE_ADMIN_PENDING.pop(user_id, None)
         if not identity:
             return TextSendMessage(text="PIN 不正確，未綁定管理員帳戶。請重新啟動管理員登入後再試一次。")
-        return build_root_admin_menu(identity, db)
+        return build_line_management_menu(identity, db)
     return None
 
 bot_customer_api = LineBotApi(LINE_TOKEN_CUSTOMER) if LINE_TOKEN_CUSTOMER else None
@@ -274,6 +288,34 @@ def public_https_url(value: str | None) -> str | None:
     if candidate.startswith("/"):
         return f"{PUBLIC_API_BASE_URL}{candidate}"
     return None
+
+
+def get_support_url(db: Session | None = None) -> str:
+    """Read the editable customer-service URL, falling back safely to env/default."""
+    fallback = os.getenv("CUSTOMER_SERVICE_URL", SUPPORT_URL or DEFAULT_CUSTOMER_SERVICE_URL)
+    if db is None:
+        return fallback
+    getter = getattr(getattr(app, "state", None), "get_system_setting", None)
+    if not getter:
+        return fallback
+    try:
+        return getter("customer_service_url", db, fallback) or fallback
+    except Exception:
+        logging.exception("讀取客服連結設定失敗")
+        return fallback
+
+
+def booking_url_for_line(user_id: str | None = None, display_name: str | None = None) -> str:
+    """Attach LINE identity hints to the booking URL without breaking existing query params."""
+    params: dict[str, str] = {}
+    if user_id and re.fullmatch(r"U[0-9a-fA-F]{32}", user_id):
+        params["uid"] = user_id
+    if display_name:
+        params["name"] = display_name.strip()[:120]
+    if not params:
+        return BOOKING_WEB_URL
+    separator = "&" if "?" in BOOKING_WEB_URL else "?"
+    return f"{BOOKING_WEB_URL}{separator}{urlencode(params)}"
 
 
 def parse_staff_profile_text(value: str) -> dict[str, str]:
@@ -391,7 +433,7 @@ def reply_with_fallback(bot_api, reply_token: str, message, *, db: Session | Non
         fallback = (
             f"系統暫時無法顯示管理選單。請改從營運後台操作：{ADMIN_DASHBOARD_URL}\n追蹤碼：{trace_id}"
             if admin else
-            f"系統暫時無法顯示選單。請改用網頁預約：{BOOKING_WEB_URL}\n真人客服：{SUPPORT_URL}\n追蹤碼：{trace_id}"
+            f"系統暫時無法顯示選單。請改用網頁預約：{BOOKING_WEB_URL}\n真人客服：{get_support_url(db)}\n追蹤碼：{trace_id}"
         )
         try:
             bot_api.reply_message(reply_token, TextSendMessage(text=fallback))
@@ -402,10 +444,15 @@ def reply_with_fallback(bot_api, reply_token: str, message, *, db: Session | Non
         return False
 
 
-def build_booking_web_message():
-    """Small, image-free Flex message used as the only customer booking entry."""
+def build_booking_web_message(db: Session | None = None, user=None, *, welcome: bool = False):
+    """Official dark-green/cream customer menu with an optional LINE identity hint."""
+    booking_url = booking_url_for_line(
+        getattr(user, "line_user_id", None) if user else None,
+        getattr(user, "display_name", None) if user else None,
+    )
+    support_url = get_support_url(db)
     return FlexSendMessage(
-        alt_text="開啟伊果 SPA 網頁預約",
+        alt_text="伊果 SPA 主選單" if welcome else "開啟伊果 SPA 網頁預約",
         contents={
             "type": "bubble",
             "styles": {
@@ -416,7 +463,7 @@ def build_booking_web_message():
                 "type": "box",
                 "layout": "vertical",
                 "contents": [
-                    {"type": "text", "text": "伊果 SPA 網頁預約", "weight": "bold", "size": "xl", "color": "#F7D7A3"},
+                    {"type": "text", "text": "伊果 SPA 網頁預約", "weight": "bold", "size": "xl", "color": "#F7D7A3", "wrap": True},
                     {"type": "text", "text": "排班師傅可直接預訂；指定其他師傅則送出預約通知。", "size": "sm", "color": "#D1FAE5", "wrap": True, "margin": "sm"},
                 ],
             },
@@ -424,7 +471,7 @@ def build_booking_web_message():
                 "type": "box",
                 "layout": "vertical",
                 "contents": [
-                    {"type": "text", "text": "請在網頁選擇時間、方案與師傅。送出前會再次顯示明細供您確認。", "size": "sm", "color": "#5B6C66", "wrap": True},
+                    {"type": "text", "text": "可用功能：開啟網頁預約、查詢預約、查詢 UID；也可以直接輸入文字指令。" if welcome else "請在網頁選擇時間、方案與師傅。送出前會再次顯示明細供您確認。", "size": "sm", "color": "#5B6C66", "wrap": True},
                 ],
             },
             "footer": {
@@ -432,8 +479,10 @@ def build_booking_web_message():
                 "layout": "vertical",
                 "spacing": "sm",
                 "contents": [
-                    {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "uri", "label": "開啟預約網頁", "uri": BOOKING_WEB_URL}},
-                    {"type": "button", "style": "secondary", "action": {"type": "uri", "label": "聯絡真人客服", "uri": SUPPORT_URL}},
+                    {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "uri", "label": "開啟預約網頁", "uri": booking_url}},
+                    {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "message", "label": "查詢預約", "text": "查詢預約"}},
+                    {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "message", "label": "查詢 UID", "text": "查詢UID"}},
+                    {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "uri", "label": "聯絡真人客服", "uri": support_url}},
                 ],
             },
         },
@@ -448,7 +497,7 @@ def build_customer_appointments_message(user, db):
     ).order_by(Appointment.start_time.desc()).limit(10).all()
     if not appointments:
         return TextSendMessage(text="目前沒有可查詢的預約。需要預約時請點選下方功能或輸入「預約」。")
-    bubbles = [build_appointment_bubble(item, db=db, show_return=False) for item in appointments]
+    bubbles = [build_order_flex(item, alt_text="預約資料", db=db, show_return=False).contents for item in appointments]
     return FlexSendMessage(alt_text="我的預約", contents={"type": "carousel", "contents": bubbles[:10]})
 
 # 方案設定字典
@@ -608,7 +657,7 @@ def build_booking_request_preview_flex(*, staff, plan_key: str, promotion, selec
     )
 
 
-def build_no_scheduled_staff_flex(*, plan: str, promotion_id: str, selected_dt: str):
+def build_no_scheduled_staff_flex(*, plan: str, promotion_id: str, selected_dt: str, db: Session | None = None):
     return FlexSendMessage(
         alt_text="此時段沒有已排班師傅",
         contents={
@@ -619,7 +668,7 @@ def build_no_scheduled_staff_flex(*, plan: str, promotion_id: str, selected_dt: 
             ]},
             "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
                 {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "datetimepicker", "label": "改時間", "data": "action=select_date", "mode": "datetime"}},
-                {"type": "button", "style": "secondary", "action": {"type": "uri", "label": "真人客服", "uri": SUPPORT_URL}},
+                {"type": "button", "style": "secondary", "action": {"type": "uri", "label": "真人客服", "uri": get_support_url(db)}},
                 {"type": "button", "style": "primary", "color": "#D97706", "action": {"type": "postback", "label": "查看全部師傅", "data": f"action=select_all_staff&plan={plan}&promotion_id={promotion_id}&datetime={selected_dt}&offset=0"}},
             ]},
         },
@@ -655,6 +704,31 @@ def build_phone_confirm_flex(phone_num, action_prefix):
         }
     )
 
+# --- 共用：LINE 管理選單 Flex ---
+def build_clerk_admin_menu(identity=None, db=None):
+    display_name = identity.get("display_name", "客服") if isinstance(identity, dict) else "客服"
+    return FlexSendMessage(
+        alt_text="客服管理選單",
+        contents={
+            "type": "bubble",
+            "styles": {"body": {"backgroundColor": "#4C1D95"}},
+            "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                {"type": "text", "text": "客服管理選單", "weight": "bold", "color": "#FCD34D", "size": "xl"},
+                {"type": "text", "text": f"{display_name}・客服", "color": "#E9D5FF", "size": "sm", "margin": "sm"},
+                {"type": "text", "text": "客服可查看預約與訂單資訊；帳號、刪除及系統設定請由店長或 Admin 操作。", "color": "#E9D5FF", "size": "xs", "wrap": True, "margin": "sm"},
+                {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "查看本日預約", "data": "action=admin_view"}},
+                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "登出管理員", "data": "action=admin_logout"}},
+            ]},
+        },
+    )
+
+
+def build_line_management_menu(identity=None, db=None):
+    if isinstance(identity, dict) and identity.get("role") == "clerk":
+        return build_clerk_admin_menu(identity, db)
+    return build_root_admin_menu(identity, db)
+
+
 # --- 共用：Root Admin 管理員選單 Flex ---
 def build_root_admin_menu(identity=None, db=None):
     display_name = identity.get("display_name", "管理員") if isinstance(identity, dict) else "管理員"
@@ -682,7 +756,7 @@ def build_root_admin_menu(identity=None, db=None):
                     {"type": "text", "text": "員工照片請用後台上傳：JPG／PNG／WebP，最大 3 MB；也可填公開 http(s) 網址。", "color": "#E9D5FF", "size": "xs", "wrap": True, "margin": "sm"},
                     {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "查看本日預約", "data": "action=admin_view"}},
                     {"type": "button", "style": "primary", "color": "#312E81", "margin": "sm", "action": {"type": "postback", "label": "串接／解除師傅 LINE", "data": "action=admin_staff&offset=0"}},
-                    {"type": "button", "style": "primary", "color": "#1E3A8A", "margin": "sm", "action": {"type": "postback", "label": "管理客服帳號", "data": "action=admin_users"}},
+                    {"type": "button", "style": "primary", "color": "#1E3A8A", "margin": "sm", "action": {"type": "message", "label": "管理客服帳號", "text": "管理客服帳號"}},
                     *admin_links,
                     {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "登出管理員", "data": "action=admin_logout"}}
                 ]
@@ -817,9 +891,25 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
                 {"type": "box", "layout": "horizontal", "margin": "md", "contents": [{"type": "text", "text": "PAYMENT ID", "size": "xs", "color": "#aaaaaa", "flex": 0}, {"type": "text", "text": payment_id, "color": "#aaaaaa", "size": "xs", "align": "end"}]}
             ]
         },
-        "styles": {"footer": {"separator": True}}
+        "styles": {
+            "body": {"backgroundColor": "#F7F3EA"},
+            "footer": {"backgroundColor": "#F7F3EA", "separator": True},
+        }
     }
     return bubble
+
+
+def build_order_flex(appointment, *, alt_text="預約資料", is_staff_notify=False, db=None, show_return=False):
+    """Single order-card entry point shared by query, create and update pushes."""
+    return FlexSendMessage(
+        alt_text=alt_text,
+        contents=build_appointment_bubble(
+            appointment,
+            is_staff_notify=is_staff_notify,
+            db=db,
+            show_return=show_return,
+        ),
+    )
 
 
 LINE_ONLINE_SHIFT_SOURCE = "line_online"
@@ -896,7 +986,7 @@ def build_booking_request_bubble(booking_request, db: Session, *, customer_copy:
     }
     if customer_copy:
         bubble["footer"] = {"type": "box", "layout": "vertical", "contents": [
-            {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "uri", "label": "聯絡真人客服", "uri": SUPPORT_URL}},
+            {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "uri", "label": "聯絡真人客服", "uri": get_support_url(db)}},
         ]}
     else:
         dashboard_url = ADMIN_DASHBOARD_URL.rstrip("/")
@@ -1091,6 +1181,27 @@ def build_line_admin_user_menu(db: Session, *, offset: int = 0, page_size: int =
     return FlexSendMessage(alt_text="後台帳號管理", contents={"type": "carousel", "contents": bubbles})
 
 
+def build_customer_service_setting_menu(db: Session):
+    """Purple admin card for viewing and changing the live support destination."""
+    support_url = get_support_url(db)
+    return FlexSendMessage(
+        alt_text="管理客服帳號",
+        contents={
+            "type": "bubble",
+            "styles": {"body": {"backgroundColor": "#4C1D95"}, "footer": {"backgroundColor": "#F3F4F6"}},
+            "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
+                {"type": "text", "text": "管理客服帳號", "weight": "bold", "size": "xl", "color": "#FCD34D"},
+                {"type": "text", "text": f"目前連結：{support_url}", "size": "sm", "color": "#E9D5FF", "wrap": True},
+                {"type": "text", "text": "可直接輸入：設定客服帳號 @684wdola\n或貼上完整 https:// 網址。更新後主選單與預約頁會立即套用。", "size": "sm", "color": "#E9D5FF", "wrap": True},
+            ]},
+            "footer": {"type": "box", "layout": "vertical", "contents": [
+                {"type": "button", "style": "primary", "color": "#7C3AED", "action": {"type": "message", "label": "輸入新客服帳號", "text": "設定客服帳號 @684wdola"}},
+                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "查看後台帳號", "data": "action=admin_users"}},
+            ]},
+        },
+    )
+
+
 def build_staff_accept_online_prompt(appointment_id: int, staff_name: str):
     return FlexSendMessage(
         alt_text="接單完成，請選擇是否下線",
@@ -1176,6 +1287,10 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         return None
     if not is_line_manager(user_id, db):
         return TextSendMessage(text="此功能只開放管理帳號使用。")
+    identity_getter = getattr(getattr(app, "state", None), "line_admin_identity", None)
+    identity = identity_getter(user_id, db) if identity_getter else None
+    if identity and identity.get("role") == "clerk" and action_name not in {"admin_view", "admin_logout"}:
+        return TextSendMessage(text="客服帳號僅可查看本日預約；管理、刪除與設定功能請由店長或 Admin 操作。")
 
     if action_name == "admin_logout":
         unbind = getattr(getattr(app, "state", None), "unbind_line_admin", None)
@@ -1224,7 +1339,7 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         if not appointments:
             return TextSendMessage(text="今日目前無預約")
         
-        bubbles = [build_appointment_bubble(appt, db=db, show_return=True) for appt in appointments[:10]]
+        bubbles = [build_order_flex(appt, alt_text="本日預約", db=db, show_return=not (identity and identity.get("role") == "clerk")).contents for appt in appointments[:10]]
         return FlexSendMessage(alt_text="本日預約", contents={"type": "carousel", "contents": bubbles})
     
     elif action_name == "admin_staff":
@@ -1363,11 +1478,12 @@ if handler_customer:
                     user.customer_grade = "SR"
                     db.commit()
 
-                if text in {"預約", "網頁預約", "備用預約", "預約網頁"}:
+                # 「預約」不再直接啟動舊版 LINE 流程；未精準符合指令時統一回主選單。
+                if text in {"網頁預約", "備用預約", "預約網頁"}:
                     reply_with_fallback(
                         bot_customer_api,
                         event.reply_token,
-                        build_booking_web_message(),
+                        build_booking_web_message(db=db, user=user),
                         db=db,
                         context="網頁預約入口",
                     )
@@ -1387,30 +1503,7 @@ if handler_customer:
                     bot_customer_api.reply_message(event.reply_token, build_phone_confirm_flex(text, "confirm_customer_phone"))
                     return
 
-                flex_message = FlexSendMessage(
-                    alt_text="歡迎預約",
-                    contents={
-                        "type": "bubble",
-                        "body": {
-                            "type": "box", "layout": "vertical",
-                            "contents": [
-                                {"type": "text", "text": "歡迎來到伊果 SPA", "weight": "bold", "size": "lg", "color": "#1DB446"},
-                                {"type": "text", "text": "很高興為您服務", "size": "sm", "color": "#555555", "margin": "md"},
-                                {"type": "text", "text": "可用功能：預約、查詢預約、查詢UID；也可直接輸入文字指令。", "size": "sm", "color": "#555555", "wrap": True, "margin": "md"}
-                            ]
-                        },
-                        "footer": {
-                            "type": "box", "layout": "vertical",
-                            "contents": [
-                                {"type": "button", "style": "primary", "action": {"type": "uri", "label": "開啟網頁預約", "uri": BOOKING_WEB_URL}},
-                                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "message", "label": "查詢預約", "text": "查詢預約"}},
-                                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "message", "label": "查詢 UID", "text": "查詢UID"}},
-                                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "uri", "label": "聯絡真人客服", "uri": SUPPORT_URL}},
-                            ]
-                        }
-                    }
-                )
-                reply_with_fallback(bot_customer_api, event.reply_token, flex_message, db=db, context="客戶歡迎選單")
+                reply_with_fallback(bot_customer_api, event.reply_token, build_booking_web_message(db=db, user=user, welcome=True), db=db, context="客戶歡迎選單")
             except Exception:
                 logging.exception("處理客戶文字訊息失敗 user_id=%s", user_id)
                 reply_with_fallback(bot_customer_api, event.reply_token, TextSendMessage(text=f"系統暫時忙碌，請改用網頁預約：{BOOKING_WEB_URL}"), db=db, context="客戶文字訊息")
@@ -1433,10 +1526,11 @@ if handler_customer:
 
             if action_name in DISABLED_LINE_BOOKING_ACTIONS:
                 # 舊 Flex 卡片仍會留在既有聊天紀錄中；所有舊預約動作統一安全轉往網頁。
+                current_user = db.query(User).filter(User.line_user_id == user_id).first()
                 reply_with_fallback(
                     bot_customer_api,
                     event.reply_token,
-                    build_booking_web_message(),
+                    build_booking_web_message(db=db, user=current_user),
                     db=db,
                     context=f"停用的 LINE 預約動作 {action_name}",
                 )
@@ -1464,7 +1558,7 @@ if handler_customer:
                                 reply_with_fallback(
                                     bot_customer_api,
                                     event.reply_token,
-                                    TextSendMessage(text=f"此手機號碼已綁定其他客戶資料，請聯絡真人客服協助：{SUPPORT_URL}"),
+                                    TextSendMessage(text=f"此手機號碼已綁定其他客戶資料，請聯絡真人客服協助：{get_support_url(db)}"),
                                     db=db,
                                     context="客戶手機綁定衝突",
                                 )
@@ -1472,7 +1566,7 @@ if handler_customer:
                         add_customer_phone(db, user, confirmed_phone, primary=True)
                         user.phone_temp = None
                         db.commit()
-                        reply_with_fallback(bot_customer_api, event.reply_token, build_booking_web_message(), db=db, context="客戶手機綁定完成")
+                        reply_with_fallback(bot_customer_api, event.reply_token, build_booking_web_message(db=db, user=user), db=db, context="客戶手機綁定完成")
                     else:
                         user.phone_temp = None
                         db.commit()
@@ -1545,7 +1639,7 @@ if handler_customer:
                 active_staff = eligible_staff[offset:offset + 10]
 
                 if not active_staff:
-                    message = build_no_scheduled_staff_flex(plan=plan, promotion_id=promotion_id, selected_dt=selected_dt) if offset == 0 else TextSendMessage(text="沒有更多師傅囉！")
+                    message = build_no_scheduled_staff_flex(plan=plan, promotion_id=promotion_id, selected_dt=selected_dt, db=db) if offset == 0 else TextSendMessage(text="沒有更多師傅囉！")
                     reply_with_fallback(bot_customer_api, event.reply_token, message, db=db, context="選擇師傅無可用班表")
                     return
 
@@ -2102,17 +2196,14 @@ def notify_appointment_parties(
         try:
             bot_customer_api.push_message(
                 customer_line_id,
-                FlexSendMessage(alt_text="伊果 SPA 預約已成立", contents=build_appointment_bubble(appointment, db=db)),
+                build_order_flex(appointment, alt_text="伊果 SPA 預約已成立", db=db),
             )
         except Exception:
             logging.exception("預約確認推送失敗 recipient=客戶 appointment_id=%s", appointment.id)
     if not bot_staff_api:
         logging.warning("略過派單通知：LINE_TOKEN_STAFF 未設定 appointment_id=%s", appointment.id)
         return
-    management_message = FlexSendMessage(
-        alt_text=f"{origin}・新訂單",
-        contents=build_appointment_bubble(appointment, is_staff_notify=True, db=db, show_return=False),
-    )
+    management_message = build_order_flex(appointment, alt_text=f"{origin}・新訂單", is_staff_notify=True, db=db, show_return=False)
     if notify_management and AdminUser:
         for account in db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.line_user_id.isnot(None)).all():
             if account.line_user_id == assigned_staff_line_id:
@@ -2142,15 +2233,17 @@ def notify_appointment_update(appointment, db: Session, *, time_changed: bool, a
     customer_line_id = appointment.user.line_user_id if appointment.user and appointment.user.line_user_id and not appointment.user.line_user_id.startswith(("manual:", "liff:")) else None
     staff_line_id = appointment.staff.line_user_id if appointment.staff and appointment.staff.line_user_id and not appointment.staff.line_user_id.startswith(("pending:", "seeded:")) else None
     message = TextSendMessage(text=text)
-    card = FlexSendMessage(alt_text="預約資料已更新", contents=build_appointment_bubble(appointment, db=db, show_return=False))
+    card = build_order_flex(appointment, alt_text="預約資料已更新", db=db, show_return=False)
     if bot_customer_api and customer_line_id:
         try:
-            bot_customer_api.push_message(customer_line_id, [message, card])
+            bot_customer_api.push_message(customer_line_id, message)
+            bot_customer_api.push_message(customer_line_id, card)
         except Exception:
             logging.exception("預約更新推送失敗 recipient=客戶 appointment_id=%s", appointment.id)
     if bot_staff_api and staff_line_id:
         try:
-            bot_staff_api.push_message(staff_line_id, [message, card])
+            bot_staff_api.push_message(staff_line_id, message)
+            bot_staff_api.push_message(staff_line_id, card)
         except Exception:
             logging.exception("預約更新推送失敗 recipient=師傅 appointment_id=%s", appointment.id)
 
@@ -2265,6 +2358,9 @@ def on_startup():
     db = SessionLocal()
     try:
         admin_models = getattr(app.state, "admin_models", {})
+        SystemSetting = admin_models.get("SystemSetting")
+        if SystemSetting and not db.query(SystemSetting).filter(SystemSetting.setting_key == "customer_service_url").first():
+            db.add(SystemSetting(setting_key="customer_service_url", setting_value=DEFAULT_CUSTOMER_SERVICE_URL))
         DeletedStaffIdentity = admin_models.get("DeletedStaffIdentity")
         deleted_staff_names = {
             item.normalized_name for item in db.query(DeletedStaffIdentity).all()
@@ -2383,3 +2479,4 @@ register_admin_api(
     booking_request_notifier=notify_booking_request_parties,
     staff_line_notifier=notify_staff_line_linked,
 )
+

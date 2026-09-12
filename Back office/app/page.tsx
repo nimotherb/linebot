@@ -214,6 +214,7 @@ export default function Home() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [promotions, setPromotions] = useState<PromotionView[]>([]);
   const [adminUsers, setAdminUsers] = useState<ReturnType<typeof mapAdminUser>[]>([]);
+  const [supportUrl, setSupportUrl] = useState('https://line.me/R/ti/p/@684wdola');
   const [auditLogs, setAuditLogs] = useState<AuditLogView[]>([]);
   const [rooms, setRooms] = useState<{ id: number; name: string }[]>([]);
   const [venues, setVenues] = useState<NonNullable<BootstrapData['venues']>>([]);
@@ -269,6 +270,7 @@ export default function Home() {
     setVenues(data.venues || []);
     setCustomers((data.customers || []).map(mapCustomer));
     setAdminUsers((data.admin_users || []).map(mapAdminUser));
+    setSupportUrl(data.settings?.customer_service_url || 'https://line.me/R/ti/p/@684wdola');
     setReturnRuleSets(data.return_rule_sets || []);
     setAuditLogs((data.audit_logs || []).map(mapAuditLog));
     setConnectionError('');
@@ -1168,6 +1170,19 @@ export default function Home() {
     }
   };
 
+  const saveSupportUrl = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canManageAll) return;
+    const value = String(new FormData(event.currentTarget).get('supportUrl') || '').trim();
+    try {
+      const result = await api.updateCustomerServiceUrl(value);
+      setSupportUrl(result.customer_service_url);
+      notify('客服連結已更新。');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '客服連結更新失敗');
+    }
+  };
+
   const saveOwnAccount = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!identity) return;
@@ -1470,6 +1485,7 @@ export default function Home() {
           })}
         </div>
       </section>
+      {canManageAll && <section className="panel settings-panel"><div className="panel-heading"><div><p className="eyebrow">CUSTOMER SERVICE</p><h2>客服連結</h2><p className="panel-hint">LINE 主選單與預約卡片會即時使用此連結。</p></div></div><form className="modal-form" onSubmit={saveSupportUrl}><label>客服 LINE 連結<input name="supportUrl" value={supportUrl} onChange={(event) => setSupportUrl(event.target.value)} placeholder="@684wdola 或 https://..." required /></label><div className="form-note">可填 LINE 官方帳號 @ID（例如 @684wdola）或完整 https:// 網址。</div><button className="primary-button" type="submit">儲存客服連結</button></form></section>}
       <aside className="panel security-card"><p className="eyebrow">LOGIN SECURITY</p><h2>數字 PIN 安全設定</h2><ul><li>PIN 只保存 Argon2 雜湊</li><li>連續錯誤 5 次鎖定 15 分鐘</li><li>Bearer 工作階段 8 小時到期</li><li>永久刪除後立即撤銷既有登入</li></ul><div className="security-footnote">你可從左下角「登入資訊」自行修改帳號、名稱與 PIN。</div></aside>
       <section className="panel permission-panel"><div className="panel-heading"><div><p className="eyebrow">ROLE MATRIX</p><h2>權限對照</h2></div></div><div className="permission-grid"><strong>功能</strong><strong>Admin</strong><strong>店長</strong><strong>客服</strong>{['預約與結帳', '新增／撤銷排班', '略過時間與撞期限制', '新增／退役／永久刪除員工', '修改價格優惠', '新增帳號', '停用客服帳號', '系統與稽核'].flatMap((label, index) => [<span key={`${label}-label`}>{label}</span>, <b key={`${label}-admin`}>✓</b>, <b key={`${label}-manager`}>{index === 7 ? '查看' : index === 5 ? '限客服' : '✓'}</b>, <b className="limited" key={`${label}-clerk`}>{index === 2 ? '可個別開啟' : index < 2 ? '部分' : '—'}</b>])}</div></section>
     </div>
@@ -1570,3 +1586,4 @@ export default function Home() {
     </main>
   );
 }
+
