@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import TherapistCatalog from '../components/TherapistCatalog';
-import { PublishedOffers, PublishedPageBody, PublishedPageHeader, PublishedPageTitle, PublishedServices } from '../components/PublishedSiteContent';
+import { fallbackAboutCards, fallbackRecruitCards, PublishedCardGrid, PublishedOffers, PublishedPageBody, PublishedPageHeader, PublishedPageTitle, PublishedServices } from '../components/PublishedSiteContent';
 import { PointerLight, SiteHeader, WingMenu } from '../components/WingMenu';
 
 const pageMeta = {
@@ -59,7 +59,7 @@ const plans = [
 function AboutContent() {
   return <PublishedPageBody slug="about"><>
     <div className="manifesto"><p>EQUAL 是我們安排每一次服務的起點。</p><p>每個人都能自在選擇適合自己的服務，也在被理解與尊重的空間裡，重新找回身體的節奏。清楚的方案、公開的價格與可被確認的界線，讓舒服不必建立在猜測上。</p></div>
-    <div className="value-grid"><article><span>01</span><h2>EQUALITY</h2><p>不預設、不評價，讓每位來訪者都能被好好接住。</p></article><article><span>02</span><h2>PRECISION</h2><p>清楚說明方案與時間，讓需求被準確理解。</p></article><article><span>03</span><h2>EASE</h2><p>像回到熟悉的地方，安靜放下今天累積的重量。</p></article></div>
+    <PublishedCardGrid slug="about" fallbackCards={fallbackAboutCards} />
   </></PublishedPageBody>;
 }
 
@@ -78,7 +78,7 @@ function LocationContent() {
 }
 
 function RecruitContent() {
-  return <PublishedPageBody slug="recruit"><div className="recruit-layout"><div className="manifesto"><p>WORK WITH EQUAL.</p><p>我們重視專業、誠實溝通與彼此尊重。招募資訊與聯絡信箱目前整理中；正式公開前不會顯示個人聯絡方式。</p></div><div className="recruit-card"><small>CURRENT STATUS</small><h2>內容更新中</h2><p>之後會在這裡放置職缺內容、合作方式、基本條件與聯絡管道。</p><dl><div><dt>職缺</dt><dd>—</dd></div><div><dt>聯絡信箱</dt><dd>—</dd></div></dl></div></div></PublishedPageBody>;
+  return <PublishedPageBody slug="recruit"><><div className="recruit-layout"><div className="manifesto"><p>WORK WITH EQUAL.</p><p>我們重視專業、誠實溝通與彼此尊重。招募資訊與聯絡信箱目前整理中；正式公開前不會顯示個人聯絡方式。</p></div><PublishedCardGrid slug="recruit" fallbackCards={fallbackRecruitCards} /></div></></PublishedPageBody>;
 }
 
 function UpdatingContent({ type }: { type: 'groups' | 'loyalty' }) {
@@ -123,3 +123,4 @@ export default async function ContentPage({ params }: { params: Promise<{ slug: 
   const [english, title, intro] = pageMeta[typedSlug];
   return <main className={`interior-shell page-${typedSlug}`}><PointerLight /><SiteHeader /><article className="interior-page"><header className="page-title"><p>EQUAL SPA / {String(Object.keys(pageMeta).indexOf(typedSlug) + 1).padStart(2, '0')}</p><PublishedPageTitle slug={typedSlug} fallback={english} /><PublishedPageHeader slug={typedSlug} fallbackTitle={title} fallbackIntro={intro} /></header><section className="page-content"><PageContent slug={typedSlug} /></section><footer className="site-footer"><div><b>伊果 SPA</b><span>EQUAL SPA · TAIPEI XIMEN</span></div><a href={bookingUrl} target="_blank" rel="noreferrer">ONLINE BOOKING</a><small>© {new Date().getFullYear()} EQUAL SPA</small></footer></article><WingMenu /></main>;
 }
+
