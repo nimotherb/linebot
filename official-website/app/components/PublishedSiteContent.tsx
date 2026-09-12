@@ -85,7 +85,7 @@ export function PublishedCardGrid({ slug, fallbackCards, onlyWhenEnabled = false
   const page = content?.pages?.[slug];
   if (onlyWhenEnabled && page?.cardGridEnabled !== true) return null;
   if (page && page.cardGridEnabled === false) return null;
-  const cards = Array.isArray(page?.cards) && page.cards.length > 0 ? page.cards : fallbackCards;
+  const cards = Array.isArray(page?.cards) ? page.cards : fallbackCards;
   if (!cards.length) return null;
   const count = cards.length === 1 ? 'single' : cards.length === 3 ? 'triple' : 'multiple';
   return <div className={`value-grid value-grid--${count}`} data-card-count={cards.length}>{cards.map((card, index) => <article key={`${card.number || index}-${card.title || index}`}><span>{card.number || String(index + 1).padStart(2, '0')}</span><small>{card.label || 'CARD'}</small><h2>{card.title || 'Untitled card'}</h2><p>{card.body || ''}</p></article>)}</div>;
