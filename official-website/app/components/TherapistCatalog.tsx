@@ -11,56 +11,6 @@ const fallbackBookingUrl = 'https://equalspa-admin.pages.dev/booking';
 const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com').replace(/\/$/, '');
 const therapistOrderStorageKey = 'equalspa:therapist-order:v1';
 
-const therapists: Therapist[] = [
-  { name: 'Eason', slug: 'eason', category: 'straight', height: 180, weight: 72 },
-  { name: 'Show', slug: 'show', category: 'straight', height: 187, weight: 82 },
-  { name: '霍爾', slug: 'hol', category: 'straight', height: 174, weight: 63 },
-  { name: '小六', slug: 'xiaoliu', category: 'straight', height: 170, weight: 60 },
-  { name: '吳樂', slug: 'wule', category: 'straight', height: 173, weight: 75 },
-  { name: '小馬', slug: 'xiaoma', category: 'straight', height: 180, weight: 75 },
-  { name: 'Frank', slug: 'frank', category: 'straight', height: 178, weight: 70 },
-  { name: '捷程', slug: 'jiecheng', category: 'straight', height: 175, weight: 82 },
-  { name: 'Jun', slug: 'jun', category: 'straight', height: 176, weight: 76 },
-  { name: '小猴', slug: 'xiaohou', category: 'straight', height: 175, weight: 69 },
-  { name: '小虎', slug: 'xiaohu', category: 'straight', height: 182, weight: 79 },
-  { name: '白羊', slug: 'baiyang', category: 'straight', height: 170, weight: 52 },
-  { name: '佐恩', slug: 'zuoen', category: 'straight', height: 178, weight: 60 },
-  { name: '宇森', slug: 'yusen', category: 'straight', height: 180, weight: 84 },
-  { name: 'Harry', slug: 'harry', category: 'community', height: 170, weight: 56 },
-  { name: '士羽', slug: 'shiyu', category: 'community', height: 172, weight: 73 },
-  { name: '瑞奇', slug: 'ricky', category: 'community', height: 172, weight: 56 },
-  { name: '朗', slug: 'lang', category: 'community', height: 185, weight: 81 },
-  { name: 'Jack', slug: 'jack', category: 'community', height: 167, weight: 58 },
-  { name: 'Max', slug: 'max', category: 'community', height: 176, weight: 70 },
-  { name: '泠', slug: 'ling', category: 'community', height: 173, weight: 65 },
-  { name: '阿焰', slug: 'ayan', category: 'community', height: 177, weight: 65 },
-  { name: 'Jacob', slug: 'jacob', category: 'community', height: 185, weight: 80 },
-  { name: '華', slug: 'hua', category: 'community', height: 177, weight: 68 },
-  { name: '武', slug: 'wu', category: 'community', height: 174, weight: 72 },
-  { name: 'Seven', slug: 'seven', category: 'community', height: 177, weight: 67 },
-  { name: '小柏', slug: 'xiaobai', category: 'community', height: 175, weight: 78 },
-  { name: 'Wilson', slug: 'wilson', category: 'community', height: 177, weight: 77 },
-  { name: 'Wayne', slug: 'wayne', category: 'community', height: 178, weight: 70 },
-  { name: '路卡', slug: 'luka', category: 'community', height: 157, weight: 56 },
-  { name: 'Erik', slug: 'erik', category: 'community', height: 163, weight: 53 },
-  { name: 'Mars', slug: 'mars', category: 'community', height: 175, weight: 80 },
-  { name: 'ED', slug: 'ed', category: 'community', height: 178, weight: 71 },
-  { name: '萊伊', slug: 'lai', category: 'community', height: 185, weight: 75 },
-  { name: 'Alex', slug: 'alex', category: 'community', height: 180, weight: 74 },
-  { name: 'Fali', slug: 'fali', category: 'community', height: 180, weight: 64 },
-  { name: '伊恩', slug: 'ian', category: 'community', height: 169, weight: 58 },
-  { name: 'Zane', slug: 'zane', category: 'community', height: 174, weight: 70 },
-  { name: 'Eden', slug: 'eden', category: 'community', height: 173, weight: 70 },
-  { name: '沐恩', slug: 'muen', category: 'bisexual', height: 172, weight: 66 },
-  { name: '阿玄', slug: 'axuan', category: 'bisexual', height: 175, weight: 59 },
-  { name: '尼爾', slug: 'neil', category: 'bisexual', height: 178, weight: 75 },
-  { name: '彥', slug: 'yan', category: 'bisexual', height: 175, weight: 79 },
-  { name: '承承', slug: 'chengcheng', category: 'bisexual', height: 170, weight: 55 },
-  { name: '小安', slug: 'xiaoan', category: 'bisexual', height: 173, weight: 58 },
-  { name: '小羅', slug: 'xiaoluo', category: 'bisexual', height: 183, weight: 68 },
-  { name: '可樂', slug: 'kele', category: 'bisexual', height: 170, weight: 60 },
-];
-
 function imagePath(therapist: Therapist) {
   if (therapist.photoUrl) return therapist.photoUrl.startsWith('/') ? `${apiBaseUrl}${therapist.photoUrl}` : therapist.photoUrl;
   return therapist.id ? '' : `/images/therapists/${therapist.category}/${therapist.slug}.png`;
@@ -146,6 +96,7 @@ export default function TherapistCatalog() {
       .catch(() => { setProfiles([]); setCategories([]); });
   }, []);
   const visible = useMemo(() => category === 'all' ? profiles : profiles.filter((item) => (item.categories || [item.category]).includes(category)), [category, profiles]);
+  const categoryText = (therapist: Therapist) => (therapist.categories || [therapist.category]).map((key) => categoryMeta[key]?.english || key).filter(Boolean).join(' · ') || 'PROFILE';
 
   const portrait = (therapist: Therapist, alt: string) => imagePath(therapist)
     ? <img src={imagePath(therapist)} alt={alt} loading="lazy" />
@@ -153,7 +104,7 @@ export default function TherapistCatalog() {
 
   const portraitSet = (duplicate = false) => <div className="portrait-set" aria-hidden={duplicate || undefined}>{visible.map((therapist) => <article className="portrait-product" key={`${therapist.category}-${therapist.slug}-${duplicate ? 'copy' : 'original'}`}>
     <div className="portrait-frame">{portrait(therapist, duplicate ? '' : `${therapist.name}師傅公開形象照`)}</div>
-    <div><small>{categoryMeta[therapist.category]?.english || therapist.category}</small><h3>{therapist.name}</h3></div>
+    <div><small>{categoryText(therapist)}</small><h3>{therapist.name}</h3></div>
   </article>)}</div>;
 
   return <>
@@ -174,7 +125,7 @@ export default function TherapistCatalog() {
       <header><small>CATALOG / {visible.length} PROFILES</small><h2>THERAPIST<br />SELECTION.</h2></header>
       <div className="therapist-product-grid">{visible.map((therapist) => <article key={`${therapist.category}-${therapist.slug}`}>
         <div className="therapist-product-image">{portrait(therapist, `${therapist.name}師傅`)}</div>
-        <div className="therapist-product-copy"><small>{categoryMeta[therapist.category]?.english || therapist.category}</small><h3>{therapist.name}</h3>{therapistSettings?.showMeasurements !== false && (therapist.height || therapist.weight || therapist.role) && <dl>{therapist.height && <div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div>}{therapist.weight && <div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div>}{therapist.role && <div><dt>ROLE</dt><dd>{therapist.role}</dd></div>}</dl>}<p>{therapist.bio || '專業、細緻，為每次互動保留自在節奏。'}</p><a href={therapistBookingUrl(bookingUrl, therapist)} target="_blank" rel="noreferrer">指定 {therapist.name}／送出預約通知 ↗</a></div>
+        <div className="therapist-product-copy"><small>{categoryText(therapist)}</small><h3>{therapist.name}</h3>{therapistSettings?.showMeasurements !== false && (therapist.height || therapist.weight || therapist.role) && <dl>{therapist.height && <div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div>}{therapist.weight && <div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div>}{therapist.role && <div><dt>ROLE</dt><dd>{therapist.role}</dd></div>}</dl>}<p>{therapist.bio || '專業、細緻，為每次互動保留自在節奏。'}</p><a href={therapistBookingUrl(bookingUrl, therapist)} target="_blank" rel="noreferrer">指定 {therapist.name}／送出預約通知 ↗</a></div>
       </article>)}</div>
     </section>
   </>;

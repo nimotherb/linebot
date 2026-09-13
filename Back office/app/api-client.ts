@@ -541,12 +541,6 @@ export class SpaApi {
     return this.request<RawStaff>(`/api/admin/staff/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
   }
 
-  bulkStaffCategory(staffIds: number[], categories: string[]) {
-    return this.request<RawStaff[]>('/api/admin/staff/bulk-category', {
-      method: 'POST', body: JSON.stringify({ staff_ids: staffIds, categories }),
-    });
-  }
-
   listStaffCategories() { return this.request<StaffCategoryView[]>('/api/admin/staff-categories'); }
   createStaffCategory(payload: { key: string; name: string; sort_order?: number; active?: boolean }) {
     return this.request<StaffCategoryView>('/api/admin/staff-categories', { method: 'POST', body: JSON.stringify(payload) });

@@ -1219,25 +1219,6 @@ def build_customer_service_setting_menu(db: Session):
     )
 
 
-def build_staff_accept_online_prompt(appointment_id: int, staff_name: str):
-    return FlexSendMessage(
-        alt_text="管理客服帳號",
-        contents={
-            "type": "bubble",
-            "styles": {"body": {"backgroundColor": "#4C1D95"}, "footer": {"backgroundColor": "#F3F4F6"}},
-            "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
-                {"type": "text", "text": "管理客服帳號", "weight": "bold", "size": "xl", "color": "#FCD34D"},
-                {"type": "text", "text": f"目前連結：{support_url}", "size": "sm", "color": "#E9D5FF", "wrap": True},
-                {"type": "text", "text": "可直接輸入：設定客服帳號 @684wdola\n或貼上完整 https:// 網址。更新後主選單與預約頁會立即套用。", "size": "sm", "color": "#E9D5FF", "wrap": True},
-            ]},
-            "footer": {"type": "box", "layout": "vertical", "contents": [
-                {"type": "button", "style": "primary", "color": "#7C3AED", "action": {"type": "message", "label": "輸入新客服帳號", "text": "設定客服帳號 @684wdola"}},
-                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "查看後台帳號", "data": "action=admin_users"}},
-            ]},
-        },
-    )
-
-
 def build_staff_week_appointments(staff, db: Session):
     """Build a compact Flex carousel of this staff member's next seven days."""
     start = now_taipei_naive().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -2166,16 +2147,6 @@ if handler_staff:
                 reply_with_fallback(bot_staff_api, event.reply_token, root_response, db=db, context="派單端管理員選單", admin=True)
                 return
 
-            if action_name == "staff_accept_order":
-                appointment_id = parse_qs(data).get("appointment_id", [None])[0]
-                staff = db.query(Staff).filter(Staff.line_user_id == user_id).first()
-                appointment = db.query(Appointment).filter(Appointment.id == int(appointment_id)).first() if appointment_id and staff else None
-                if not staff or not appointment or appointment.staff_id != staff.id:
-                    bot_staff_api.reply_message(event.reply_token, TextSendMessage(text="找不到指派給你的這筆訂單。"))
-                    return
-                bot_staff_api.reply_message(event.reply_token, build_staff_accept_online_prompt(appointment.id, staff.name))
-                return
-
             if action_name == "staff_set_online":
                 online = parse_qs(data).get("online", ["1"])[0] == "1"
                 staff = db.query(Staff).filter(Staff.line_user_id == user_id).first()
@@ -2232,7 +2203,7 @@ def notify_appointment_parties(
     models = getattr(app.state, "admin_models", {})
     AdminUser = models.get("AdminUser")
     assigned_staff_line_id = appointment.staff.line_user_id if appointment.staff and appointment.staff.line_user_id and not appointment.staff.line_user_id.startswith(("pending:", "seeded:")) else None
-    customer_line_id = appointment.user.line_user_id if appointment.user and appointment.user.line_user_id and not appointment.user.line_user_id.startswith(("manual:", "liff:")) else None
+    customer_line_id = appointment.user.line_user_id if appointment.user and appointment.user.line_user_id and not appointment.user.line_user_id.startswith(("manual:", "liff:", "guest:")) else None
     if bot_customer_api and customer_line_id:
         try:
             bot_customer_api.push_message(
@@ -2254,10 +2225,8 @@ def notify_appointment_parties(
             except Exception:
                 logging.exception("派單推送失敗 recipient=客服帳號 %s appointment_id=%s", account.username, appointment.id)
     if assigned_staff_line_id:
+        # 員工端僅接收通知卡，不提供接單操作；訂單狀態由後台管理。
         staff_bubble = build_appointment_bubble(appointment, is_staff_notify=True, db=db, show_return=False)
-        staff_bubble["footer"] = {"type": "box", "layout": "vertical", "contents": [
-            {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "postback", "label": "接單", "data": f"action=staff_accept_order&appointment_id={appointment.id}"}},
-        ]}
         try:
             bot_staff_api.push_message(
                 assigned_staff_line_id,
@@ -2272,7 +2241,7 @@ def notify_appointment_update(appointment, db: Session, *, time_changed: bool, a
     AdminUser = getattr(app.state, "admin_models", {}).get("AdminUser")
     changed = "、".join(label for label, active in (("時間", time_changed), ("金額", amount_changed)) if active)
     text = f"訂單 AP-{appointment.id} 的{changed}已更新，請重新查看預約。"
-    customer_line_id = appointment.user.line_user_id if appointment.user and appointment.user.line_user_id and not appointment.user.line_user_id.startswith(("manual:", "liff:")) else None
+    customer_line_id = appointment.user.line_user_id if appointment.user and appointment.user.line_user_id and not appointment.user.line_user_id.startswith(("manual:", "liff:", "guest:")) else None
     staff_line_id = appointment.staff.line_user_id if appointment.staff and appointment.staff.line_user_id and not appointment.staff.line_user_id.startswith(("pending:", "seeded:")) else None
     message = TextSendMessage(text=text)
     card = build_order_flex(appointment, alt_text="預約資料已更新", db=db, show_return=False)
@@ -2305,7 +2274,7 @@ def dispatch_appointment_line(appointment, db: Session, *, actor=None) -> dict:
     AdminUser = models.get("AdminUser")
     RevokedStaffLine = models.get("RevokedStaffLine")
     recipients: list[tuple[str, str, object]] = []
-    if appointment.user and appointment.user.line_user_id and not appointment.user.line_user_id.startswith(("manual:", "liff:")):
+    if appointment.user and appointment.user.line_user_id and not appointment.user.line_user_id.startswith(("manual:", "liff:", "guest:")):
         recipients.append((appointment.user.line_user_id, "customer", bot_customer_api))
     if appointment.staff and appointment.staff.line_user_id and not appointment.staff.line_user_id.startswith(("pending:", "seeded:")):
         recipients.append((appointment.staff.line_user_id, "staff", bot_staff_api))
@@ -2347,7 +2316,7 @@ def notify_booking_request_parties(booking_request, db: Session, *, origin: str 
     """Notify the customer that review is pending and alert management."""
     AdminUser = getattr(app.state, "admin_models", {}).get("AdminUser")
     customer = db.query(User).filter(User.id == booking_request.user_id).first()
-    customer_line_id = customer.line_user_id if customer and customer.line_user_id and not customer.line_user_id.startswith(("manual:", "liff:")) else None
+    customer_line_id = customer.line_user_id if customer and customer.line_user_id and not customer.line_user_id.startswith(("manual:", "liff:", "guest:")) else None
     if bot_customer_api and customer_line_id:
         try:
             bot_customer_api.push_message(

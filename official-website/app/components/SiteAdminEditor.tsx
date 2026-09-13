@@ -12,17 +12,6 @@ export type SitePageCard = { number: string; label: string; title: string; body:
 export type SitePageDraft = { english: string; title: string; intro: string; body: string; cards: SitePageCard[]; cardGridEnabled: boolean; desktopVisible: boolean; mobileVisible: boolean };
 export type ServiceRecord = { id: number; code: string; name: string; duration_minutes: number; price: number; description?: string | null; active: boolean };
 export type PromotionRecord = { id: number; name: string; calculation_type: CalculationType; value: number; description?: string | null; active: boolean };
-export type StaffProfile = {
-  id: number;
-  name: string;
-  category: 'straight' | 'gay' | 'bisexual';
-  employment_status: 'active' | 'retired';
-  photo_url?: string | null;
-  height?: string | null;
-  weight?: string | null;
-  role?: '攻擊手' | '守備方' | '無特定' | '攻守兼備' | null;
-  bio?: string | null;
-};
 export type SiteDraft = {
   navigation: SiteNavigationItem[];
   pages: Record<PageSlug, SitePageDraft>;
@@ -59,26 +48,8 @@ export type SiteAdminApi = {
   createPromotion: (payload: Record<string, unknown>) => Promise<PromotionRecord>;
   updatePromotion: (id: number, payload: Record<string, unknown>) => Promise<PromotionRecord>;
   deletePromotion: (id: number) => Promise<{ ok: boolean }>;
-  listStaff: () => Promise<StaffProfile[]>;
-  createStaff: (payload: Record<string, unknown>) => Promise<StaffProfile>;
-  updateStaff: (id: number, payload: Record<string, unknown>) => Promise<StaffProfile>;
-  updateStaffStatus: (id: number, status: StaffProfile['employment_status'], reason: string) => Promise<StaffProfile>;
-  uploadStaffPhoto: (id: number, dataUrl: string) => Promise<StaffProfile>;
-  permanentlyDeleteStaff: (id: number) => Promise<{ ok: boolean }>;
 };
 
-const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com').replace(/\/$/, '');
-const categoryLabels: Record<StaffProfile['category'], string> = { straight: '直男師傅', gay: '圈內師傅', bisexual: '雙性師傅' };
-const staffRoles = ['攻擊手', '守備方', '無特定', '攻守兼備'] as const;
-const resolvePhotoUrl = (value?: string | null) => value?.startsWith('/') ? `${API_BASE_URL}${value}` : value || '';
-const readPhoto = (file: File) => new Promise<string>((resolve, reject) => {
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) return reject(new Error('只接受 JPEG、PNG 或 WebP 圖片。'));
-  if (file.size > 3 * 1024 * 1024) return reject(new Error('照片大小必須小於 3 MB。'));
-  const reader = new FileReader();
-  reader.onload = () => resolve(String(reader.result));
-  reader.onerror = () => reject(new Error('照片讀取失敗。'));
-  reader.readAsDataURL(file);
-});
 
 const serviceDraftFromRecord = (record: ServiceRecord, current?: ServiceDraft): ServiceDraft => ({
   id: record.id,
@@ -190,17 +161,12 @@ function PageCardsEditor({ page, onChange }: { page: SitePageDraft; onChange: (p
   return <div className="studio-form-card studio-page-cards"><header><div><small>CARD GRID</small><h3>卡片網格版型</h3><p>卡片會依編號、標籤、標題與內文自動渲染；1 張為左右分割，3 張為三欄網格。</p></div><label className="studio-switch"><input type="checkbox" checked={page.cardGridEnabled} onChange={(event) => onChange({ cardGridEnabled: event.target.checked })} /><span />{page.cardGridEnabled ? '啟用' : '停用'}</label></header><div className="studio-page-card-list">{page.cards.map((card, index) => <article key={`${card.number}-${index}`}><b>{String(index + 1).padStart(2, '0')}</b><div><Field label="編號" value={card.number} onChange={(number) => updateCard(index, { number })} /><Field label="標籤" value={card.label} onChange={(label) => updateCard(index, { label })} /><Field label="標題" value={card.title} onChange={(title) => updateCard(index, { title })} multiline /><Field label="內文" value={card.body} onChange={(body) => updateCard(index, { body })} multiline /></div><button className="danger" type="button" onClick={() => removeCard(index)}>刪除卡片</button></article>)}</div><button className="studio-add-page" type="button" onClick={addCard}>＋ 新增卡片</button></div>;
 }
 
-export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAdminApi; notify: (msg: string) => void; userRole: 'admin' | 'manager' }) {
+export default function SiteAdminEditor({ api, notify }: { api: SiteAdminApi; notify: (msg: string) => void }) {
   const [active, setActive] = useState<Section>('home');
   const [draft, setDraft] = useState<SiteDraft>(initialDraft);
   const [notice, setNotice] = useState('讀取中...');
   const [version, setVersion] = useState(0);
   const [publishedAt, setPublishedAt] = useState<string | null>(null);
-  const [staffProfiles, setStaffProfiles] = useState<StaffProfile[]>([]);
-  const [showNewStaff, setShowNewStaff] = useState(false);
-  const [staffBusy, setStaffBusy] = useState(false);
-  const [editingStaffId, setEditingStaffId] = useState<number | null>(null);
-  const [selectedStaffIds, setSelectedStaffIds] = useState<number[]>([]);
   const [showNewService, setShowNewService] = useState(false);
   const [showNewOffer, setShowNewOffer] = useState(false);
   const [catalogBusy, setCatalogBusy] = useState(false);
@@ -210,13 +176,11 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
   useEffect(() => {
     const loadContent = async () => {
       try {
-        const [data, staff, serviceRecords, promotionRecords] = await Promise.all([
+        const [data, serviceRecords, promotionRecords] = await Promise.all([
           api.getAdminSiteContent(),
-          api.listStaff(),
           api.listServices(),
           api.listPromotions(),
         ]);
-        setStaffProfiles(staff);
         setVersion(data.draft_version || 0);
         if (data.published_at) {
           setPublishedAt(new Date(data.published_at).toLocaleString('zh-TW'));
@@ -435,112 +399,6 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
     }
   };
 
-  const upsertStaffProfile = (profile: StaffProfile) => {
-    setStaffProfiles((current) => current.some((item) => item.id === profile.id)
-      ? current.map((item) => item.id === profile.id ? profile : item)
-      : [...current, profile].sort((a, b) => a.name.localeCompare(b.name, 'zh-TW')));
-  };
-
-  const createStaffProfile = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setStaffBusy(true);
-    const form = event.currentTarget;
-    const data = new FormData(form);
-    try {
-      let profile = await api.createStaff({
-        name: String(data.get('name')).trim(),
-        category: String(data.get('category')),
-        photo_url: String(data.get('photoUrl') || '').trim() || null,
-        height: String(data.get('height') || '').trim() || null,
-        weight: String(data.get('weight') || '').trim() || null,
-        role: String(data.get('role') || '').trim() || null,
-        bio: String(data.get('bio') || '').trim().slice(0, 60) || null,
-      });
-      const file = data.get('photoFile');
-      if (file instanceof File && file.size > 0) profile = await api.uploadStaffPhoto(profile.id, await readPhoto(file));
-      upsertStaffProfile(profile);
-      form.reset();
-      setShowNewStaff(false);
-      notify(`${profile.name} 已新增到師傅資料庫。`);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : '新增師傅失敗');
-    } finally {
-      setStaffBusy(false);
-    }
-  };
-
-  const saveStaffProfile = async (event: FormEvent<HTMLFormElement>, profile: StaffProfile) => {
-    event.preventDefault();
-    setStaffBusy(true);
-    const data = new FormData(event.currentTarget);
-    try {
-      let updated = await api.updateStaff(profile.id, {
-        name: String(data.get('name')).trim(),
-        category: String(data.get('category')),
-        photo_url: String(data.get('photoUrl') || '').trim() || null,
-        height: String(data.get('height') || '').trim() || null,
-        weight: String(data.get('weight') || '').trim() || null,
-        role: String(data.get('role') || '').trim() || null,
-        bio: String(data.get('bio') || '').trim().slice(0, 60) || null,
-      });
-      const file = data.get('photoFile');
-      if (file instanceof File && file.size > 0) updated = await api.uploadStaffPhoto(profile.id, await readPhoto(file));
-      upsertStaffProfile(updated);
-      setEditingStaffId(null);
-      notify(`${updated.name} 的資料與照片已更新。`);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : '師傅資料更新失敗');
-    } finally {
-      setStaffBusy(false);
-    }
-  };
-
-  const toggleStaffProfile = async (profile: StaffProfile) => {
-    const nextStatus = profile.employment_status === 'active' ? 'retired' : 'active';
-    const reason = nextStatus === 'retired' ? '官網編輯器暫時退役' : '官網編輯器恢復在職';
-    setStaffBusy(true);
-    try {
-      upsertStaffProfile(await api.updateStaffStatus(profile.id, nextStatus, reason));
-      notify(`${profile.name} 已${nextStatus === 'retired' ? '暫時退役' : '恢復在職'}。`);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : '師傅狀態更新失敗');
-    } finally {
-      setStaffBusy(false);
-    }
-  };
-
-  const deleteStaffProfile = async (profile: StaffProfile) => {
-    if (userRole !== 'admin') return notify('永久刪除只開放 Admin 使用。');
-    if (!window.confirm(`確定永久刪除「${profile.name}」？\n此操作無法復原；已有訂單、排班或回帳紀錄時，系統會拒絕刪除。`)) return;
-    setStaffBusy(true);
-    try {
-      await api.permanentlyDeleteStaff(profile.id);
-      setStaffProfiles((current) => current.filter((item) => item.id !== profile.id));
-      notify(`${profile.name} 已永久刪除。`);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : '永久刪除失敗');
-    } finally {
-      setStaffBusy(false);
-    }
-  };
-
-  const deleteSelectedStaff = async () => {
-    if (userRole !== 'admin' || selectedStaffIds.length === 0) return;
-    const selected = staffProfiles.filter((profile) => selectedStaffIds.includes(profile.id));
-    if (!window.confirm(`確定永久刪除選取的 ${selected.length} 位師傅？\n此操作無法復原。`)) return;
-    setStaffBusy(true);
-    try {
-      await Promise.all(selected.map((profile) => api.permanentlyDeleteStaff(profile.id)));
-      setStaffProfiles((current) => current.filter((profile) => !selectedStaffIds.includes(profile.id)));
-      setSelectedStaffIds([]);
-      notify(`已永久刪除 ${selected.length} 位師傅。`);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : '批量永久刪除失敗');
-    } finally {
-      setStaffBusy(false);
-    }
-  };
-
   return <main className="site-studio-shell">
     <header className="studio-topbar">
       <a className="studio-brand" href="/"><i>E</i><span><b>SITE STUDIO</b><small>EQUAL SPA · CONTENT WORKSPACE</small></span></a>
@@ -602,18 +460,7 @@ export default function SiteAdminEditor({ api, notify, userRole }: { api: SiteAd
         {active === 'therapists' && <div className="studio-form-grid">
           <PageSettings page={draft.pages.therapists} onChange={(patch) => updatePage('therapists', patch)} />
           <div className="studio-form-card"><small>CATALOG</small><h3>員工目錄設定</h3><Field label="目錄介紹" value={draft.therapists.intro} onChange={(intro) => markChanged({ ...draft, therapists: { ...draft.therapists, intro } })} multiline />{/* 輪播速度暫時固定於前端，保留欄位以相容既有草稿。 */}<label className="studio-check"><input type="checkbox" checked={draft.therapists.showMeasurements} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, showMeasurements: event.target.checked } })} />公開顯示身高、體重與角色</label></div>
-          <div className="studio-form-card studio-upload-card"><small>LIVE DIRECTORY</small><h3>公開名單</h3><div className="upload-placeholder"><span>{staffProfiles.filter((item) => item.employment_status === 'active').length}</span><b>位在職師傅</b><p>名單、身高、體重、角色與照片直接保存到 MySQL；LINE Bot 或此編輯器更新後會同步顯示。</p></div><p className="privacy-note">健康資訊只留在營運後台，不會出現在官網編輯器或公開頁面。</p></div>
-          <section className="studio-form-card studio-staff-manager">
-            <header><div><small>STAFF PROFILES</small><h3>新增、照片與退役管理</h3><p>照片可貼網址或從電腦上傳。上傳檔案限 JPEG、PNG、WebP，最大 3 MB。</p></div><div className="studio-staff-toolbar"><button type="button" onClick={() => setShowNewStaff((current) => !current)}>{showNewStaff ? '取消新增' : '＋ 新增員工'}</button>{userRole === 'admin' && <button type="button" className="danger" disabled={staffBusy || selectedStaffIds.length === 0} onClick={deleteSelectedStaff}>永久刪除所選 ({selectedStaffIds.length})</button>}</div></header>
-            {showNewStaff && <form className="studio-new-staff" onSubmit={createStaffProfile}><label><span>姓名／稱呼</span><input name="name" required /></label><label><span>分類</span><select name="category" defaultValue="gay"><option value="straight">直男師傅</option><option value="gay">圈內師傅</option><option value="bisexual">雙性師傅</option></select></label><label><span>身高（cm）</span><input name="height" inputMode="numeric" pattern="[0-9]{3}" placeholder="例：178" /></label><label><span>體重（kg）</span><input name="weight" inputMode="numeric" pattern="[0-9]{2,3}" placeholder="例：72" /></label><label><span>角色</span><select name="role" defaultValue=""><option value="">尚未設定</option>{staffRoles.map((role) => <option key={role} value={role}>{role}</option>)}</select></label><label className="wide"><span>照片網址</span><input name="photoUrl" type="url" placeholder="https://..." /></label><label className="wide"><span>或上傳照片</span><input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label><button type="submit" disabled={staffBusy}>建立師傅</button></form>}
-            <div className="studio-staff-grid">{staffProfiles.map((profile) => <article className={profile.employment_status === 'retired' ? 'studio-staff-card retired' : 'studio-staff-card'} key={profile.id}>
-              <label className="studio-staff-select"><input type="checkbox" checked={selectedStaffIds.includes(profile.id)} onChange={() => setSelectedStaffIds((current) => current.includes(profile.id) ? current.filter((id) => id !== profile.id) : [...current, profile.id])} /><span>選取</span></label>
-              <div><strong>{profile.name}</strong><small>{categoryLabels[profile.category]}・{profile.employment_status === 'active' ? '在職' : '暫時退役'}</small></div>
-              <button type="button" onClick={() => setEditingStaffId(profile.id)}>更多資料</button>
-            </article>)}</div>
-            {editingStaffId !== null && (() => { const profile = staffProfiles.find((item) => item.id === editingStaffId); return profile ? <div className="studio-staff-modal" role="dialog" aria-modal="true"><form className="studio-staff-detail" onSubmit={(event) => saveStaffProfile(event, profile)}><header><h3>{profile.name}・更多資料</h3><button type="button" onClick={() => setEditingStaffId(null)}>×</button></header><label><span>姓名</span><input name="name" defaultValue={profile.name} required /></label><label><span>分類</span><select name="category" defaultValue={profile.category}>{Object.entries(categoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label><span>身高（cm）</span><input name="height" inputMode="numeric" pattern="[0-9]{3}" defaultValue={profile.height || ''} /></label><label><span>體重（kg）</span><input name="weight" inputMode="numeric" pattern="[0-9]{2,3}" defaultValue={profile.weight || ''} /></label><label><span>角色</span><select name="role" defaultValue={profile.role || ''}><option value="">尚未設定</option>{staffRoles.map((role) => <option key={role} value={role}>{role}</option>)}</select></label><label><span>自我簡介（最多 60 字）</span><textarea name="bio" maxLength={60} rows={3} defaultValue={profile.bio || ''} /></label><label><span>照片網址</span><input name="photoUrl" type="url" defaultValue={resolvePhotoUrl(profile.photo_url)} /></label><label><span>或上傳新照片</span><input name="photoFile" type="file" accept="image/jpeg,image/png,image/webp" /></label><footer><button type="button" onClick={() => setEditingStaffId(null)}>取消</button><button type="button" disabled={staffBusy} onClick={() => toggleStaffProfile(profile)}>{profile.employment_status === 'active' ? '暫時退役' : '恢復在職'}</button>{userRole === 'admin' && <button className="danger" type="button" disabled={staffBusy} onClick={() => deleteStaffProfile(profile)}>永久刪除</button>}<button type="submit" disabled={staffBusy}>儲存資料</button></footer></form></div> : null; })()}
-            <p className="privacy-note">永久刪除只開放 Admin；已有預約、班表、付款或回帳紀錄時，後端會阻止刪除，請改用暫時退役。</p>
-          </section>
+          <div className="studio-form-card studio-upload-card"><small>LIVE DIRECTORY</small><h3>公開名單</h3><div className="upload-placeholder"><b>員工資料由後台管理</b><p>公開名單、分類、照片與在職狀態會由 Back office 員工管理頁同步至官網。</p></div><p className="privacy-note">健康資訊只留在營運後台，不會出現在官網編輯器或公開頁面。</p></div>
         </div>}
 
         {active === 'offers' && <div className="studio-catalog-editor">

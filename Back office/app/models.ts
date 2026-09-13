@@ -1,4 +1,4 @@
-export type AppointmentStatus = '待確認' | '已確認' | '已完成';
+export type AppointmentStatus = '待確認' | '已確認' | '已完成' | '已取消';
 
 export type ServicePlan = {
   id: string;

@@ -134,7 +134,7 @@ class AppointmentPatchIn(BaseModel):
     customer_name: str | None = Field(default=None, min_length=1, max_length=120)
     phone: str | None = Field(default=None, min_length=8, max_length=30)
     birthday: str | None = Field(default=None, max_length=10)
-    status: Literal["pending", "confirmed", "completed", "待確認", "已確認", "已完成"] | None = None
+    status: Literal["pending", "confirmed", "completed", "cancelled", "待確認", "已確認", "已完成", "已取消"] | None = None
     staff_id: int | None = None
     room_id: int | None = None
     venue_id: int | None = None
@@ -850,6 +850,14 @@ def register_admin_api(
             db.add(customer)
             db.flush()
         return customer
+
+    def append_creation_timestamp(notes: str | None) -> str:
+        """Keep the original note and append an immutable creation timestamp."""
+        value = (notes or "").strip()
+        if "建立時間：" in value:
+            return value
+        stamp = now_taipei_naive().strftime("%Y-%m-%d %H:%M")
+        return f"{value}\n建立時間：{stamp}" if value else f"建立時間：{stamp}"
 
     def normalize_phone(value: str | None) -> str:
         cleaned = re.sub(r"[\s()\-]", "", (value or "").strip())
@@ -1811,7 +1819,12 @@ def register_admin_api(
             settlement["shop_recovery_amount"] = int(getattr(detail, "shop_recovery_amount", 0) or 0)
         phone = (detail.contact_phone if detail and detail.contact_phone else getattr(user, "phone", None)) or getattr(item, "customer_phone_snapshot", None)
         grade = getattr(user, "customer_grade", "N") if user else "N"
-        canonical_status = "pending" if item.status == "pending" else "completed" if item.status == "completed" else "confirmed"
+        canonical_status = (
+            "pending" if item.status in {"pending", "待確認"}
+            else "completed" if item.status in {"completed", "已完成"}
+            else "cancelled" if item.status in {"cancelled", "已取消"}
+            else "confirmed"
+        )
         return {
             "id": item.id,
             "order_id": f"AP-{item.start_time.strftime('%m%d')}-{item.id:03d}",
@@ -2044,7 +2057,7 @@ def register_admin_api(
             contact_phone=contact_phone,
             customer_name_snapshot=(customer_name or getattr(customer, "display_name", None) or "未命名客戶").strip()[:120],
             customer_birthday_snapshot=(birthday or getattr(customer, "birthday", None) or "").strip()[:10] or None,
-            notes=(notes or "").strip() or None,
+            notes=append_creation_timestamp(notes),
             source=source,
             status="pending",
         )
@@ -2125,7 +2138,7 @@ def register_admin_api(
             discount_amount=discount,
             total_amount=max(0, plan.price - discount),
             location_type="external" if plan.location_type == "external" else "pending",
-            notes=f"由預約通知 {booking_request_dict(db, item)['request_id']} 確認成立" + (f"\n客戶備註：{item.notes}" if item.notes else ""),
+            notes=append_creation_timestamp(f"由預約通知 {booking_request_dict(db, item)['request_id']} 確認成立" + (f"\n客戶備註：{item.notes}" if item.notes else "")),
         )
         db.add(detail)
         db.flush()
@@ -2431,7 +2444,7 @@ def register_admin_api(
             start_time=payload.start_time,
             staff_id=payload.staff_id,
             promotion_id=None,
-            notes=payload.notes,
+            notes=append_creation_timestamp(payload.notes),
             source=source,
             idempotency_key=payload.idempotency_key,
         )
@@ -2633,7 +2646,7 @@ def register_admin_api(
 
     @app.get("/api/admin/bootstrap")
     def bootstrap(db: Session = Depends(get_db), user=Depends(current_admin)):
-        appointments = db.query(Appointment).filter(Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES)).order_by(Appointment.start_time.desc()).limit(300).all()
+        appointments = db.query(Appointment).order_by(Appointment.start_time.desc()).limit(300).all()
         booking_requests = db.query(BookingRequest).order_by(BookingRequest.created_at.desc()).limit(500).all()
         shift_rows = db.query(Shift).filter(Shift.status == "active").order_by(Shift.start_time).limit(500).all()
         shift_staff = _model_map(db, Staff, {item.staff_id for item in shift_rows})
@@ -2782,7 +2795,7 @@ def register_admin_api(
         db: Session = Depends(get_db),
         user=Depends(current_admin),
     ):
-        query = db.query(Appointment).filter(Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES))
+        query = db.query(Appointment)
         if start:
             query = query.filter(Appointment.start_time >= parse_local_datetime(start))
         if end:
@@ -2971,7 +2984,7 @@ def register_admin_api(
             staff_return_amount=settlement["staff_return_amount"],
             shop_recovery_amount=settlement["shop_recovery_amount"],
             location_type=payload.location_type,
-            notes=payload.notes,
+            notes=append_creation_timestamp(payload.notes),
         )
         db.add(detail)
         db.flush()
@@ -3111,7 +3124,7 @@ def register_admin_api(
             extra_amount=totals["extra_amount"],
             total_amount=totals["total_amount"],
             location_type="external" if plan.location_type == "external" else "pending",
-            notes=notes,
+            notes=append_creation_timestamp(notes),
         )
         db.add(detail)
         db.flush()

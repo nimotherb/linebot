@@ -92,6 +92,7 @@ export default function BookingPage() {
   const [identityMessage, setIdentityMessage] = useState('正在確認開啟方式');
   const [insideLine, setInsideLine] = useState(false);
   const [bookingMode, setBookingMode] = useState<BookingMode>('scheduled');
+  const [bookingCategory, setBookingCategory] = useState('all');
 
   useEffect(() => {
     api.publicBookingOptions()
@@ -183,6 +184,8 @@ export default function BookingPage() {
   const service = options?.services.find((item) => String(item.id) === serviceId);
   const promotion = options?.promotions.find((item) => String(item.id) === promotionId);
   const staff = (requestOnly ? options?.staff : availability?.staff)?.find((item) => String(item.id) === staffId);
+  const requestedStaff = (options?.staff || []).filter((item) => bookingCategory === 'all' || (item.categories || (item.category ? [item.category] : [])).includes(bookingCategory));
+  const staffCategoryText = (item: { category?: string; categories?: string[] }) => (item.categories || (item.category ? [item.category] : [])).map((key) => categoryLabel(key, options?.staff_categories)).join('・') || '資料更新中';
   const discount = !promotion || !service || service.duration_minutes < 90 ? 0 : promotion.calculation_type === 'fixed_discount'
     ? Math.min(service.price, promotion.value)
     : promotion.calculation_type === 'percent_discount'
@@ -279,21 +282,24 @@ export default function BookingPage() {
           </div>
           <label className={styles.field}>預約開始時間<input type="datetime-local" value={startTime} min={taipeiInputValue(options?.minimum_lead_minutes || 90)} step="1800" onChange={(event) => setStartTime(event.target.value)} required /></label>
           <div className={styles.availabilityLine}>{checking ? '正在確認時間…' : availability ? (requestOnly ? `已選擇 ${staff?.name}・預計結束 ${availability.end_time.slice(11, 16)}・等待客服人工確認` : `${availability.staff.length} 位師傅目前可預約・結束時間 ${availability.end_time.slice(11, 16)}`) : requestOnly ? '請從下方卡片選擇希望指定的師傅' : '這個時段暫無可直接預訂的師傅，可切換為「所有師傅預約」送出通知'}</div>
-          {requestOnly && <div className={flowStyles.requestedRail} role="listbox" aria-label="全部在職師傅">
-            {options?.staff.map((item) => {
+          {requestOnly && <>
+          <div className={flowStyles.staffFilter} aria-label="員工分類篩選"><strong>依分類篩選</strong><div className={flowStyles.staffCategoryFilters}><label><input type="radio" name="bookingCategory" checked={bookingCategory === 'all'} onChange={() => setBookingCategory('all')} />全部</label>{(options?.staff_categories || []).filter((item) => item.active !== false).map((item) => <label key={item.key}><input type="radio" name="bookingCategory" checked={bookingCategory === item.key} onChange={() => setBookingCategory(item.key)} />{item.name}</label>)}</div>{(options?.staff_categories || []).length === 0 && <span className={flowStyles.staffEmpty}>目前沒有可用分類。</span>}</div>
+          <div className={flowStyles.requestedRail} role="listbox" aria-label="全部在職師傅">
+            {requestedStaff.map((item) => {
               const photo = resolveStaffPhotoUrl(item.photo_url);
               const selected = staffId === String(item.id);
               return <button type="button" role="option" aria-selected={selected} key={item.id} onClick={() => setStaffId(String(item.id))} className={selected ? flowStyles.requestedCardSelected : flowStyles.requestedCard}>
                 <span className={flowStyles.requestedPortrait}>{photo ? <img src={photo} alt={`${item.name}師傅`} loading="lazy" /> : <i>{item.name.slice(0, 1)}</i>}</span>
-                <span className={flowStyles.requestedInfo}><small>{categoryLabel(item.category)}</small><strong>{item.name}</strong><em>{[item.height && `${item.height} cm`, item.weight && `${item.weight} kg`].filter(Boolean).join('・') || '資料更新中'}</em></span>
+                <span className={flowStyles.requestedInfo}><small>{staffCategoryText(item)}</small><strong>{item.name}</strong><em>{[item.height && `${item.height} cm`, item.weight && `${item.weight} kg`].filter(Boolean).join('・') || '資料更新中'}</em></span>
                 <b>{selected ? '已選擇' : '選擇這位'}</b>
               </button>;
             })}
-          </div>}
+            {requestedStaff.length === 0 && <div className={flowStyles.staffEmpty}>目前沒有符合分類的在職員工。</div>}
+          </div></>}
           {requestOnly && staff && <div className={styles.assignment}>已指定 {staff.name}。不論目前是否排班，都只會先送出通知並保留這位師傅，等待客服確認。</div>}
           {!requestOnly && availability?.can_choose_staff && <div className={styles.staffGrid}>
             <button type="button" onClick={() => setStaffId('')} className={!staffId ? styles.staffSelected : styles.staff}><i>?</i><span><strong>不指定</strong><small>由店長安排</small></span></button>
-            {availability.staff.map((item) => { const photo = resolveStaffPhotoUrl(options?.staff.find((candidate) => candidate.id === item.id)?.photo_url); return <button type="button" key={item.id} onClick={() => setStaffId(String(item.id))} className={staffId === String(item.id) ? styles.staffSelected : styles.staff}>{photo ? <img src={photo} alt="" /> : <i>{item.name.slice(0, 1)}</i>}<span><strong>{item.name}</strong><small>{categoryLabel(item.category)}</small></span></button>; })}
+            {availability.staff.map((item) => { const photo = resolveStaffPhotoUrl(options?.staff.find((candidate) => candidate.id === item.id)?.photo_url); return <button type="button" key={item.id} onClick={() => setStaffId(String(item.id))} className={staffId === String(item.id) ? styles.staffSelected : styles.staff}>{photo ? <img src={photo} alt="" /> : <i>{item.name.slice(0, 1)}</i>}<span><strong>{item.name}</strong><small>{staffCategoryText(item)}</small></span></button>; })}
           </div>}
           {!requestOnly && availability && !availability.can_choose_staff && <div className={styles.assignment}>此方案不指定師傅，將由店長依班表安排。</div>}
         </section>
@@ -302,7 +308,7 @@ export default function BookingPage() {
           <div className={styles.sectionTitle}><span>03</span><div><h2>優惠與聯絡資料</h2><p>優惠資格將由現場或客服確認</p></div></div>
           <div className={styles.field}><strong>優惠</strong><small>優惠資格由後端依客戶資料與活動規則自動判定，預約頁不需選擇。</small></div>
           <div className={styles.twoColumns}>
-            <label className={styles.field}>您的稱呼<input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：王先生" maxLength={120} required /></label>
+            <label className={styles.field}>您的稱呼<input value={name} onChange={(event) => setName(event.target.value)} placeholder="想如何被稱呼" maxLength={120} required /></label>
             <label className={styles.field}>手機號碼（選填）<input value={phone} onChange={(event) => setPhone(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="09xxxxxxxx" inputMode="numeric" pattern="09\d{8}" /></label>
           </div>
           <label className={styles.field}>備註（選填）<textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} maxLength={1000} placeholder="特殊需求或方便聯絡的方式" /></label>
