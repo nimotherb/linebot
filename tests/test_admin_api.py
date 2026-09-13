@@ -736,7 +736,7 @@ def test_public_booking_checks_availability_and_is_idempotent(client):
         "idempotency_key": "booking-test-key-auto-0001",
     })
     assert automatic.status_code == 201, automatic.text
-    assert automatic.json()["appointment"]["staff_id"] == staff["id"]
+    assert automatic.json()["appointment"]["staff_id"] is None
 
 
 def test_line_online_shift_enables_booking_autofill_and_customer_card(client, monkeypatch):

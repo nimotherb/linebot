@@ -105,10 +105,12 @@
 
 .requestedCard,
 .requestedCardSelected {
+  box-sizing: border-box;
   display: grid;
   grid-template-rows: auto 1fr auto;
-  flex: 0 0 170px;
-  min-height: 310px;
+  flex: 0 0 250px;
+  width: 250px;
+  min-height: 0;
   padding: 0;
   overflow: hidden;
   border: 1px solid #dcd7cc;
@@ -121,9 +123,12 @@
 }
 
 .requestedPortrait {
+  box-sizing: border-box;
   display: grid;
   place-items: center;
-  aspect-ratio: 3 / 4;
+  width: 250px;
+  height: 250px;
+  aspect-ratio: 1 / 1;
   overflow: hidden;
   background: linear-gradient(145deg, #dce9df, #f1eadc);
 }
@@ -211,9 +216,11 @@
 
   .requestedCard,
   .requestedCardSelected {
-    flex-basis: 154px;
-    min-height: 286px;
+    flex-basis: min(250px, calc(100vw - 64px));
+    width: min(250px, calc(100vw - 64px));
   }
+
+  .requestedPortrait { width: 100%; height: auto; aspect-ratio: 1 / 1; }
 
   .staffCategoryFilters { gap: 6px; }
   .staffCategoryFilters label { font-size: 10px; }

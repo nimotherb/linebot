@@ -62,7 +62,7 @@ const navGroups: { label: string; items: { id: SectionId; label: string; glyph: 
       { id: 'appointments', label: '預約管理', glyph: '◷' },
       { id: 'schedule', label: '師傅排班', glyph: '▦' },
       { id: 'operations', label: '現場進度', glyph: '◎' },
-      { id: 'checkout', label: '結帳管理', glyph: '＄' },
+      { id: 'checkout', label: '完成訂單', glyph: '＄' },
     ],
   },
   {
@@ -81,8 +81,8 @@ const headings: Record<SectionId, { eyebrow: string; title: string; description:
   dashboard: { eyebrow: 'TODAY', title: '歡迎回到伊果SPA', description: '目前登入：員工' },
   appointments: { eyebrow: 'APPOINTMENTS', title: '預約管理', description: '建立、搜尋、改期與人工修正預約。' },
   schedule: { eyebrow: 'WEEKLY ROSTER', title: '師傅排班', description: '本週與下週班表，距開始 90 分鐘後鎖定。' },
-  operations: { eyebrow: 'SERVICE FLOW', title: '訂單進度', description: '待確認、已確認、已完成與取消訂單分開管理。' },
-  checkout: { eyebrow: 'CHECKOUT', title: '完成訂單', description: '記錄現金或轉帳；按完成即視為回帳完成。' },
+  operations: { eyebrow: 'SERVICE FLOW', title: '訂單進度', description: '待確認、已確認與取消訂單分開管理。' },
+  checkout: { eyebrow: 'COMPLETED ORDERS', title: '完成訂單', description: '只查看已完成訂單歷史；資料匯出仍保留完整紀錄。' },
   customers: { eyebrow: 'CUSTOMERS', title: '客戶管理', description: 'LINE 顯示名稱、電話、歷史紀錄與客服備註。' },
   staff: { eyebrow: 'TEAM', title: '員工管理', description: '員工建檔、公開照片、暫時退役與永久刪除。' },
   services: { eyebrow: 'PRICING', title: '服務與優惠', description: '方案價格、期間與附加費都可隨時調整。' },
@@ -471,9 +471,9 @@ export default function Home() {
     window.setTimeout(() => setToast(null), 3200);
   };
 
-  const todayAppointments = appointments.filter((item) => item.date === todayIso);
-  const pendingCheckout = appointments.filter((item) => item.status === '已確認');
-  const completedRevenue = todayAppointments.filter((item) => item.status !== '已取消' && (item.status === '已完成' || item.payment === '已付款')).reduce((sum, item) => sum + item.total, 0);
+  const completedAppointments = appointments.filter((item) => item.status === '已完成');
+  const activeAppointments = appointments.filter((item) => item.status !== '已完成');
+  const todayAppointments = activeAppointments.filter((item) => item.date === todayIso);
   const selectedAppointment = modal && 'id' in modal ? appointments.find((item) => item.id === modal.id) : undefined;
   const selectedShift = modal && 'id' in modal ? shifts.find((item) => item.id === modal.id) : undefined;
   const selectedShiftMore = modal?.type === 'shiftMore'
@@ -498,11 +498,11 @@ export default function Home() {
   const hiddenForStaff = new Set<SectionId>(['checkout', 'customers', 'exports', 'users']);
   const visibleNavGroups = navGroups.map((group) => ({ ...group, items: group.items.filter((item) => isViewer ? !hiddenForViewer.has(item.id) : isStaffUser ? !hiddenForStaff.has(item.id) : true) }));
 
-  const filteredAppointments = useMemo(() => appointments.filter((item) => {
+  const filteredAppointments = useMemo(() => activeAppointments.filter((item) => {
     const query = appointmentSearch.trim().toLowerCase();
     const matchesQuery = !query || [item.id, item.customerSerial || '', item.customer, item.phone, item.staff].some((value) => value.toLowerCase().includes(query));
     return matchesQuery && (statusFilter === '全部' || item.status === statusFilter);
-  }), [appointmentSearch, appointments, statusFilter]);
+  }), [activeAppointments, appointmentSearch, statusFilter]);
 
   const filteredCustomers = useMemo(() => customers.filter((customer) => {
     const query = customerSearch.trim().toLowerCase();
@@ -1369,23 +1369,19 @@ export default function Home() {
 
   const renderDashboard = () => {
     const confirmedToday = todayAppointments.filter((item) => item.status === '已確認');
-    const completedToday = todayAppointments.filter((item) => item.status === '已完成');
+    const cancelledToday = todayAppointments.filter((item) => item.status === '已取消');
     const pendingVenue = todayAppointments.filter((item) => item.location === '待確認' || item.room === '待確認');
     const metrics = [
       { label: '今日預約', value: String(todayAppointments.length), note: `含 ${confirmedToday.length} 筆已確認` },
       { label: '已確認', value: String(confirmedToday.length), note: `${confirmedToday.filter((item) => item.location === '店內').length} 筆店內服務` },
-      { label: '已完成', value: String(completedToday.length), note: isViewer ? '金額已隱藏' : `共 ${formatCurrency(completedToday.reduce((sum, item) => sum + item.total, 0))}` },
-      sensitiveVisible
-        ? { label: '今日營收', value: completedRevenue.toLocaleString('zh-TW'), note: '依已完成訂單計算', currency: true }
-        : isStaffUser
-          ? { label: '我的訂單金額', value: completedRevenue.toLocaleString('zh-TW'), note: '僅顯示自己的訂單', currency: true }
-          : { label: '帳務資訊', value: '—', note: '登入授權帳號後顯示' },
+      { label: '今日取消', value: String(cancelledToday.length), note: '取消訂單獨立管理' },
+      { label: '場地待確認', value: String(pendingVenue.length), note: pendingVenue.length ? '請開啟預約管理處理' : '目前沒有待確認場地' },
     ];
     return (
       <div className="content-grid">
         <div className="main-column">
           <section className="metric-grid" aria-label="今日摘要">
-            {metrics.map((metric) => <article className="metric-card" key={metric.label}><p>{metric.label}</p><strong>{metric.currency && <small>NT$</small>}{metric.value}</strong><span>{metric.note}</span></article>)}
+            {metrics.map((metric) => <article className="metric-card" key={metric.label}><p>{metric.label}</p><strong>{metric.value}</strong><span>{metric.note}</span></article>)}
           </section>
           <section className="panel schedule-panel">
             <div className="panel-heading"><div><p className="eyebrow">TODAY’S FLOW</p><h2>今日預約進度</h2></div><button className="text-button" onClick={() => navigateTo('appointments')}>查看全部 →</button></div>
@@ -1411,7 +1407,6 @@ export default function Home() {
           </section>
           <section className="panel action-panel">
             <p className="eyebrow">NEEDS ATTENTION</p><h2>需要處理</h2>
-            <button onClick={() => sensitiveVisible ? navigateTo('checkout') : notify('帳務資訊需使用客服、店長或 Admin 帳號登入。')}><span className="action-number">{pendingCheckout.length}</span><div><strong>可完成訂單</strong><small>{sensitiveVisible ? '記錄付款後直接完成' : '帳務內容已隱藏'}</small></div><b>→</b></button>
             <button onClick={() => navigateTo('appointments')}><span className="action-number amber">{pendingVenue.length}</span><div><strong>場地待確認</strong><small>{pendingVenue.length ? '請開啟預約明細處理' : '目前沒有待確認場地'}</small></div><b>→</b></button>
           </section>
         </aside>
@@ -1435,7 +1430,7 @@ export default function Home() {
     <section className="panel table-panel">
       <div className="toolbar">
         <div className="search-box"><span>⌕</span><input value={appointmentSearch} onChange={(event) => setAppointmentSearch(event.target.value)} placeholder="搜尋訂單、客戶、電話或師傅" /></div>
-        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>{['全部', '待確認', '已確認', '已完成', '取消訂單'].map((status) => <option key={status} value={status === '取消訂單' ? '已取消' : status}>{status}</option>)}</select>
+        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>{['全部', '待確認', '已確認', '取消訂單'].map((status) => <option key={status} value={status === '取消訂單' ? '已取消' : status}>{status}</option>)}</select>
         {appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('appointments')}>⇩ 匯出</button>}
       </div>
       <BulkTools entity="appointments" ids={filteredAppointments.flatMap((item) => item.apiId ? [item.apiId] : [])} label="預約／訂單" />
@@ -1501,17 +1496,22 @@ export default function Home() {
   };
 
   const renderOperations = () => {
-    const columns: Array<{ key: Appointment['status']; label: string }> = [{ key: '待確認', label: '待確認' }, { key: '已確認', label: '已確認' }, { key: '已完成', label: '已完成' }, { key: '已取消', label: '取消訂單' }];
-    return <><BulkTools entity="appointments" ids={appointments.flatMap((item) => item.apiId ? [item.apiId] : [])} label="訂單" /><div className="kanban">{columns.map((column) => <section className="kanban-column" key={column.key}><header><div><strong>{column.label}</strong><span>{appointments.filter((item) => item.status === column.key).length}</span></div></header><div className="kanban-list">{appointments.filter((item) => item.status === column.key).map((item) => <button className="kanban-card" key={item.id} onClick={() => setModal({ type: 'appointmentDetail', id: item.id })}><label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={!!item.apiId && (selectedIds.appointments || []).includes(item.apiId)} onChange={() => item.apiId && toggleSelected('appointments', item.apiId)} /><span>選取</span></label><span className="kanban-time">{item.start}–{item.end}</span><strong>{item.customer}・{item.staff}</strong><small>{item.service}</small><small>{item.room}</small></button>)}{appointments.filter((item) => item.status === column.key).length === 0 && <div className="kanban-empty">目前沒有項目</div>}</div></section>)}</div></>;
+    const columns: Array<{ key: Appointment['status']; label: string }> = [{ key: '待確認', label: '待確認' }, { key: '已確認', label: '已確認' }, { key: '已取消', label: '取消訂單' }];
+    return <><BulkTools entity="appointments" ids={activeAppointments.flatMap((item) => item.apiId ? [item.apiId] : [])} label="訂單" /><div className="kanban">{columns.map((column) => { const items = activeAppointments.filter((item) => item.status === column.key); return <section className="kanban-column" key={column.key}><header><div><strong>{column.label}</strong><span>{items.length}</span></div></header><div className="kanban-list">{items.map((item) => <button className="kanban-card" key={item.id} onClick={() => setModal({ type: 'appointmentDetail', id: item.id })}><label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={!!item.apiId && (selectedIds.appointments || []).includes(item.apiId)} onChange={() => item.apiId && toggleSelected('appointments', item.apiId)} /><span>選取</span></label><span className="kanban-time">{item.start}–{item.end}</span><strong>{item.customer}・{item.staff}</strong><small>{item.service}</small><small>{item.room}</small></button>)}{items.length === 0 && <div className="kanban-empty">目前沒有項目</div>}</div></section>; })}</div></>;
   };
 
   const renderCheckout = () => (
-    <div className="checkout-stack">
-      <div className="checkout-layout">
-        <section className="panel checkout-list"><div className="panel-heading"><div><p className="eyebrow">CONFIRMED</p><h2>可完成訂單</h2></div><span className="room-count">{pendingCheckout.length}</span></div>{pendingCheckout.map((item) => <button className="checkout-row" key={item.id} onClick={() => setModal({ type: 'checkout', id: item.id })}><div><span>{item.end} 預計結束</span><strong>{item.customer}</strong><small>{item.id}・{item.staff}</small></div><div><strong>{formatCurrency(item.total)}</strong><small>{item.service}</small></div><b>記錄付款並完成 →</b></button>)}{pendingCheckout.length === 0 && <div className="empty-state">目前沒有可完成的訂單。</div>}</section>
-        <aside className="panel settlement-card"><p className="eyebrow">SIMPLE FLOW</p><h2>完成即回帳</h2><p>選擇現金或轉帳並按下「確認完成訂單」後，狀態會直接改為已完成，也視為已回帳。</p></aside>
+    <section className="panel table-panel checkout-history">
+      <div className="panel-heading"><div><p className="eyebrow">COMPLETED ORDERS</p><h2>已完成訂單歷史</h2></div><span className="room-count">{completedAppointments.length}</span></div>
+      <div className="checkout-history-list">
+        {completedAppointments.map((item) => <article className="checkout-row completed-history-row" key={item.id}>
+          <div><span>{item.date}　{item.start}–{item.end}</span><strong>{item.customer}</strong><small>{item.id}・{item.staff}</small></div>
+          <div><strong>{formatCurrency(item.total)}</strong><small>{item.service}</small></div>
+          <div><StatusPill status={item.status} /><small>{item.payment}</small></div>
+        </article>)}
+        {completedAppointments.length === 0 && <div className="empty-state">目前沒有已完成的訂單。</div>}
       </div>
-    </div>
+    </section>
   );
 
   const renderCustomers = () => (

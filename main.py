@@ -880,6 +880,14 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
     
     total = max(0, int(total_override if total_override is not None else price + extra_amount - discount)) if price > 0 or total_override is not None else 0
     payment_id = f"#{appointment.created_at.strftime('%y%m%d')}{appointment.id:03d}"
+    created_at_text = appointment.created_at.strftime("%Y-%m-%d %H:%M") if appointment.created_at else "未記錄"
+    customer_rows = [
+        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客人識別", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_vip_id, "size": "sm", "color": "#111111", "align": "end"}]},
+    ]
+    if not is_staff_notify:
+        customer_rows.append({"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_name, "size": "sm", "color": "#111111", "align": "end"}]})
+        if customer_phone:
+            customer_rows.append({"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶手機", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": customer_phone, "size": "sm", "color": "#111111", "align": "end"}]})
     
     bubble = {
         "type": "bubble",
@@ -893,9 +901,7 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
                 {
                     "type": "box", "layout": "vertical", "margin": "xxl", "spacing": "sm",
                     "contents": [
-                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客人識別", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_vip_id, "size": "sm", "color": "#111111", "align": "end"}]},
-                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_name, "size": "sm", "color": "#111111", "align": "end"}]},
-                        *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶手機", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": customer_phone, "size": "sm", "color": "#111111", "align": "end"}]}] if customer_phone and is_staff_notify else []),
+                        *customer_rows,
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "時段", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": time_text, "size": "sm", "color": "#111111", "align": "end", "wrap": True}]},
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "方案", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": plan_name, "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "separator", "margin": "xxl"},
@@ -905,7 +911,8 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
                     ]
                 },
                 {"type": "separator", "margin": "xxl"},
-                {"type": "box", "layout": "horizontal", "margin": "md", "contents": [{"type": "text", "text": "PAYMENT ID", "size": "xs", "color": "#aaaaaa", "flex": 0}, {"type": "text", "text": payment_id, "color": "#aaaaaa", "size": "xs", "align": "end"}]}
+                {"type": "box", "layout": "horizontal", "margin": "md", "contents": [{"type": "text", "text": "PAYMENT ID", "size": "xs", "color": "#aaaaaa", "flex": 0}, {"type": "text", "text": payment_id, "color": "#aaaaaa", "size": "xs", "align": "end"}]},
+                {"type": "box", "layout": "horizontal", "margin": "sm", "contents": [{"type": "text", "text": "建立時間", "size": "xs", "color": "#aaaaaa", "flex": 0}, {"type": "text", "text": created_at_text, "color": "#aaaaaa", "size": "xs", "align": "end"}]}
             ]
         },
         "styles": {
@@ -2244,17 +2251,18 @@ def notify_appointment_update(appointment, db: Session, *, time_changed: bool, a
     customer_line_id = appointment.user.line_user_id if appointment.user and appointment.user.line_user_id and not appointment.user.line_user_id.startswith(("manual:", "liff:", "guest:")) else None
     staff_line_id = appointment.staff.line_user_id if appointment.staff and appointment.staff.line_user_id and not appointment.staff.line_user_id.startswith(("pending:", "seeded:")) else None
     message = TextSendMessage(text=text)
-    card = build_order_flex(appointment, alt_text="預約資料已更新", db=db, show_return=False)
+    customer_card = build_order_flex(appointment, alt_text="預約資料已更新", db=db, show_return=False)
+    staff_card = build_order_flex(appointment, alt_text="預約資料已更新", is_staff_notify=True, db=db, show_return=False)
     if bot_customer_api and customer_line_id:
         try:
             bot_customer_api.push_message(customer_line_id, message)
-            bot_customer_api.push_message(customer_line_id, card)
+            bot_customer_api.push_message(customer_line_id, customer_card)
         except Exception:
             logging.exception("預約更新推送失敗 recipient=客戶 appointment_id=%s", appointment.id)
     if bot_staff_api and staff_line_id:
         try:
             bot_staff_api.push_message(staff_line_id, message)
-            bot_staff_api.push_message(staff_line_id, card)
+            bot_staff_api.push_message(staff_line_id, staff_card)
         except Exception:
             logging.exception("預約更新推送失敗 recipient=師傅 appointment_id=%s", appointment.id)
     if bot_staff_api and AdminUser:
@@ -2263,7 +2271,7 @@ def notify_appointment_update(appointment, db: Session, *, time_changed: bool, a
                 continue
             try:
                 bot_staff_api.push_message(account.line_user_id, message)
-                bot_staff_api.push_message(account.line_user_id, card)
+                bot_staff_api.push_message(account.line_user_id, staff_card)
             except Exception:
                 logging.exception("預約更新推送失敗 recipient=管理帳號 %s appointment_id=%s", account.username, appointment.id)
 

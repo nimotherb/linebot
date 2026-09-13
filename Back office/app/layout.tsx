@@ -4,7 +4,7 @@ import { NavigationLoadingProvider } from './components/NavigationLoading';
 
 export const metadata: Metadata = {
   title: '伊果 SPA｜營運管理後台',
-  description: '伊果 SPA 的預約、排班、現場進度與結帳管理中心。',
+  description: '伊果 SPA 的預約、排班、現場進度與完成訂單中心。',
   openGraph: {
     title: '伊果 SPA｜營運管理後台',
     description: '預約、排班、房間、結帳與服務方案的一站式管理中心。',

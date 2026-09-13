@@ -3063,9 +3063,9 @@ def register_admin_api(
                 raise HTTPException(status_code=422, detail="這個方案由店長安排師傅")
             if payload.staff_id not in available_ids:
                 raise HTTPException(status_code=409, detail="這位師傅在該時段已無法預約")
-        # 進到正式預訂端點代表使用「目前排班師傅」流程；未指定時由
-        # 系統從當下可用班表中直接指派一位，讓訂單能立即派給師傅。
-        assigned_staff_id = payload.staff_id or staff_items[0].id
+        # 未選擇師傅時保留 NULL，交由店長後續安排；不可建立或偷塞
+        # 虛擬師傅資料。只有明確指定時才綁定當下可用的在職師傅。
+        assigned_staff_id = payload.staff_id
         if plan.location_type == "onsite" and not room_capacity_available(db, start_dt, end_dt):
             raise HTTPException(status_code=409, detail="這個時段兩間房都已使用，請改選其他時間")
 
@@ -3102,7 +3102,7 @@ def register_admin_api(
             customer_name_snapshot=payload.customer_name.strip(),
             customer_phone_snapshot=contact_phone,
             customer_birthday_snapshot=payload.birthday.strip() if payload.birthday else getattr(customer, "birthday", None),
-            staff_name_snapshot=db.query(Staff).filter(Staff.id == assigned_staff_id).first().name,
+            staff_name_snapshot=(db.query(Staff).filter(Staff.id == assigned_staff_id).first().name if assigned_staff_id else None),
         )
         db.add(appointment)
         db.flush()
