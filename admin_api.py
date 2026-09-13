@@ -831,49 +831,6 @@ def register_admin_api(
     app.state.get_system_setting = get_system_setting
     app.state.update_customer_service_url = update_customer_service_url
 
-    def normalize_phone(value: str | None) -> str:
-        cleaned = re.sub(r"[\s()\-]", "", (value or "").strip())
-        if cleaned.startswith("+886"):
-            cleaned = "0" + cleaned[4:]
-        if not re.fullmatch(r"09\d{8}", cleaned):
-            raise HTTPException(status_code=422, detail="手機號碼必須是 09 開頭的 10 碼數字")
-        return cleaned
-
-    def get_system_setting(key: str, db: Session, default: str | None = None) -> str | None:
-        item = db.query(SystemSetting).filter(SystemSetting.setting_key == key).first()
-        return item.setting_value if item else default
-
-    def unique_staff_phone(db: Session, value: str, *, exclude_staff_id: int | None = None) -> str:
-        phone = normalize_phone(value)
-        query = db.query(Staff).filter(Staff.phone == phone)
-        if exclude_staff_id is not None:
-            query = query.filter(Staff.id != exclude_staff_id)
-        if query.first():
-            raise HTTPException(status_code=409, detail="此手機 ID 已綁定其他師傅")
-        return phone
-
-    def customer_phone_rows(db: Session, customer) -> list:
-        rows = db.query(CustomerPhone).filter(CustomerPhone.user_id == customer.id).order_by(CustomerPhone.is_primary.desc(), CustomerPhone.id).all()
-        if not rows and customer.phone:
-            try:
-                normalized = normalize_phone(customer.phone)
-            except HTTPException:
-                return []
-            owner = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
-            if not owner:
-                owner = CustomerPhone(user_id=customer.id, phone=normalized, is_primary=True)
-                db.add(owner)
-                db.flush()
-                rows = [owner]
-        return rows
-
-    def customer_for_phone(db: Session, phone: str):
-        normalized = normalize_phone(phone)
-        record = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
-        if record:
-            return db.query(User).filter(User.id == record.user_id).first(), normalized
-        return db.query(User).filter(User.phone == normalized).first(), normalized
-
     def anonymous_booking_customer(db: Session):
         customer = db.query(User).filter(User.line_user_id == "guest:anonymous").first()
         if not customer:
@@ -881,39 +838,6 @@ def register_admin_api(
             db.add(customer)
             db.flush()
         return customer
-
-    def sync_customer_phones(db: Session, customer, values: list[str]) -> list[str]:
-        normalized_values = list(dict.fromkeys(normalize_phone(value) for value in values))
-        for phone in normalized_values:
-            owner = db.query(CustomerPhone).filter(CustomerPhone.phone == phone, CustomerPhone.user_id != customer.id).first()
-            if owner:
-                raise HTTPException(status_code=409, detail=f"手機號碼 {phone} 已屬於其他客戶")
-        existing = {row.phone: row for row in db.query(CustomerPhone).filter(CustomerPhone.user_id == customer.id).all()}
-        for phone, row in existing.items():
-            if phone not in normalized_values:
-                db.delete(row)
-        for index, phone in enumerate(normalized_values):
-            row = existing.get(phone)
-            if row:
-                row.is_primary = index == 0
-            else:
-                db.add(CustomerPhone(user_id=customer.id, phone=phone, is_primary=index == 0))
-        customer.phone = normalized_values[0]
-        return normalized_values
-
-    def attach_customer_phone(db: Session, customer, phone: str) -> str:
-        normalized = normalize_phone(phone)
-        owner = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
-        if owner and owner.user_id != customer.id:
-            raise HTTPException(status_code=409, detail="此手機號碼已綁定其他客戶，請聯絡真人客服協助合併")
-        if not owner:
-            db.add(CustomerPhone(user_id=customer.id, phone=normalized, is_primary=not bool(customer.phone)))
-        if not customer.phone:
-            customer.phone = normalized
-        return normalized
-
-    app.state.get_system_setting = get_system_setting
-    app.state.update_customer_service_url = update_customer_service_url
 
     def normalize_phone(value: str | None) -> str:
         cleaned = re.sub(r"[\s()\-]", "", (value or "").strip())
@@ -2639,50 +2563,6 @@ def register_admin_api(
                 os.getenv("CUSTOMER_SERVICE_URL", DEFAULT_CUSTOMER_SERVICE_URL),
             ),
             "updated_by": user.display_name,
-        }
-
-    @app.patch("/api/admin/settings/customer-service")
-    def update_customer_service_setting(payload: CustomerServiceSettingIn, db: Session = Depends(get_db), user=Depends(require_roles("admin", "manager"))):
-        return {"customer_service_url": update_customer_service_url(user.id, payload.url, db)}
-
-    @app.get("/api/admin/bootstrap")
-    def bootstrap(db: Session = Depends(get_db), user=Depends(current_admin)):
-        appointments = db.query(Appointment).filter(Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES)).order_by(Appointment.start_time.desc()).limit(300).all()
-        booking_requests = db.query(BookingRequest).order_by(BookingRequest.created_at.desc()).limit(500).all()
-        shift_rows = db.query(Shift).filter(Shift.status == "active").order_by(Shift.start_time).limit(500).all()
-        shift_staff = _model_map(db, Staff, {item.staff_id for item in shift_rows})
-        customers = db.query(User).order_by(User.created_at.desc()).limit(1000).all()
-        audit_rows = db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(20).all()
-        audit_actors = _model_map(db, AdminUser, {item.actor_user_id for item in audit_rows if item.actor_user_id})
-        return {
-            "user": serialize_admin(user),
-            "appointments": appointment_dicts(db, appointments),
-            "booking_requests": booking_request_dicts(db, booking_requests),
-            "staff": [staff_dict(item) for item in db.query(Staff).order_by(Staff.name).all()],
-            "shifts": [shift_dict(item) | {"staff_name": shift_staff[item.staff_id].name if item.staff_id in shift_staff else "未知"} for item in shift_rows],
-            "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()],
-            "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.deleted_at.is_(None)).order_by(Promotion.id).all()],
-            "rooms": [{"id": item.id, "name": item.name, "active": item.active} for item in db.query(Room).order_by(Room.id).all()],
-            "venues": [{"id": item.id, "name": item.name, "address": item.address, "room_name": item.room_name, "rental_cost": item.rental_cost, "notes": item.notes, "active": item.active} for item in db.query(Venue).order_by(Venue.name).all()],
-            "customers": customer_dicts(db, customers),
-            "admin_users": [serialize_admin(item) for item in db.query(AdminUser).order_by(AdminUser.id).all()] if user.role in {"admin", "manager"} else [],
-            "return_rule_sets": return_rule_sets_dict(db),
-            "settings": {
-                "customer_service_url": get_system_setting(
-                    "customer_service_url",
-                    db,
-                    os.getenv("CUSTOMER_SERVICE_URL", DEFAULT_CUSTOMER_SERVICE_URL),
-                ),
-            },
-            "audit_logs": [{
-                "id": item.id,
-                "actor_name": audit_actors[item.actor_user_id].display_name if item.actor_user_id in audit_actors else "系統／員工",
-                "action": item.action,
-                "entity_type": item.entity_type,
-                "entity_id": item.entity_id,
-                "reason": item.reason,
-                "created_at": _iso(item.created_at),
-            } for item in audit_rows],
         }
 
     @app.patch("/api/admin/settings/customer-service")

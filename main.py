@@ -227,8 +227,7 @@ def handle_line_admin_message(text_value: str, user_id: str, db: Session):
             return TextSendMessage(text="新增客服功能目前無法使用，請改從後台操作。")
         display_name, username, pin = matched.groups()
         try:
-            updated = updater(identity["id"], matched.group(1), db)
-            return TextSendMessage(text=f"客服連結已更新：\n{updated}\n主選單與預約頁將立即使用新連結。")
+            account = creator(identity["id"], username, display_name, pin, db)
         except Exception as exc:
             return TextSendMessage(text=getattr(exc, "detail", "新增客服帳號失敗。"))
         return TextSendMessage(text=f"客服帳號已建立：\n名稱：{account['display_name']}\n帳號：{account['username']}\nPIN 已依輸入內容設定。")
@@ -707,43 +706,6 @@ def build_phone_confirm_flex(phone_num, action_prefix):
             }
         }
     )
-
-# --- 共用：LINE 管理選單 Flex ---
-def build_clerk_admin_menu(identity=None, db=None):
-    display_name = identity.get("display_name", "客服") if isinstance(identity, dict) else "客服"
-    return FlexSendMessage(
-        alt_text="客服管理選單",
-        contents={
-            "type": "bubble",
-            "styles": {"body": {"backgroundColor": "#4C1D95"}},
-            "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
-                {"type": "text", "text": "客服管理選單", "weight": "bold", "color": "#FCD34D", "size": "xl"},
-                {"type": "text", "text": f"{display_name}・客服", "color": "#E9D5FF", "size": "sm", "margin": "sm"},
-                {"type": "text", "text": "客服可查看預約與訂單資訊；帳號、刪除及系統設定請由店長或 Admin 操作。", "color": "#E9D5FF", "size": "xs", "wrap": True, "margin": "sm"},
-                {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "查看本日預約", "data": "action=admin_view"}},
-                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "登出管理員", "data": "action=admin_logout"}},
-            ]},
-        },
-    )
-
-
-def build_no_scheduled_staff_flex(*, plan: str, promotion_id: str, selected_dt: str, db: Session | None = None):
-    return FlexSendMessage(
-        alt_text="此時段沒有已排班師傅",
-        contents={
-            "type": "bubble",
-            "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
-                {"type": "text", "text": "此時段沒有已排班師傅", "weight": "bold", "size": "xl", "wrap": True},
-                {"type": "text", "text": "您可以改選時間、聯絡真人客服，或查看全部師傅並送出待客服確認的預約通知。", "size": "sm", "color": "#6B7280", "wrap": True},
-            ]},
-            "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
-                {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "datetimepicker", "label": "改時間", "data": "action=select_date", "mode": "datetime"}},
-                {"type": "button", "style": "secondary", "action": {"type": "uri", "label": "真人客服", "uri": get_support_url(db)}},
-                {"type": "button", "style": "primary", "color": "#D97706", "action": {"type": "postback", "label": "查看全部師傅", "data": f"action=select_all_staff&plan={plan}&promotion_id={promotion_id}&datetime={selected_dt}&offset=0"}},
-            ]},
-        },
-    )
-
 
 # --- 共用：LINE 管理選單 Flex ---
 def build_clerk_admin_menu(identity=None, db=None):
