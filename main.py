@@ -483,8 +483,8 @@ def build_booking_web_message(db: Session | None = None, user=None, *, welcome: 
                 "spacing": "sm",
                 "contents": [
                     {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "uri", "label": "開啟預約網頁", "uri": booking_url}},
-                    {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "message", "label": "查詢預約", "text": "查詢預約"}},
-                    {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "message", "label": "查詢 UID", "text": "查詢UID"}},
+                    *([{"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "message", "label": "查詢預約", "text": "查詢預約"}},
+                       {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "message", "label": "查詢 UID", "text": "查詢UID"}}] if welcome else []),
                     {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "uri", "label": "聯絡真人客服", "uri": support_url}},
                 ],
             },

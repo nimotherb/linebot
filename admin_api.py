@@ -2582,7 +2582,9 @@ def register_admin_api(
             "user": serialize_admin(user),
             "appointments": appointment_dicts(db, appointments),
             "booking_requests": booking_request_dicts(db, booking_requests),
-            "staff": [staff_dict(item) for item in db.query(Staff).order_by(Staff.name).all()],
+            # Retired identities remain in storage for historical order links,
+            # but are excluded from the active management roster.
+            "staff": [staff_dict(item) for item in db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.name).all()],
             "shifts": [shift_dict(item) | {"staff_name": shift_staff[item.staff_id].name if item.staff_id in shift_staff else "未知"} for item in shift_rows],
             "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()],
             "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.deleted_at.is_(None)).order_by(Promotion.id).all()],
