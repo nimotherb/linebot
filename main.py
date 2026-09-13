@@ -336,7 +336,101 @@ def parse_staff_profile_text(value: str) -> dict[str, str]:
         return matches[0]
 
     try:
-        return getter("customer_service_url", db, fallback) or fallback
+        height = extract("身高", r"\d{3}")
+        weight = extract("體重", r"\d{2,3}")
+        role = extract("角色", "|".join(re.escape(item) for item in sorted(VALID_STAFF_ROLES)))
+    except ValueError as exc:
+        raise ValueError(
+            "請一次貼上完整且正確的資料：\n"
+            "身高=156\n體重=60\n角色=攻擊手\n\n"
+            "身高須為 3 位數字；角色僅可填：攻擊手／守備方／無特定／攻守兼備。"
+        ) from exc
+
+    if not 100 <= int(height) <= 250 or not 30 <= int(weight) <= 250:
+        raise ValueError("身高或體重超出合理範圍，請確認後一次重新貼上完整資料。")
+    return {"height": height, "weight": weight, "role": role}
+
+
+def repair_legacy_staff_profile_fields(staff) -> bool:
+    """Split profile text accidentally stored in the legacy height column."""
+    raw_height = (staff.height or "").strip()
+    if not raw_height or re.fullmatch(r"\d{3}", raw_height):
+        return False
+    candidate = raw_height if "身高" in raw_height else f"身高={raw_height}"
+    try:
+        profile = parse_staff_profile_text(candidate)
+    except ValueError:
+        return False
+    staff.height = profile["height"]
+    if not (staff.weight or "").strip():
+        staff.weight = profile["weight"]
+    if not (staff.role or "").strip():
+        staff.role = profile["role"]
+    return True
+
+
+def customer_phone_values(db: Session, user: User | None) -> list[str]:
+    if not user:
+        return []
+    values = [row.phone for row in db.query(CustomerPhone).filter(CustomerPhone.user_id == user.id).order_by(CustomerPhone.is_primary.desc(), CustomerPhone.id).all()]
+    if not values and user.phone:
+        values.append(user.phone)
+    return values
+
+
+def customer_by_phone(db: Session, phone: str) -> User | None:
+    normalized = normalize_phone(phone)
+    record = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
+    if record:
+        return db.query(User).filter(User.id == record.user_id).first()
+    return db.query(User).filter(User.phone == normalized).first()
+
+
+def add_customer_phone(db: Session, user: User, phone: str, *, primary: bool = False) -> str:
+    normalized = normalize_phone(phone)
+    existing = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
+    if existing and existing.user_id != user.id:
+        raise ValueError("此手機號碼已屬於其他客戶")
+    if primary:
+        db.query(CustomerPhone).filter(CustomerPhone.user_id == user.id).update({CustomerPhone.is_primary: False})
+    if not existing:
+        db.add(CustomerPhone(user_id=user.id, phone=normalized, is_primary=primary))
+    elif primary:
+        existing.is_primary = True
+    if primary or not user.phone:
+        user.phone = normalized
+    return normalized
+
+
+def _trace_id() -> str:
+    return f"{datetime.utcnow().strftime('%m%d%H%M%S')}-{secrets.token_hex(2)}"
+
+
+def notify_dispatch_error(db: Session, context: str, trace_id: str) -> None:
+    """Alert bound customer-service accounts, never ordinary staff accounts."""
+    if not bot_staff_api or not hasattr(app.state, "admin_models"):
+        return
+    cooldown_key = context.split(":", 1)[0]
+    now = datetime.utcnow()
+    if now - _DISPATCH_ALERTED_AT.get(cooldown_key, datetime.min) < timedelta(minutes=5):
+        return
+    _DISPATCH_ALERTED_AT[cooldown_key] = now
+    AdminUser = app.state.admin_models.get("AdminUser")
+    if not AdminUser:
+        return
+    alert = TextSendMessage(text=f"⚠️ LINE Bot 顯示失敗\n位置：{context}\n追蹤碼：{trace_id}\n系統紀錄：{RENDER_LOGS_URL}")
+    for admin_user in db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.line_user_id.isnot(None)).all():
+        try:
+            bot_staff_api.push_message(admin_user.line_user_id, alert)
+        except Exception:
+            logging.exception("無法推送客服錯誤通知 admin_user_id=%s trace=%s", admin_user.id, trace_id)
+
+
+def reply_with_fallback(bot_api, reply_token: str, message, *, db: Session | None = None, context: str = "LINE 選單", admin: bool = False) -> bool:
+    """Reply safely and fall back to plain text when a Flex payload is rejected."""
+    try:
+        bot_api.reply_message(reply_token, message)
+        return True
     except Exception:
         trace_id = _trace_id()
         logging.exception("LINE 回覆失敗 context=%s trace=%s", context, trace_id)
