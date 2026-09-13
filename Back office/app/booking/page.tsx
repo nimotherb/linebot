@@ -42,7 +42,7 @@ const taipeiInputValue = (leadMinutes = 90) => {
 };
 
 const money = (value: number) => `NT$ ${value.toLocaleString('zh-TW')}`;
-const categoryLabel = (value?: string) => value === 'straight' ? '直男師傅' : value === 'bisexual' ? '雙性師傅' : '圈內師傅';
+const categoryLabel = (value: string | undefined, categories: PublicBookingOptions['staff_categories'] = []) => categories?.find((item) => item.key === value)?.name || value || '資料更新中';
 
 const normalizeStaffName = (value: string) => value.normalize('NFKC').replace(/\s+/g, '').toLocaleLowerCase('zh-TW');
 
@@ -78,6 +78,7 @@ export default function BookingPage() {
   const [name, setName] = useState('');
   const [lineUserId, setLineUserId] = useState('');
   const [phone, setPhone] = useState('');
+  const [birthday, setBirthday] = useState('');
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
@@ -141,6 +142,7 @@ export default function BookingPage() {
           if (!active) return;
           setName((current) => current || savedIdentity.name || decoded?.name || '');
           setPhone((current) => current || savedIdentity.phone || '');
+          setBirthday((current) => current || savedIdentity.birthday || '');
         } catch {}
         setInsideLine(liff.isInClient());
         setIdentityMode('line');
@@ -206,7 +208,7 @@ export default function BookingPage() {
     setError('');
     try {
       const payload = {
-        customer_name: name.trim(), phone: phone || null, service_plan_id: service.id, start_time: startTime,
+        customer_name: name.trim(), phone: phone || null, birthday: birthday || null, service_plan_id: service.id, start_time: startTime,
         staff_id: staff ? staff.id : null,
         notes: notes.trim() || null, idempotency_key: idempotencyKey, website: '',
         id_token: idToken || null, line_user_id: lineUserId || null, line_display_name: name.trim() || null,
@@ -304,6 +306,7 @@ export default function BookingPage() {
             <label className={styles.field}>手機號碼（選填）<input value={phone} onChange={(event) => setPhone(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="09xxxxxxxx" inputMode="numeric" pattern="09\d{8}" /></label>
           </div>
           <label className={styles.field}>備註（選填）<textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} maxLength={1000} placeholder="特殊需求或方便聯絡的方式" /></label>
+          <label className={styles.field}>生日（選填）<input type="date" value={birthday} onChange={(event) => setBirthday(event.target.value)} /></label>
           <input className={styles.honeypot} name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" />
         </section>
         <div className={styles.total}><span>預估金額<small>優惠由後端依資格確認</small></span><strong>{money(total)}</strong></div>

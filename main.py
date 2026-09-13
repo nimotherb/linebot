@@ -108,6 +108,8 @@ class User(Base):
     phone_temp = Column(String(50), nullable=True)
     display_name = Column(String(255), nullable=True)
     customer_grade = Column(String(10), default="N", nullable=False)
+    birthday = Column(String(10), nullable=True)
+    birthday_pending = Column(String(10), nullable=True)
     utm_source = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     appointments = relationship("Appointment", back_populates="user", cascade="all, delete-orphan")
@@ -158,6 +160,7 @@ class Appointment(Base):
     status = Column(String(50), default="pending", nullable=False)
     customer_name_snapshot = Column(String(255), nullable=True)
     customer_phone_snapshot = Column(String(20), nullable=True)
+    customer_birthday_snapshot = Column(String(10), nullable=True)
     staff_name_snapshot = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     user = relationship("User", back_populates="appointments")
@@ -898,9 +901,7 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
                         {"type": "separator", "margin": "xxl"},
                         {"type": "box", "layout": "horizontal", "margin": "xxl", "contents": [{"type": "text", "text": "方案定價", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {price}", "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "優惠", "size": "sm", "color": "#555555", "flex": 2, "wrap": True}, {"type": "text", "text": f"-NT$ {discount}", "size": "sm", "color": "#111111", "align": "end"}]},
-                        *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "附加費", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"+NT$ {extra_amount}", "size": "sm", "color": "#111111", "align": "end"}]}] if extra_amount else []),
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "總計", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {total}", "size": "sm", "color": "#111111", "align": "end"}]},
-                        *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "師傅應回帳", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {return_amount}・{return_status}", "size": "sm", "color": "#B45309", "align": "end"}]}, {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "店家回收", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {shop_recovery_amount}", "size": "sm", "color": "#111111", "align": "end"}]}, {"type": "text", "text": f"A -{discount_employee_amount}／B -{discount_shop_amount}／C +{surcharge_employee_amount}／D +{surcharge_shop_amount}", "size": "xs", "color": "#6B7280", "wrap": True}] if (show_return or is_staff_notify) else [])
                     ]
                 },
                 {"type": "separator", "margin": "xxl"},
@@ -2298,6 +2299,50 @@ def notify_appointment_update(appointment, db: Session, *, time_changed: bool, a
                 logging.exception("預約更新推送失敗 recipient=管理帳號 %s appointment_id=%s", account.username, appointment.id)
 
 
+def dispatch_appointment_line(appointment, db: Session, *, actor=None) -> dict:
+    """Explicitly dispatch the latest order card to all valid stakeholders."""
+    models = getattr(app.state, "admin_models", {})
+    AdminUser = models.get("AdminUser")
+    RevokedStaffLine = models.get("RevokedStaffLine")
+    recipients: list[tuple[str, str, object]] = []
+    if appointment.user and appointment.user.line_user_id and not appointment.user.line_user_id.startswith(("manual:", "liff:")):
+        recipients.append((appointment.user.line_user_id, "customer", bot_customer_api))
+    if appointment.staff and appointment.staff.line_user_id and not appointment.staff.line_user_id.startswith(("pending:", "seeded:")):
+        recipients.append((appointment.staff.line_user_id, "staff", bot_staff_api))
+    if AdminUser:
+        for account in db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.line_user_id.isnot(None)).all():
+            recipients.append((account.line_user_id, account.role, bot_staff_api))
+    seen: set[str] = set()
+    results = []
+    import re as _re
+    for uid, kind, api in recipients:
+        if uid in seen:
+            results.append({"uid": uid, "status": "skipped", "reason": "duplicate"})
+            continue
+        seen.add(uid)
+        if not _re.fullmatch(r"U[0-9a-fA-F]{32}", uid or ""):
+            results.append({"uid": uid, "status": "skipped", "reason": "invalid_uid"})
+            continue
+        if RevokedStaffLine and db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == uid).first():
+            results.append({"uid": uid, "status": "skipped", "reason": "revoked"})
+            continue
+        if not api:
+            results.append({"uid": uid, "status": "failed", "reason": "line_token_unconfigured"})
+            continue
+        try:
+            api.push_message(uid, build_order_flex(appointment, alt_text="伊果 SPA 預約資料", is_staff_notify=kind != "customer", db=db))
+            results.append({"uid": uid, "status": "sent", "kind": kind})
+        except Exception as exc:
+            logging.exception("LINE 訂單派發失敗 appointment_id=%s uid=%s", appointment.id, uid)
+            results.append({"uid": uid, "status": "failed", "reason": str(exc)[:200]})
+    return {
+        "sent": sum(item["status"] == "sent" for item in results),
+        "skipped": sum(item["status"] == "skipped" for item in results),
+        "failed": sum(item["status"] == "failed" for item in results),
+        "results": results,
+    }
+
+
 def notify_booking_request_parties(booking_request, db: Session, *, origin: str = "booking_web") -> None:
     """Notify the customer that review is pending and alert management."""
     AdminUser = getattr(app.state, "admin_models", {}).get("AdminUser")
@@ -2359,6 +2404,8 @@ def on_startup():
             "ALTER TABLE users ADD COLUMN phone_temp VARCHAR(50);",
             "ALTER TABLE users ADD COLUMN display_name VARCHAR(255);",
             "ALTER TABLE users ADD COLUMN customer_grade VARCHAR(10) NOT NULL DEFAULT 'N';",
+            "ALTER TABLE users ADD COLUMN birthday VARCHAR(10) NULL;",
+            "ALTER TABLE users ADD COLUMN birthday_pending VARCHAR(10) NULL;",
             "ALTER TABLE staffs ADD COLUMN phone VARCHAR(50);",
             "ALTER TABLE staffs ADD COLUMN phone_temp VARCHAR(50);",
             "ALTER TABLE staffs ADD COLUMN height VARCHAR(20);",
@@ -2386,6 +2433,7 @@ def on_startup():
             "ALTER TABLE appointments ADD COLUMN plan_name VARCHAR(50);",
             "ALTER TABLE appointments ADD COLUMN customer_name_snapshot VARCHAR(255);",
             "ALTER TABLE appointments ADD COLUMN customer_phone_snapshot VARCHAR(20);",
+            "ALTER TABLE appointments ADD COLUMN customer_birthday_snapshot VARCHAR(10);",
             "ALTER TABLE appointments ADD COLUMN staff_name_snapshot VARCHAR(255);",
             "ALTER TABLE shifts ADD COLUMN is_next_day BOOLEAN NOT NULL DEFAULT FALSE;",
             "ALTER TABLE shifts ADD COLUMN modified_by_admin_id INTEGER NULL;",
@@ -2397,8 +2445,12 @@ def on_startup():
             "ALTER TABLE appointment_details ADD COLUMN surcharge_shop_amount INTEGER NOT NULL DEFAULT 0;",
             "ALTER TABLE appointment_details ADD COLUMN staff_return_amount INTEGER NOT NULL DEFAULT 0;",
             "ALTER TABLE appointment_details ADD COLUMN shop_recovery_amount INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN settlement_overridden_by_admin_id INTEGER NULL;",
+            "ALTER TABLE appointment_details ADD COLUMN settlement_override_at DATETIME NULL;",
             "ALTER TABLE booking_requests MODIFY contact_phone VARCHAR(20) NULL;",
             "ALTER TABLE booking_requests ADD COLUMN customer_name_snapshot VARCHAR(120) NULL;",
+            "ALTER TABLE booking_requests ADD COLUMN customer_birthday_snapshot VARCHAR(10) NULL;",
+            "ALTER TABLE staff_categories ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;",
         ]
         for q in queries:
             try:
@@ -2537,5 +2589,6 @@ register_admin_api(
     appointment_update_notifier=notify_appointment_update,
     booking_request_notifier=notify_booking_request_parties,
     staff_line_notifier=notify_staff_line_linked,
+    appointment_line_dispatcher=dispatch_appointment_line,
 )
 

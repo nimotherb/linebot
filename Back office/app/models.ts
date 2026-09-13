@@ -40,6 +40,8 @@ export type Appointment = {
   surchargeShopAmount?: number;
   staffReturnAmount?: number;
   shopRecoveryAmount?: number;
+  settlementOverriddenByAdminId?: number;
+  settlementOverrideAt?: string;
   promotionId?: string | number;
   promotionIds?: number[];
   promotionName?: string;
@@ -54,8 +56,9 @@ export type StaffMember = {
   id: string;
   apiId?: number;
   name: string;
-  category: '直男師傅' | '圈內師傅' | '雙性師傅';
-  categories?: Array<'直男師傅' | '圈內師傅' | '雙性師傅'>;
+  birthday?: string;
+  category: string;
+  categories?: string[];
   status: '在職' | '暫時退役';
   lineConnected: boolean;
   phone?: string;
@@ -93,6 +96,8 @@ export type Customer = {
   vipSerial: string;
   grade: 'SSR' | 'SR' | 'R' | 'N';
   name: string;
+  birthday?: string;
+  birthdayPending?: string;
   lineName: string;
   phone: string;
   phones: string[];

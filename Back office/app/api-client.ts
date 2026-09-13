@@ -51,6 +51,8 @@ type RawAppointment = {
   surcharge_shop_amount?: number;
   staff_return_amount?: number;
   shop_recovery_amount?: number;
+  settlement_overridden_by_admin_id?: number;
+  settlement_override_at?: string;
   commission_amount?: number;
   expected_return_amount?: number;
   staff_return_status?: string;
@@ -72,8 +74,8 @@ type RawService = {
 type RawStaff = {
   id: number;
   name: string;
-  category?: 'straight' | 'gay' | 'bisexual';
-  categories?: Array<'straight' | 'gay' | 'bisexual'>;
+  category?: string;
+  categories?: string[];
   employment_status: 'active' | 'retired';
   line_connected: boolean;
   phone?: string;
@@ -142,11 +144,12 @@ export type BootstrapData = {
   booking_requests?: RawBookingRequest[];
   services: RawService[];
   staff: RawStaff[];
+  staff_categories?: StaffCategoryView[];
   shifts: RawShift[];
   promotions: Array<{ id: number; name: string; calculation_type: string; value: number; active: boolean; starts_at?: string; ends_at?: string }>;
   rooms: Array<{ id: number; name: string; active: boolean }>;
   venues?: Array<{ id: number; name: string; address?: string; room_name?: string; rental_cost: number; notes?: string; active: boolean }>;
-  customers?: Array<{ id: number; customer_grade: 'SSR' | 'SR' | 'R' | 'N'; vip_serial: string; display_name?: string; primary_phone?: string; phones: string[]; visits: number; spent: number; last_visit?: string }>;
+  customers?: Array<{ id: number; customer_grade: 'SSR' | 'SR' | 'R' | 'N'; vip_serial: string; display_name?: string; birthday?: string; birthday_pending?: string; primary_phone?: string; phones: string[]; visits: number; spent: number; last_visit?: string }>;
   admin_users?: AdminIdentity[];
   return_rule_sets?: ReturnRuleSetView[];
   audit_logs?: Array<{
@@ -172,6 +175,7 @@ export type PublicBookingOptions = {
   services: RawService[];
   promotions: BootstrapData['promotions'];
   staff: RawStaff[];
+  staff_categories?: StaffCategoryView[];
   minimum_lead_minutes: number;
   support_url: string;
   liff_id?: string;
@@ -184,10 +188,12 @@ export type PublicBookingAvailability = {
   can_choose_staff: boolean;
   request_only?: boolean;
   available_for_instant_booking?: boolean;
-  staff: Array<{ id: number; name: string; category?: RawStaff['category'] }>;
+  staff: Array<{ id: number; name: string; category?: string; categories?: string[] }>;
 };
 
-export type PublicBookingIdentity = { name?: string; phone?: string };
+export type StaffCategoryView = { id: number; key: string; name: string; sort_order: number; active: boolean };
+
+export type PublicBookingIdentity = { name?: string; phone?: string; birthday?: string | null };
 
 export type RawBookingRequest = {
   id: number;
@@ -258,6 +264,8 @@ export const mapAppointment = (item: RawAppointment): Appointment => {
     surchargeShopAmount: item.surcharge_shop_amount ?? 0,
     staffReturnAmount: item.staff_return_amount ?? item.expected_return_amount ?? 0,
     shopRecoveryAmount: item.shop_recovery_amount ?? 0,
+    settlementOverriddenByAdminId: item.settlement_overridden_by_admin_id,
+    settlementOverrideAt: item.settlement_override_at,
     commissionAmount: item.commission_amount ?? 0,
     promotionId: item.promotion_id ? String(item.promotion_id) : undefined,
     promotionIds: item.promotion_ids || (item.promotion_id ? [item.promotion_id] : []),
@@ -281,16 +289,12 @@ export const mapService = (item: RawService): ServicePlan => ({
   active: item.active,
 });
 
-const categoryLabel = (category?: RawStaff['category']): StaffMember['category'] => (
-  category === 'straight' ? '直男師傅' : category === 'bisexual' ? '雙性師傅' : '圈內師傅'
-);
-
 export const mapStaff = (item: RawStaff): StaffMember => ({
   id: String(item.id),
   apiId: item.id,
   name: item.name,
-  category: categoryLabel(item.category),
-  categories: (item.categories || (item.category ? [item.category] : [])).map(categoryLabel),
+  category: item.category || item.categories?.[0] || '',
+  categories: item.categories || (item.category ? [item.category] : []),
   status: item.employment_status === 'retired' ? '暫時退役' : '在職',
   lineConnected: item.line_connected,
   phone: item.phone,
@@ -350,6 +354,8 @@ export const mapCustomer = (item: NonNullable<BootstrapData['customers']>[number
   vipSerial: item.vip_serial,
   grade: item.customer_grade,
   name: item.display_name || '未命名客戶',
+  birthday: (item as typeof item & { birthday?: string }).birthday,
+  birthdayPending: (item as typeof item & { birthday_pending?: string }).birthday_pending,
   lineName: item.display_name || '未取得',
   phone: item.primary_phone || item.phones[0] || '未提供',
   phones: item.phones || [],
@@ -486,12 +492,24 @@ export class SpaApi {
     return this.request<RawAppointment>(`/api/admin/appointments/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
   }
 
-  updateCustomer(id: number, payload: { display_name: string; phones: string[]; customer_grade: Customer['grade'] }) {
+  updateCustomer(id: number, payload: { display_name: string; phones: string[]; customer_grade: Customer['grade']; birthday?: string | null }) {
     return this.request<NonNullable<BootstrapData['customers']>[number]>(`/api/admin/customers/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
+  confirmCustomerBirthday(id: number) {
+    return this.request<NonNullable<BootstrapData['customers']>[number]>(`/api/admin/customers/${id}/birthday/confirm`, { method: 'POST' });
+  }
+
+  rejectCustomerBirthday(id: number) {
+    return this.request<NonNullable<BootstrapData['customers']>[number]>(`/api/admin/customers/${id}/birthday/reject`, { method: 'POST' });
   }
 
   createShift(payload: Record<string, unknown>) {
     return this.request<RawShift>('/api/admin/shifts', { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  notifyAppointmentLine(id: number) {
+    return this.request<{ sent: number; skipped: number; failed: number; results: Array<Record<string, unknown>> }>(`/api/admin/appointments/${id}/notify-line`, { method: 'POST' });
   }
 
   updateShift(id: number, payload: Record<string, unknown>) {
@@ -527,6 +545,17 @@ export class SpaApi {
     return this.request<RawStaff[]>('/api/admin/staff/bulk-category', {
       method: 'POST', body: JSON.stringify({ staff_ids: staffIds, categories }),
     });
+  }
+
+  listStaffCategories() { return this.request<StaffCategoryView[]>('/api/admin/staff-categories'); }
+  createStaffCategory(payload: { key: string; name: string; sort_order?: number; active?: boolean }) {
+    return this.request<StaffCategoryView>('/api/admin/staff-categories', { method: 'POST', body: JSON.stringify(payload) });
+  }
+  updateStaffCategory(id: number, payload: { key: string; name: string; sort_order?: number; active?: boolean }) {
+    return this.request<StaffCategoryView>(`/api/admin/staff-categories/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+  deleteStaffCategory(id: number) {
+    return this.request<{ ok: boolean }>(`/api/admin/staff-categories/${id}`, { method: 'DELETE' });
   }
 
   approveStaffPhoneChange(id: number) {

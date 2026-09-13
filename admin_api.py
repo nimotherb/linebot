@@ -105,6 +105,7 @@ class AdminSelfUpdateIn(BaseModel):
 class AppointmentCreateIn(BaseModel):
     customer_name: str = Field(min_length=1, max_length=120)
     phone: str = Field(min_length=8, max_length=30)
+    birthday: str | None = Field(default=None, max_length=10)
     service_plan_id: int
     start_time: datetime | str
     end_time: datetime | str | None = None
@@ -132,6 +133,7 @@ class AppointmentCreateIn(BaseModel):
 class AppointmentPatchIn(BaseModel):
     customer_name: str | None = Field(default=None, min_length=1, max_length=120)
     phone: str | None = Field(default=None, min_length=8, max_length=30)
+    birthday: str | None = Field(default=None, max_length=10)
     status: Literal["pending", "confirmed", "completed", "待確認", "已確認", "已完成"] | None = None
     staff_id: int | None = None
     room_id: int | None = None
@@ -241,6 +243,7 @@ class CustomerPatchIn(BaseModel):
     display_name: str = Field(min_length=1, max_length=255)
     phones: list[str] = Field(min_length=1, max_length=10)
     customer_grade: Literal["SSR", "SR", "R", "N"] = "N"
+    birthday: str | None = Field(default=None, max_length=10)
 
 
 class RoomCreateIn(BaseModel):
@@ -270,6 +273,7 @@ class BulkDeleteIn(BaseModel):
 class PublicBookingCreateIn(BaseModel):
     customer_name: str = Field(min_length=1, max_length=120)
     phone: str | None = Field(default=None, min_length=8, max_length=30)
+    birthday: str | None = Field(default=None, max_length=10)
     service_plan_id: int
     start_time: datetime
     staff_id: int | None = None
@@ -353,6 +357,8 @@ class StaffBulkCategoryIn(BaseModel):
 class StaffCategoryIn(BaseModel):
     key: str = Field(min_length=1, max_length=40, pattern=r"^[a-zA-Z0-9_-]+$")
     name: str = Field(min_length=1, max_length=120)
+    sort_order: int = Field(default=0, ge=0, le=100000)
+    active: bool = True
 
 
 class StaffPhoneChangeIn(BaseModel):
@@ -476,6 +482,7 @@ def register_admin_api(
     appointment_update_notifier=None,
     booking_request_notifier=None,
     staff_line_notifier=None,
+    appointment_line_dispatcher=None,
 ) -> None:
     """Register models, startup seeding, and all API endpoints."""
 
@@ -594,6 +601,8 @@ def register_admin_api(
         surcharge_shop_amount = Column(Integer, nullable=False, default=0)
         staff_return_amount = Column(Integer, nullable=False, default=0)
         shop_recovery_amount = Column(Integer, nullable=False, default=0)
+        settlement_overridden_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
+        settlement_override_at = Column(DateTime, nullable=True)
         location_type = Column(String(30), nullable=False, default="onsite")
         notes = Column(Text, nullable=True)
         updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
@@ -733,6 +742,7 @@ def register_admin_api(
         end_time = Column(DateTime, nullable=False)
         contact_phone = Column(String(20), nullable=True)
         customer_name_snapshot = Column(String(120), nullable=True)
+        customer_birthday_snapshot = Column(String(10), nullable=True)
         notes = Column(Text, nullable=True)
         source = Column(String(30), nullable=False, default="booking_web")
         status = Column(String(30), nullable=False, default="pending", index=True)
@@ -768,6 +778,7 @@ def register_admin_api(
         id = Column(Integer, primary_key=True)
         key = Column(String(40), unique=True, nullable=False)
         name = Column(String(120), nullable=False)
+        sort_order = Column(Integer, nullable=False, default=0)
         active = Column(Boolean, nullable=False, default=True)
         created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
 
@@ -796,6 +807,7 @@ def register_admin_api(
         "BookingRequest": BookingRequest,
         "SiteContent": SiteContent,
         "SystemSetting": SystemSetting,
+        "StaffCategory": StaffCategory,
     }
 
     def normalize_customer_service_url(value: str) -> str:
@@ -1646,11 +1658,42 @@ def register_admin_api(
             "shop_recovery_amount": int(round(shop_recovery)),
         }
 
+    def staff_category_dict(item) -> dict[str, Any]:
+        return {"id": item.id, "key": item.key, "name": item.name, "sort_order": int(item.sort_order or 0), "active": bool(item.active)}
+
     def promotion_rows(db: Session, promotion_ids: list[int] | None) -> list[Any]:
         ids = [int(value) for value in (promotion_ids or []) if value]
         if not ids:
             return []
         return db.query(Promotion).filter(Promotion.id.in_(ids), Promotion.active.is_(True), Promotion.deleted_at.is_(None)).all()
+
+    def birthday_promotions(db: Session, birthday: str | None, booking_date: datetime, *, source: str) -> list[Any]:
+        """Select birthday rules server-side; anonymous web bookings never qualify."""
+        if source == "web_anonymous" or not birthday:
+            return []
+        raw = str(birthday).strip()
+        try:
+            birthday_date = datetime.strptime(raw[:10], "%Y-%m-%d").date()
+        except ValueError:
+            try:
+                birthday_date = datetime.strptime(raw[-5:], "%m-%d").date().replace(year=booking_date.year)
+            except ValueError:
+                return []
+        booking_day = booking_date.date()
+        week_match = birthday_date.isocalendar()[:2] == booking_day.isocalendar()[:2]
+        rows = db.query(Promotion).filter(
+            Promotion.active.is_(True), Promotion.deleted_at.is_(None), Promotion.name.contains("生日")
+        ).order_by(Promotion.id).all()
+        eligible = []
+        for item in rows:
+            name = item.name or ""
+            if "月" in name and birthday_date.month == booking_day.month:
+                eligible.append(item)
+            elif ("週" in name or "周" in name) and week_match:
+                eligible.append(item)
+            elif birthday_date.month == booking_day.month and birthday_date.day == booking_day.day:
+                eligible.append(item)
+        return eligible
 
     def return_rule_for_appointment(db: Session, appointment, detail=None):
         if not appointment.staff_id:
@@ -1807,6 +1850,8 @@ def register_admin_api(
             "commission_amount": getattr(detail, "commission_amount", None) if detail else None,
             **settlement,
             "staff_return_status": staff_return.status if staff_return else "not_created",
+            "settlement_overridden_by_admin_id": getattr(detail, "settlement_overridden_by_admin_id", None) if detail else None,
+            "settlement_override_at": _iso(getattr(detail, "settlement_override_at", None)) if detail else None,
         }
 
     def appointment_dicts(db: Session, items: list, *, public: bool = False) -> list[dict[str, Any]]:
@@ -1815,7 +1860,7 @@ def register_admin_api(
 
     def public_appointment_dict(db: Session, item, cache: dict[str, Any] | None = None) -> dict[str, Any]:
         row = appointment_dict(db, item, cache)
-        for key in ("customer_id", "customer_serial", "customer_name", "phone", "base_price", "discount_amount", "extra_amount", "total_amount", "notes", "payment_method", "cash_return_status", "expected_return_amount", "staff_return_status", "commission_amount", "discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount"):
+        for key in ("customer_id", "customer_serial", "customer_name", "phone", "base_price", "discount_amount", "extra_amount", "total_amount", "notes", "payment_method", "cash_return_status", "expected_return_amount", "staff_return_status", "commission_amount", "discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount", "promotion_id", "promotion_ids", "promotion_name"):
             row.pop(key, None)
         row["customer_name"] = "已隱藏"
         row["phone"] = None
@@ -1858,6 +1903,8 @@ def register_admin_api(
             "customer_grade": getattr(item, "customer_grade", "N"),
             "vip_serial": customer_serial(item.id, phones[0] if phones else item.phone, getattr(item, "customer_grade", "N")),
             "display_name": getattr(item, "display_name", None),
+            "birthday": getattr(item, "birthday", None),
+            "birthday_pending": getattr(item, "birthday_pending", None),
             "primary_phone": phones[0] if phones else item.phone,
             "phones": phones or ([item.phone] if item.phone else []),
             "visits": len(visits),
@@ -1892,6 +1939,7 @@ def register_admin_api(
             "customer_serial": customer_serial(item.user_id, item.contact_phone, getattr(customer, "customer_grade", "N")),
             "customer_grade": getattr(customer, "customer_grade", "N"),
             "customer_name": getattr(item, "customer_name_snapshot", None) or getattr(customer, "display_name", None) or "未命名客戶",
+            "birthday": getattr(item, "customer_birthday_snapshot", None) or getattr(customer, "birthday", None),
             "phone": item.contact_phone,
             "staff_id": item.requested_staff_id,
             "staff_name": staff_obj.name if staff_obj else "未指定",
@@ -1955,6 +2003,7 @@ def register_admin_api(
         customer,
         contact_phone: str,
         customer_name: str | None = None,
+        birthday: str | None = None,
         service_plan_id: int,
         start_time: datetime,
         staff_id: int | None,
@@ -1994,6 +2043,7 @@ def register_admin_api(
             end_time=appointment_end(start_dt, plan.duration_minutes),
             contact_phone=contact_phone,
             customer_name_snapshot=(customer_name or getattr(customer, "display_name", None) or "未命名客戶").strip()[:120],
+            customer_birthday_snapshot=(birthday or getattr(customer, "birthday", None) or "").strip()[:10] or None,
             notes=(notes or "").strip() or None,
             source=source,
             status="pending",
@@ -2059,6 +2109,7 @@ def register_admin_api(
             status="confirmed",
             customer_name_snapshot=getattr(db.query(User).filter(User.id == item.user_id).first(), "display_name", None),
             customer_phone_snapshot=item.contact_phone,
+            customer_birthday_snapshot=getattr(item, "customer_birthday_snapshot", None),
             staff_name_snapshot=staff_obj.name if item.requested_staff_id else None,
         )
         db.add(appointment)
@@ -2147,9 +2198,9 @@ def register_admin_api(
                 db.add(AdminUser(username=username, display_name=display_name, role=role_name, pin_hash=password_hash.hash(pin)))
 
             existing_categories = {row[0] for row in db.query(StaffCategory.key).all()}
-            for key, name in (("straight", "直男師傅"), ("gay", "圈內師傅"), ("bisexual", "雙性師傅")):
+            for sort_order, (key, name) in enumerate((("straight", "直男師傅"), ("gay", "圈內師傅"), ("bisexual", "雙性師傅"))):
                 if key not in existing_categories:
-                    db.add(StaffCategory(key=key, name=name, active=True))
+                    db.add(StaffCategory(key=key, name=name, sort_order=sort_order, active=True))
 
             seed_plans = [
                 ("A", "舒壓方案", 60, 1500, "不指定優惠／指壓或油壓", "onsite", False),
@@ -2246,12 +2297,17 @@ def register_admin_api(
             "id": item.id,
             "name": item.name,
             "category": item.category,
+            "categories": staff_dict(item).get("categories", []),
             "height": item.height,
             "weight": item.weight,
             "role": item.role,
             "bio": getattr(item, "bio", None),
             "photo_url": item.photo_url,
         } for item in items]
+
+    @app.get("/api/public/staff-categories")
+    def public_staff_categories(db: Session = Depends(get_db)):
+        return [staff_category_dict(item) for item in db.query(StaffCategory).filter(StaffCategory.active.is_(True)).order_by(StaffCategory.sort_order, StaffCategory.id).all()]
 
     @app.get("/api/public/staff/{staff_id}/photo")
     def public_staff_photo(staff_id: int, db: Session = Depends(get_db)):
@@ -2281,6 +2337,7 @@ def register_admin_api(
         liff_id = os.getenv("LINE_LIFF_ID", "").strip()
         return {
             "services": [service_dict(item) for item in services],
+            "staff_categories": [staff_category_dict(item) for item in db.query(StaffCategory).filter(StaffCategory.active.is_(True)).order_by(StaffCategory.sort_order, StaffCategory.id).all()],
             # Keep this endpoint backward compatible while hiding promotion
             # choices from anonymous booking clients.
             "promotions": [],
@@ -2331,7 +2388,7 @@ def register_admin_api(
                 "can_choose_staff": True,
                 "request_only": True,
                 "available_for_instant_booking": requested_staff.id in available_ids and (plan.location_type != "onsite" or room_capacity_available(db, start_dt, end_dt)),
-                "staff": [{"id": requested_staff.id, "name": requested_staff.name, "category": requested_staff.category}],
+                "staff": [{"id": requested_staff.id, "name": requested_staff.name, "category": requested_staff.category, "categories": staff_dict(requested_staff).get("categories", [])}],
             }
         if not staff_items:
             raise HTTPException(status_code=409, detail="這個時段目前沒有可預約師傅，請改選其他時間")
@@ -2341,7 +2398,7 @@ def register_admin_api(
             "start_time": _iso(start_dt),
             "end_time": _iso(end_dt),
             "can_choose_staff": plan.can_choose_staff,
-            "staff": [{"id": item.id, "name": item.name, "category": item.category} for item in staff_items],
+            "staff": [{"id": item.id, "name": item.name, "category": item.category, "categories": staff_dict(item).get("categories", [])} for item in staff_items],
         }
 
     @app.post("/api/public/booking/identity")
@@ -2351,10 +2408,13 @@ def register_admin_api(
         if not customer:
             return {"name": identity.get("name"), "phone": None}
         phones = customer_phone_rows(db, customer)
-        return {
+        result = {
             "name": customer.display_name or identity.get("name"),
             "phone": phones[0].phone if phones else customer.phone,
         }
+        if getattr(customer, "birthday", None):
+            result["birthday"] = customer.birthday
+        return result
 
     @app.post("/api/public/booking/requests", status_code=201)
     def create_public_booking_request(payload: PublicBookingCreateIn, request: Request, db: Session = Depends(get_db)):
@@ -2366,6 +2426,7 @@ def register_admin_api(
             customer=customer,
             contact_phone=contact_phone,
             customer_name=payload.customer_name,
+            birthday=payload.birthday,
             service_plan_id=payload.service_plan_id,
             start_time=payload.start_time,
             staff_id=payload.staff_id,
@@ -2436,6 +2497,7 @@ def register_admin_api(
             "staff_user": {"id": staff_obj.id, "name": staff_obj.name, "role": "staff"},
             "appointments": appointment_dicts(db, appointments),
             "staff": [staff_dict(staff_obj)],
+            "staff_categories": [staff_category_dict(item) for item in db.query(StaffCategory).filter(StaffCategory.active.is_(True)).order_by(StaffCategory.sort_order, StaffCategory.id).all()],
             "shifts": [shift_dict(item) | {"staff_name": staff_obj.name} for item in shifts],
             "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()],
             "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.active.is_(True), Promotion.deleted_at.is_(None)).order_by(Promotion.id).all()],
@@ -2585,6 +2647,7 @@ def register_admin_api(
             # Retired identities remain in storage for historical order links,
             # but are excluded from the active management roster.
             "staff": [staff_dict(item) for item in db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.name).all()],
+            "staff_categories": [staff_category_dict(item) for item in db.query(StaffCategory).filter(StaffCategory.active.is_(True)).order_by(StaffCategory.sort_order, StaffCategory.id).all()],
             "shifts": [shift_dict(item) | {"staff_name": shift_staff[item.staff_id].name if item.staff_id in shift_staff else "未知"} for item in shift_rows],
             "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()],
             "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.deleted_at.is_(None)).order_by(Promotion.id).all()],
@@ -2740,12 +2803,39 @@ def register_admin_api(
         if actor.role not in {"admin", "manager"} and payload.customer_grade != getattr(customer, "customer_grade", "N"):
             raise HTTPException(status_code=403, detail="只有 Admin 或店長可以調整客戶等級")
         customer.customer_grade = payload.customer_grade
+        if payload.birthday is not None:
+            if actor.role in {"admin", "manager"}:
+                customer.birthday = payload.birthday.strip() or None
+                customer.birthday_pending = None
+            else:
+                customer.birthday_pending = payload.birthday.strip() or None
         sync_customer_phones(db, customer, payload.phones)
         db.flush()
         after = customer_dict(db, customer)
         audit(db, actor, "update", "customer", customer.id, before=before, after=after)
         db.commit()
         return after
+
+    @app.post("/api/admin/customers/{customer_id}/birthday/confirm")
+    def confirm_customer_birthday(customer_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        customer = db.query(User).filter(User.id == customer_id).with_for_update().first()
+        if not customer:
+            raise HTTPException(status_code=404, detail="找不到客戶")
+        customer.birthday = customer.birthday_pending or customer.birthday
+        customer.birthday_pending = None
+        audit(db, actor, "confirm_birthday", "customer", customer.id, after=customer_dict(db, customer))
+        db.commit()
+        return customer_dict(db, customer)
+
+    @app.post("/api/admin/customers/{customer_id}/birthday/reject")
+    def reject_customer_birthday(customer_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        customer = db.query(User).filter(User.id == customer_id).with_for_update().first()
+        if not customer:
+            raise HTTPException(status_code=404, detail="找不到客戶")
+        customer.birthday_pending = None
+        audit(db, actor, "reject_birthday", "customer", customer.id)
+        db.commit()
+        return customer_dict(db, customer)
 
     @app.delete("/api/admin/customers/{customer_id}")
     def delete_customer(customer_id: int, reason: str = Query(min_length=2, max_length=500), db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
@@ -2818,6 +2908,8 @@ def register_admin_api(
             sync_customer_phones(db, customer, [contact_phone])
         elif not getattr(customer, "display_name", None):
             customer.display_name = payload.customer_name
+        if payload.birthday:
+            customer.birthday = payload.birthday.strip()
         customer = db.query(User).filter(User.id == customer.id).with_for_update().first()
         duplicate = None if override_time_rules else db.query(Appointment).filter(
             Appointment.user_id == customer.id,
@@ -2837,6 +2929,7 @@ def register_admin_api(
             status="confirmed",
             customer_name_snapshot=payload.customer_name.strip(),
             customer_phone_snapshot=contact_phone,
+            customer_birthday_snapshot=payload.birthday.strip() if payload.birthday else getattr(customer, "birthday", None),
             staff_name_snapshot=staff_obj.name if payload.staff_id else None,
         )
         db.add(appointment)
@@ -2901,6 +2994,9 @@ def register_admin_api(
                 value = getattr(payload, key, None)
                 if value is not None:
                     setattr(detail, key, int(value))
+            if payload.staff_return_amount is not None or payload.shop_recovery_amount is not None:
+                detail.settlement_overridden_by_admin_id = actor.id
+                detail.settlement_override_at = now_taipei_naive()
         audit(db, actor, "create", "appointment", appointment.id, after={"start": start_dt, "end": end_dt, "staff_id": payload.staff_id, "room_id": payload.room_id, "promotion_id": payload.promotion_id})
         db.commit()
         db.refresh(appointment)
@@ -2927,6 +3023,8 @@ def register_admin_api(
                     receipt = appointment_dict(db, appointment)
                     receipt.pop("customer_id", None)
                     receipt.pop("customer_grade", None)
+                    for field in ("promotion_id", "promotion_ids", "promotion_name"):
+                        receipt.pop(field, None)
                     return {"duplicate": True, "appointment": receipt}
             raise HTTPException(status_code=409, detail="預約正在處理中，請勿重複送出")
 
@@ -2934,7 +3032,7 @@ def register_admin_api(
         if not plan:
             raise HTTPException(status_code=404, detail="找不到啟用中的服務方案")
         # Public clients never choose promotions. Eligibility is controlled by
-        # backend rules; management can apply or override them in the admin UI.
+        # backend birthday rules; management can apply or override in admin UI.
         promotion = None
 
         start_dt = parse_local_datetime(payload.start_time)
@@ -2960,6 +3058,11 @@ def register_admin_api(
 
         customer, contact_phone, source = resolve_public_customer(db, payload)
         customer = db.query(User).filter(User.id == customer.id).with_for_update().first()
+        if payload.birthday and source != "web_anonymous":
+            customer.birthday = payload.birthday.strip()
+        birthday_value = payload.birthday or getattr(customer, "birthday", None)
+        eligible_promotions = birthday_promotions(db, birthday_value, start_dt, source=source)
+        promotion = eligible_promotions[0] if eligible_promotions else None
         duplicate = db.query(Appointment).filter(
             Appointment.user_id == customer.id,
             Appointment.start_time == start_dt,
@@ -2971,6 +3074,8 @@ def register_admin_api(
             receipt = appointment_dict(db, duplicate)
             receipt.pop("customer_id", None)
             receipt.pop("customer_grade", None)
+            for field in ("promotion_id", "promotion_ids", "promotion_name"):
+                receipt.pop(field, None)
             return {"duplicate": True, "appointment": receipt}
 
         appointment = Appointment(
@@ -2983,11 +3088,12 @@ def register_admin_api(
             status="confirmed",
             customer_name_snapshot=payload.customer_name.strip(),
             customer_phone_snapshot=contact_phone,
+            customer_birthday_snapshot=payload.birthday.strip() if payload.birthday else getattr(customer, "birthday", None),
             staff_name_snapshot=db.query(Staff).filter(Staff.id == assigned_staff_id).first().name,
         )
         db.add(appointment)
         db.flush()
-        discount = 0
+        totals = calculate_order_totals(base_price=plan.price, duration_minutes=plan.duration_minutes, promotions=eligible_promotions)
         source_label = "LINE 連結網頁預約" if source in {"liff", "line"} else "網頁預約"
         notes = f"來源：{source_label}"
         if payload.notes and payload.notes.strip():
@@ -2996,12 +3102,14 @@ def register_admin_api(
             appointment_id=appointment.id,
             service_plan_id=plan.id,
             promotion_id=promotion.id if promotion else None,
+            promotion_ids_json=json.dumps([item.id for item in eligible_promotions]),
             service_name_snapshot=plan.name,
             promotion_name_snapshot=promotion.name if promotion else None,
             contact_phone=contact_phone,
-            base_price=plan.price,
-            discount_amount=discount,
-            total_amount=max(0, plan.price - discount),
+            base_price=totals["base_price"],
+            discount_amount=totals["discount_amount"],
+            extra_amount=totals["extra_amount"],
+            total_amount=totals["total_amount"],
             location_type="external" if plan.location_type == "external" else "pending",
             notes=notes,
         )
@@ -3029,6 +3137,8 @@ def register_admin_api(
         receipt = appointment_dict(db, appointment)
         receipt.pop("customer_id", None)
         receipt.pop("customer_grade", None)
+        for field in ("promotion_id", "promotion_ids", "promotion_name"):
+            receipt.pop(field, None)
         return {"duplicate": False, "appointment": receipt}
 
     @app.delete("/api/admin/appointments/{appointment_id}")
@@ -3079,6 +3189,12 @@ def register_admin_api(
                 db.add(CustomerPhone(user_id=customer.id, phone=contact_phone, is_primary=not bool(customer.phone)))
             if not customer.phone:
                 customer.phone = contact_phone
+        if customer and payload.birthday is not None:
+            if actor.role in {"admin", "manager"}:
+                customer.birthday = payload.birthday.strip() or None
+                customer.birthday_pending = None
+            else:
+                customer.birthday_pending = payload.birthday.strip() or None
         plan = None
         if payload.service_plan_id is not None:
             plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id, ServicePlan.deleted_at.is_(None)).first()
@@ -3125,6 +3241,8 @@ def register_admin_api(
             db.add(detail)
         if payload.phone is not None:
             detail.contact_phone = normalize_phone(payload.phone)
+        if payload.birthday is not None:
+            appointment.customer_birthday_snapshot = payload.birthday.strip() or None
         if plan:
             detail.service_plan_id = plan.id
             detail.base_price = plan.price
@@ -3180,17 +3298,29 @@ def register_admin_api(
                 for key, value in auto_settlement.items():
                     if key not in changes:
                         setattr(detail, key, value)
+                if "staff_return_amount" in changes or "shop_recovery_amount" in changes:
+                    detail.settlement_overridden_by_admin_id = actor.id
+                    detail.settlement_override_at = now_taipei_naive()
         after = appointment_dict(db, appointment)
         time_changed = before.get("start_time") != after.get("start_time") or before.get("end_time") != after.get("end_time")
         amount_changed = any(before.get(field) != after.get(field) for field in ("base_price", "discount_amount", "extra_amount", "total_amount", "commission_amount", "discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount"))
         audit(db, actor, "update", "appointment", appointment.id, reason=payload.force_reason, before=before, after=after)
         db.commit()
-        if appointment_update_notifier and (time_changed or amount_changed) and not admin_override:
-            try:
-                appointment_update_notifier(appointment, db, time_changed=time_changed, amount_changed=amount_changed)
-            except Exception:
-                logger.exception("Unable to push appointment update notification appointment_id=%s", appointment.id)
+        # PATCH/PUT is intentionally silent; management explicitly dispatches
+        # the latest card through /notify-line after reviewing the changes.
         return appointment_dict(db, appointment)
+
+    @app.post("/api/admin/appointments/{appointment_id}/notify-line")
+    def notify_line_appointment(appointment_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
+        appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+        if not appointment:
+            raise HTTPException(status_code=404, detail="找不到預約")
+        if not appointment_line_dispatcher:
+            raise HTTPException(status_code=503, detail="LINE 派發功能尚未設定")
+        result = appointment_line_dispatcher(appointment, db, actor=actor)
+        audit(db, actor, "notify_line", "appointment", appointment.id, after=result)
+        db.commit()
+        return result
 
     @app.get("/api/admin/shifts")
     def list_shifts(start: datetime | None = None, end: datetime | None = None, db: Session = Depends(get_db), user=Depends(current_admin)):
@@ -3449,6 +3579,9 @@ def register_admin_api(
     @app.post("/api/admin/staff/bulk-category")
     def bulk_staff_category(payload: StaffBulkCategoryIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
         categories = list(dict.fromkeys(payload.categories))
+        valid_keys = {item.key for item in db.query(StaffCategory).filter(StaffCategory.active.is_(True)).all()}
+        if any(category not in valid_keys for category in categories):
+            raise HTTPException(status_code=422, detail="包含不存在或停用的員工分類")
         rows = db.query(Staff).filter(Staff.id.in_(payload.staff_ids)).with_for_update().all()
         if len(rows) != len(set(payload.staff_ids)):
             raise HTTPException(status_code=404, detail="找不到部分員工")
@@ -3461,41 +3594,57 @@ def register_admin_api(
 
     @app.get("/api/admin/staff-categories")
     def list_staff_categories(db: Session = Depends(get_db), actor=Depends(current_admin)):
-        rows = db.query(StaffCategory).filter(StaffCategory.active.is_(True)).order_by(StaffCategory.id).all()
-        return [{"id": item.id, "key": item.key, "name": item.name, "active": item.active} for item in rows]
+        rows = db.query(StaffCategory).order_by(StaffCategory.sort_order, StaffCategory.id).all()
+        return [staff_category_dict(item) for item in rows]
 
     @app.post("/api/admin/staff-categories", status_code=201)
     def create_staff_category(payload: StaffCategoryIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
         if db.query(StaffCategory).filter(StaffCategory.key == payload.key).first():
             raise HTTPException(status_code=409, detail="員工分類代碼已存在")
-        item = StaffCategory(key=payload.key.strip(), name=payload.name.strip(), active=True)
+        item = StaffCategory(key=payload.key.strip(), name=payload.name.strip(), sort_order=payload.sort_order, active=payload.active)
         db.add(item)
         db.flush()
         audit(db, actor, "create", "staff_category", item.id, after={"key": item.key, "name": item.name})
         db.commit()
-        return {"id": item.id, "key": item.key, "name": item.name, "active": item.active}
+        return staff_category_dict(item)
 
     @app.patch("/api/admin/staff-categories/{category_id}")
     def update_staff_category(category_id: int, payload: StaffCategoryIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
         item = db.query(StaffCategory).filter(StaffCategory.id == category_id).first()
         if not item:
             raise HTTPException(status_code=404, detail="找不到員工分類")
-        before = {"key": item.key, "name": item.name}
+        duplicate = db.query(StaffCategory).filter(StaffCategory.key == payload.key.strip(), StaffCategory.id != category_id).first()
+        if duplicate:
+            raise HTTPException(status_code=409, detail="員工分類代碼已存在")
+        before = staff_category_dict(item)
         item.key = payload.key.strip()
         item.name = payload.name.strip()
-        audit(db, actor, "update", "staff_category", item.id, before=before, after={"key": item.key, "name": item.name})
+        item.sort_order = payload.sort_order
+        item.active = payload.active
+        audit(db, actor, "update", "staff_category", item.id, before=before, after=staff_category_dict(item))
         db.commit()
-        return {"id": item.id, "key": item.key, "name": item.name, "active": item.active}
+        return staff_category_dict(item)
 
     @app.delete("/api/admin/staff-categories/{category_id}")
     def delete_staff_category(category_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
         item = db.query(StaffCategory).filter(StaffCategory.id == category_id).first()
         if not item:
             raise HTTPException(status_code=404, detail="找不到員工分類")
-        item.active = False
-        audit(db, actor, "delete", "staff_category", item.id, before={"key": item.key, "name": item.name})
+        before = staff_category_dict(item)
+        for staff in db.query(Staff).all():
+            try:
+                categories = json.loads(getattr(staff, "categories_json", None) or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                categories = []
+            if item.key in categories:
+                categories = [key for key in categories if key != item.key]
+                staff.categories_json = json.dumps(categories, ensure_ascii=False)
+                if staff.category == item.key:
+                    staff.category = categories[0] if categories else None
+        db.delete(item)
+        audit(db, actor, "permanent_delete", "staff_category", category_id, before=before)
         db.commit()
-        return {"ok": True, "id": category_id}
+        return {"ok": True, "id": category_id, "history_preserved": True}
 
     @app.get("/api/admin/return-rules")
     def list_return_rules(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
