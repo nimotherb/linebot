@@ -435,10 +435,6 @@ export class SpaApi {
     return this.request<PublicBookingOptions>('/api/public/booking/options');
   }
 
-  publicBookingOptions() {
-    return this.request<PublicBookingOptions>('/api/public/booking/options');
-  }
-
   publicBookingAvailability(servicePlanId: number, startTime: string, requestedStaffId?: number, requestOnly = false) {
     const query = new URLSearchParams({ service_plan_id: String(servicePlanId), start_time: startTime });
     if (requestedStaffId) query.set('requested_staff_id', String(requestedStaffId));
