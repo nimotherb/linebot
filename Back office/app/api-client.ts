@@ -45,6 +45,12 @@ type RawAppointment = {
   base_price?: number;
   discount_amount?: number;
   extra_amount?: number;
+  discount_employee_amount?: number;
+  discount_shop_amount?: number;
+  surcharge_employee_amount?: number;
+  surcharge_shop_amount?: number;
+  staff_return_amount?: number;
+  shop_recovery_amount?: number;
   commission_amount?: number;
   expected_return_amount?: number;
   staff_return_status?: string;
@@ -67,6 +73,7 @@ type RawStaff = {
   id: number;
   name: string;
   category?: 'straight' | 'gay' | 'bisexual';
+  categories?: Array<'straight' | 'gay' | 'bisexual'>;
   employment_status: 'active' | 'retired';
   line_connected: boolean;
   phone?: string;
@@ -245,6 +252,12 @@ export const mapAppointment = (item: RawAppointment): Appointment => {
     basePrice: item.base_price ?? item.total_amount,
     discountAmount: item.discount_amount ?? 0,
     extraAmount: item.extra_amount ?? 0,
+    discountEmployeeAmount: item.discount_employee_amount ?? 0,
+    discountShopAmount: item.discount_shop_amount ?? 0,
+    surchargeEmployeeAmount: item.surcharge_employee_amount ?? 0,
+    surchargeShopAmount: item.surcharge_shop_amount ?? 0,
+    staffReturnAmount: item.staff_return_amount ?? item.expected_return_amount ?? 0,
+    shopRecoveryAmount: item.shop_recovery_amount ?? 0,
     commissionAmount: item.commission_amount ?? 0,
     promotionId: item.promotion_id ? String(item.promotion_id) : undefined,
     promotionIds: item.promotion_ids || (item.promotion_id ? [item.promotion_id] : []),
@@ -277,6 +290,7 @@ export const mapStaff = (item: RawStaff): StaffMember => ({
   apiId: item.id,
   name: item.name,
   category: categoryLabel(item.category),
+  categories: (item.categories || (item.category ? [item.category] : [])).map(categoryLabel),
   status: item.employment_status === 'retired' ? '暫時退役' : '在職',
   lineConnected: item.line_connected,
   phone: item.phone,
@@ -421,6 +435,10 @@ export class SpaApi {
     return this.request<PublicBookingOptions>('/api/public/booking/options');
   }
 
+  publicBookingOptions() {
+    return this.request<PublicBookingOptions>('/api/public/booking/options');
+  }
+
   publicBookingAvailability(servicePlanId: number, startTime: string, requestedStaffId?: number, requestOnly = false) {
     const query = new URLSearchParams({ service_plan_id: String(servicePlanId), start_time: startTime });
     if (requestedStaffId) query.set('requested_staff_id', String(requestedStaffId));
@@ -507,6 +525,12 @@ export class SpaApi {
 
   updateStaff(id: number, payload: Record<string, unknown>) {
     return this.request<RawStaff>(`/api/admin/staff/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  }
+
+  bulkStaffCategory(staffIds: number[], categories: string[]) {
+    return this.request<RawStaff[]>('/api/admin/staff/bulk-category', {
+      method: 'POST', body: JSON.stringify({ staff_ids: staffIds, categories }),
+    });
   }
 
   approveStaffPhoneChange(id: number) {

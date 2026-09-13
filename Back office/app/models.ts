@@ -34,6 +34,12 @@ export type Appointment = {
   basePrice?: number;
   discountAmount?: number;
   extraAmount?: number;
+  discountEmployeeAmount?: number;
+  discountShopAmount?: number;
+  surchargeEmployeeAmount?: number;
+  surchargeShopAmount?: number;
+  staffReturnAmount?: number;
+  shopRecoveryAmount?: number;
   promotionId?: string | number;
   promotionIds?: number[];
   promotionName?: string;
@@ -49,6 +55,7 @@ export type StaffMember = {
   apiId?: number;
   name: string;
   category: '直男師傅' | '圈內師傅' | '雙性師傅';
+  categories?: Array<'直男師傅' | '圈內師傅' | '雙性師傅'>;
   status: '在職' | '暫時退役';
   lineConnected: boolean;
   phone?: string;

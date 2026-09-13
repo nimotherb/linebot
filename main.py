@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request, Response, BackgroundTasks
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, text
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, ForeignKey, Text, text
 from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship
 from dotenv import load_dotenv
 import os
@@ -136,6 +136,9 @@ class Staff(Base):
     bio = Column(String(255), nullable=True)
     role = Column(String(50), nullable=True)
     category = Column(String(50), nullable=True)
+    # Primary category is kept for legacy queries; categories_json enables
+    # stacked employee classifications without changing historical data.
+    categories_json = Column(Text, nullable=True)
     employment_status = Column(String(30), default="active", nullable=False)
     return_rule_set_id = Column(Integer, nullable=True)
     is_online = Column(Boolean, default=False, nullable=False)
@@ -224,7 +227,8 @@ def handle_line_admin_message(text_value: str, user_id: str, db: Session):
             return TextSendMessage(text="新增客服功能目前無法使用，請改從後台操作。")
         display_name, username, pin = matched.groups()
         try:
-            account = creator(identity["id"], username, display_name, pin, db)
+            updated = updater(identity["id"], matched.group(1), db)
+            return TextSendMessage(text=f"客服連結已更新：\n{updated}\n主選單與預約頁將立即使用新連結。")
         except Exception as exc:
             return TextSendMessage(text=getattr(exc, "detail", "新增客服帳號失敗。"))
         return TextSendMessage(text=f"客服帳號已建立：\n名稱：{account['display_name']}\n帳號：{account['username']}\nPIN 已依輸入內容設定。")
@@ -332,101 +336,7 @@ def parse_staff_profile_text(value: str) -> dict[str, str]:
         return matches[0]
 
     try:
-        height = extract("身高", r"\d{3}")
-        weight = extract("體重", r"\d{2,3}")
-        role = extract("角色", "|".join(re.escape(item) for item in sorted(VALID_STAFF_ROLES)))
-    except ValueError as exc:
-        raise ValueError(
-            "請一次貼上完整且正確的資料：\n"
-            "身高=156\n體重=60\n角色=攻擊手\n\n"
-            "身高須為 3 位數字；角色僅可填：攻擊手／守備方／無特定／攻守兼備。"
-        ) from exc
-
-    if not 100 <= int(height) <= 250 or not 30 <= int(weight) <= 250:
-        raise ValueError("身高或體重超出合理範圍，請確認後一次重新貼上完整資料。")
-    return {"height": height, "weight": weight, "role": role}
-
-
-def repair_legacy_staff_profile_fields(staff) -> bool:
-    """Split profile text accidentally stored in the legacy height column."""
-    raw_height = (staff.height or "").strip()
-    if not raw_height or re.fullmatch(r"\d{3}", raw_height):
-        return False
-    candidate = raw_height if "身高" in raw_height else f"身高={raw_height}"
-    try:
-        profile = parse_staff_profile_text(candidate)
-    except ValueError:
-        return False
-    staff.height = profile["height"]
-    if not (staff.weight or "").strip():
-        staff.weight = profile["weight"]
-    if not (staff.role or "").strip():
-        staff.role = profile["role"]
-    return True
-
-
-def customer_phone_values(db: Session, user: User | None) -> list[str]:
-    if not user:
-        return []
-    values = [row.phone for row in db.query(CustomerPhone).filter(CustomerPhone.user_id == user.id).order_by(CustomerPhone.is_primary.desc(), CustomerPhone.id).all()]
-    if not values and user.phone:
-        values.append(user.phone)
-    return values
-
-
-def customer_by_phone(db: Session, phone: str) -> User | None:
-    normalized = normalize_phone(phone)
-    record = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
-    if record:
-        return db.query(User).filter(User.id == record.user_id).first()
-    return db.query(User).filter(User.phone == normalized).first()
-
-
-def add_customer_phone(db: Session, user: User, phone: str, *, primary: bool = False) -> str:
-    normalized = normalize_phone(phone)
-    existing = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
-    if existing and existing.user_id != user.id:
-        raise ValueError("此手機號碼已屬於其他客戶")
-    if primary:
-        db.query(CustomerPhone).filter(CustomerPhone.user_id == user.id).update({CustomerPhone.is_primary: False})
-    if not existing:
-        db.add(CustomerPhone(user_id=user.id, phone=normalized, is_primary=primary))
-    elif primary:
-        existing.is_primary = True
-    if primary or not user.phone:
-        user.phone = normalized
-    return normalized
-
-
-def _trace_id() -> str:
-    return f"{datetime.utcnow().strftime('%m%d%H%M%S')}-{secrets.token_hex(2)}"
-
-
-def notify_dispatch_error(db: Session, context: str, trace_id: str) -> None:
-    """Alert bound customer-service accounts, never ordinary staff accounts."""
-    if not bot_staff_api or not hasattr(app.state, "admin_models"):
-        return
-    cooldown_key = context.split(":", 1)[0]
-    now = datetime.utcnow()
-    if now - _DISPATCH_ALERTED_AT.get(cooldown_key, datetime.min) < timedelta(minutes=5):
-        return
-    _DISPATCH_ALERTED_AT[cooldown_key] = now
-    AdminUser = app.state.admin_models.get("AdminUser")
-    if not AdminUser:
-        return
-    alert = TextSendMessage(text=f"⚠️ LINE Bot 顯示失敗\n位置：{context}\n追蹤碼：{trace_id}\n系統紀錄：{RENDER_LOGS_URL}")
-    for admin_user in db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.line_user_id.isnot(None)).all():
-        try:
-            bot_staff_api.push_message(admin_user.line_user_id, alert)
-        except Exception:
-            logging.exception("無法推送客服錯誤通知 admin_user_id=%s trace=%s", admin_user.id, trace_id)
-
-
-def reply_with_fallback(bot_api, reply_token: str, message, *, db: Session | None = None, context: str = "LINE 選單", admin: bool = False) -> bool:
-    """Reply safely and fall back to plain text when a Flex payload is rejected."""
-    try:
-        bot_api.reply_message(reply_token, message)
-        return True
+        return getter("customer_service_url", db, fallback) or fallback
     except Exception:
         trace_id = _trace_id()
         logging.exception("LINE 回覆失敗 context=%s trace=%s", context, trace_id)
@@ -723,6 +633,46 @@ def build_clerk_admin_menu(identity=None, db=None):
     )
 
 
+def build_no_scheduled_staff_flex(*, plan: str, promotion_id: str, selected_dt: str, db: Session | None = None):
+    return FlexSendMessage(
+        alt_text="此時段沒有已排班師傅",
+        contents={
+            "type": "bubble",
+            "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
+                {"type": "text", "text": "此時段沒有已排班師傅", "weight": "bold", "size": "xl", "wrap": True},
+                {"type": "text", "text": "您可以改選時間、聯絡真人客服，或查看全部師傅並送出待客服確認的預約通知。", "size": "sm", "color": "#6B7280", "wrap": True},
+            ]},
+            "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "datetimepicker", "label": "改時間", "data": "action=select_date", "mode": "datetime"}},
+                {"type": "button", "style": "secondary", "action": {"type": "uri", "label": "真人客服", "uri": get_support_url(db)}},
+                {"type": "button", "style": "primary", "color": "#D97706", "action": {"type": "postback", "label": "查看全部師傅", "data": f"action=select_all_staff&plan={plan}&promotion_id={promotion_id}&datetime={selected_dt}&offset=0"}},
+            ]},
+        },
+    )
+
+
+# --- 共用：LINE 管理選單 Flex ---
+def build_clerk_admin_menu(identity=None, db=None):
+    display_name = identity.get("display_name", "客服") if isinstance(identity, dict) else "客服"
+    return FlexSendMessage(
+        alt_text="客服管理選單",
+        contents={
+            "type": "bubble",
+            "styles": {"body": {"backgroundColor": "#4C1D95"}},
+            "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                {"type": "text", "text": "客服管理選單", "weight": "bold", "color": "#FCD34D", "size": "xl"},
+                {"type": "text", "text": f"{display_name}・客服", "color": "#E9D5FF", "size": "sm", "margin": "sm"},
+                {"type": "text", "text": "客服可查看預約與訂單資訊；帳號、刪除及系統設定請由店長或 Admin 操作。", "color": "#E9D5FF", "size": "xs", "wrap": True, "margin": "sm"},
+                {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "查看本日預約", "data": "action=admin_view"}},
+                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "今日排班", "data": "action=clerk_today_shifts"}},
+                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "本週排班", "data": "action=clerk_week_shifts"}},
+                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "uri", "label": "開啟排班後台", "uri": ADMIN_DASHBOARD_URL.rstrip("/") + "/"}},
+                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "登出管理員", "data": "action=admin_logout"}},
+            ]},
+        },
+    )
+
+
 def build_line_management_menu(identity=None, db=None):
     if isinstance(identity, dict) and identity.get("role") == "clerk":
         return build_clerk_admin_menu(identity, db)
@@ -824,7 +774,10 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
     total_override = None
     promotion_name = "無"
     return_amount = 0
+    shop_recovery_amount = 0
+    discount_employee_amount = discount_shop_amount = surcharge_employee_amount = surcharge_shop_amount = 0
     return_status = "尚未建立"
+    detail = None
     for plan_key, plan_info in PLANS_INFO.items():
         if plan_info["name"] == plan_name:
             price = plan_info["price"]
@@ -838,6 +791,12 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
             discount = detail.discount_amount
             extra_amount = detail.extra_amount or 0
             total_override = detail.total_amount
+            discount_employee_amount = int(getattr(detail, "discount_employee_amount", 0) or 0)
+            discount_shop_amount = int(getattr(detail, "discount_shop_amount", 0) or 0)
+            surcharge_employee_amount = int(getattr(detail, "surcharge_employee_amount", 0) or 0)
+            surcharge_shop_amount = int(getattr(detail, "surcharge_shop_amount", 0) or 0)
+            return_amount = int(getattr(detail, "staff_return_amount", 0) or 0)
+            shop_recovery_amount = int(getattr(detail, "shop_recovery_amount", 0) or 0)
             if detail.promotion_id:
                 promotion = db.query(models["Promotion"]).filter(models["Promotion"].id == detail.promotion_id).first()
                 promotion_name = promotion.name if promotion else "優惠"
@@ -846,9 +805,10 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
             ReturnRule = models.get("ReturnRule")
             staff_return = db.query(StaffReturn).filter(StaffReturn.appointment_id == appointment.id).first() if StaffReturn else None
             if staff_return:
-                return_amount = staff_return.amount
+                if detail is None:
+                    return_amount = staff_return.amount
                 return_status = "已確認" if staff_return.status == "confirmed" else "待確認"
-            elif appointment.staff and ReturnRuleSet and ReturnRule:
+            elif detail is None and appointment.staff and ReturnRuleSet and ReturnRule:
                 rule_set_id = appointment.staff.return_rule_set_id
                 if not rule_set_id:
                     first_set = db.query(ReturnRuleSet).filter(ReturnRuleSet.active.is_(True)).order_by(ReturnRuleSet.id).first()
@@ -884,7 +844,7 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "優惠", "size": "sm", "color": "#555555", "flex": 2, "wrap": True}, {"type": "text", "text": f"-NT$ {discount}", "size": "sm", "color": "#111111", "align": "end"}]},
                         *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "附加費", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"+NT$ {extra_amount}", "size": "sm", "color": "#111111", "align": "end"}]}] if extra_amount else []),
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "總計", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {total}", "size": "sm", "color": "#111111", "align": "end"}]},
-                        *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "師傅應回帳", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {return_amount}・{return_status}", "size": "sm", "color": "#B45309", "align": "end"}]}] if (show_return or is_staff_notify) else [])
+                        *([{"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "師傅應回帳", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {return_amount}・{return_status}", "size": "sm", "color": "#B45309", "align": "end"}]}, {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "店家回收", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {shop_recovery_amount}", "size": "sm", "color": "#111111", "align": "end"}]}, {"type": "text", "text": f"A -{discount_employee_amount}／B -{discount_shop_amount}／C +{surcharge_employee_amount}／D +{surcharge_shop_amount}", "size": "xs", "color": "#6B7280", "wrap": True}] if (show_return or is_staff_notify) else [])
                     ]
                 },
                 {"type": "separator", "margin": "xxl"},
@@ -1204,19 +1164,18 @@ def build_customer_service_setting_menu(db: Session):
 
 def build_staff_accept_online_prompt(appointment_id: int, staff_name: str):
     return FlexSendMessage(
-        alt_text="接單完成，請選擇是否下線",
+        alt_text="管理客服帳號",
         contents={
             "type": "bubble",
-            "header": {"type": "box", "layout": "vertical", "backgroundColor": "#123F37", "contents": [
-                {"type": "text", "text": "接單完成", "weight": "bold", "size": "xl", "color": "#FFFFFF"},
-            ]},
+            "styles": {"body": {"backgroundColor": "#4C1D95"}, "footer": {"backgroundColor": "#F3F4F6"}},
             "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
-                {"type": "text", "text": f"{staff_name} 已接下訂單 AP-{appointment_id}。", "weight": "bold", "wrap": True},
-                {"type": "text", "text": "接單後是否下線？下線會結束這次由 LINE 上線建立的正式排班。", "size": "sm", "color": "#6B7280", "wrap": True},
+                {"type": "text", "text": "管理客服帳號", "weight": "bold", "size": "xl", "color": "#FCD34D"},
+                {"type": "text", "text": f"目前連結：{support_url}", "size": "sm", "color": "#E9D5FF", "wrap": True},
+                {"type": "text", "text": "可直接輸入：設定客服帳號 @684wdola\n或貼上完整 https:// 網址。更新後主選單與預約頁會立即套用。", "size": "sm", "color": "#E9D5FF", "wrap": True},
             ]},
-            "footer": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
-                {"type": "button", "style": "primary", "color": "#DC2626", "action": {"type": "postback", "label": "接單後下線", "data": "action=staff_set_online&online=0"}},
-                {"type": "button", "style": "secondary", "action": {"type": "postback", "label": "維持上線", "data": "action=staff_set_online&online=1"}},
+            "footer": {"type": "box", "layout": "vertical", "contents": [
+                {"type": "button", "style": "primary", "color": "#7C3AED", "action": {"type": "message", "label": "輸入新客服帳號", "text": "設定客服帳號 @684wdola"}},
+                {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "查看後台帳號", "data": "action=admin_users"}},
             ]},
         },
     )
@@ -1281,7 +1240,7 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         "admin_logout", "admin_view", "admin_staff", "admin_users", "delete_staff", "toggle_staff",
         "request_permanent_delete_staff", "confirm_permanent_delete_staff",
         "request_unlink_staff", "confirm_unlink_staff", "request_bind_staff", "confirm_bind_staff",
-        "confirm_booking_request", "cancel_booking_request",
+        "confirm_booking_request", "cancel_booking_request", "clerk_today_shifts", "clerk_week_shifts",
     }
     if action_name not in root_actions:
         return None
@@ -1289,8 +1248,8 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         return TextSendMessage(text="此功能只開放管理帳號使用。")
     identity_getter = getattr(getattr(app, "state", None), "line_admin_identity", None)
     identity = identity_getter(user_id, db) if identity_getter else None
-    if identity and identity.get("role") == "clerk" and action_name not in {"admin_view", "admin_logout"}:
-        return TextSendMessage(text="客服帳號僅可查看本日預約；管理、刪除與設定功能請由店長或 Admin 操作。")
+    if identity and identity.get("role") == "clerk" and action_name not in {"admin_view", "admin_logout", "clerk_today_shifts", "clerk_week_shifts"}:
+        return TextSendMessage(text="客服帳號僅可查看預約與今日／本週排班；管理、刪除與設定功能請由店長或 Admin 操作。")
 
     if action_name == "admin_logout":
         unbind = getattr(getattr(app, "state", None), "unbind_line_admin", None)
@@ -1341,6 +1300,31 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
         
         bubbles = [build_appointment_bubble(appt, db=db, show_return=not (identity and identity.get("role") == "clerk")) for appt in appointments[:10]]
         return FlexSendMessage(alt_text="本日預約", contents={"type": "carousel", "contents": bubbles})
+
+    elif action_name in {"clerk_today_shifts", "clerk_week_shifts"}:
+        Shift = getattr(app.state, "admin_models", {}).get("Shift")
+        if not Shift:
+            return TextSendMessage(text="排班資料目前無法讀取。")
+        today = now_taipei_naive().date()
+        end_date = today + timedelta(days=7 if action_name == "clerk_week_shifts" else 1)
+        start_dt = datetime.combine(today, datetime.min.time())
+        end_dt = datetime.combine(end_date, datetime.min.time())
+        rows = db.query(Shift).filter(Shift.status == "active", Shift.start_time < end_dt, Shift.end_time > start_dt).order_by(Shift.start_time).limit(30).all()
+        if not rows:
+            return TextSendMessage(text="目前沒有排班。")
+        bubbles = []
+        for shift in rows:
+            staff = db.query(Staff).filter(Staff.id == shift.staff_id).first()
+            bubbles.append({
+                "type": "bubble",
+                "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                    {"type": "text", "text": "今日排班" if action_name == "clerk_today_shifts" else "本週排班", "weight": "bold", "color": "#0F766E"},
+                    {"type": "text", "text": staff.name if staff else "未知師傅", "weight": "bold", "size": "xl", "margin": "md"},
+                    {"type": "text", "text": f"{shift.start_time.strftime('%m/%d %H:%M')}–{shift.end_time.strftime('%m/%d %H:%M')}", "size": "sm", "wrap": True},
+                    {"type": "text", "text": "跨天排班" if getattr(shift, "is_next_day", False) else "一般排班", "size": "xs", "color": "#6B7280"},
+                ]},
+            })
+        return FlexSendMessage(alt_text="排班清單", contents={"type": "carousel", "contents": bubbles[:10]})
     
     elif action_name == "admin_staff":
         try:
@@ -2227,7 +2211,8 @@ def notify_appointment_parties(
 
 
 def notify_appointment_update(appointment, db: Session, *, time_changed: bool, amount_changed: bool) -> None:
-    """Notify both parties only when a customer's time or amount changed."""
+    """Notify customer, assigned staff, clerks and management on time/amount edits."""
+    AdminUser = getattr(app.state, "admin_models", {}).get("AdminUser")
     changed = "、".join(label for label, active in (("時間", time_changed), ("金額", amount_changed)) if active)
     text = f"訂單 AP-{appointment.id} 的{changed}已更新，請重新查看預約。"
     customer_line_id = appointment.user.line_user_id if appointment.user and appointment.user.line_user_id and not appointment.user.line_user_id.startswith(("manual:", "liff:")) else None
@@ -2246,6 +2231,15 @@ def notify_appointment_update(appointment, db: Session, *, time_changed: bool, a
             bot_staff_api.push_message(staff_line_id, card)
         except Exception:
             logging.exception("預約更新推送失敗 recipient=師傅 appointment_id=%s", appointment.id)
+    if bot_staff_api and AdminUser:
+        for account in db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.line_user_id.isnot(None)).all():
+            if account.line_user_id in {staff_line_id, customer_line_id}:
+                continue
+            try:
+                bot_staff_api.push_message(account.line_user_id, message)
+                bot_staff_api.push_message(account.line_user_id, card)
+            except Exception:
+                logging.exception("預約更新推送失敗 recipient=管理帳號 %s appointment_id=%s", account.username, appointment.id)
 
 
 def notify_booking_request_parties(booking_request, db: Session, *, origin: str = "booking_web") -> None:
@@ -2317,6 +2311,7 @@ def on_startup():
             "ALTER TABLE staffs ADD COLUMN bio VARCHAR(255);",
             "ALTER TABLE staffs ADD COLUMN role VARCHAR(50);",
             "ALTER TABLE staffs ADD COLUMN category VARCHAR(50);",
+            "ALTER TABLE staffs ADD COLUMN categories_json TEXT NULL;",
             "ALTER TABLE staffs ADD COLUMN employment_status VARCHAR(30) NOT NULL DEFAULT 'active';",
             "ALTER TABLE staffs ADD COLUMN return_rule_set_id INTEGER;",
             "ALTER TABLE staffs ADD COLUMN is_online BOOLEAN NOT NULL DEFAULT FALSE;",
@@ -2340,6 +2335,14 @@ def on_startup():
             "ALTER TABLE shifts ADD COLUMN modified_by_admin_id INTEGER NULL;",
             "ALTER TABLE appointment_details ADD COLUMN promotion_ids_json TEXT NULL;",
             "ALTER TABLE appointment_details ADD COLUMN commission_amount INTEGER NULL;",
+            "ALTER TABLE appointment_details ADD COLUMN discount_employee_amount INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN discount_shop_amount INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN surcharge_employee_amount INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN surcharge_shop_amount INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN staff_return_amount INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN shop_recovery_amount INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE booking_requests MODIFY contact_phone VARCHAR(20) NULL;",
+            "ALTER TABLE booking_requests ADD COLUMN customer_name_snapshot VARCHAR(120) NULL;",
         ]
         for q in queries:
             try:

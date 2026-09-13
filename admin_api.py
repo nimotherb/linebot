@@ -120,6 +120,12 @@ class AppointmentCreateIn(BaseModel):
     extra_amount: int | None = Field(default=None, ge=0)
     total_amount: int | None = Field(default=None, ge=0)
     commission_amount: int | None = Field(default=None, ge=0)
+    discount_employee_amount: int | None = Field(default=None, ge=0)
+    discount_shop_amount: int | None = Field(default=None, ge=0)
+    surcharge_employee_amount: int | None = Field(default=None, ge=0)
+    surcharge_shop_amount: int | None = Field(default=None, ge=0)
+    staff_return_amount: int | None = Field(default=None, ge=0)
+    shop_recovery_amount: int | None = Field(default=None, ge=0)
     is_admin_override: bool = False
 
 
@@ -141,6 +147,12 @@ class AppointmentPatchIn(BaseModel):
     extra_amount: int | None = Field(default=None, ge=0)
     total_amount: int | None = Field(default=None, ge=0)
     commission_amount: int | None = Field(default=None, ge=0)
+    discount_employee_amount: int | None = Field(default=None, ge=0)
+    discount_shop_amount: int | None = Field(default=None, ge=0)
+    surcharge_employee_amount: int | None = Field(default=None, ge=0)
+    surcharge_shop_amount: int | None = Field(default=None, ge=0)
+    staff_return_amount: int | None = Field(default=None, ge=0)
+    shop_recovery_amount: int | None = Field(default=None, ge=0)
     notes: str | None = Field(default=None, max_length=2000)
     force_reason: str | None = Field(default=None, max_length=500)
     is_admin_override: bool = False
@@ -257,7 +269,7 @@ class BulkDeleteIn(BaseModel):
 
 class PublicBookingCreateIn(BaseModel):
     customer_name: str = Field(min_length=1, max_length=120)
-    phone: str = Field(min_length=8, max_length=30)
+    phone: str | None = Field(default=None, min_length=8, max_length=30)
     service_plan_id: int
     start_time: datetime
     staff_id: int | None = None
@@ -304,7 +316,8 @@ class ReturnRulePatchIn(BaseModel):
 class StaffCreateIn(BaseModel):
     bio: str | None = Field(default=None, max_length=60)
     name: str = Field(min_length=1, max_length=120)
-    category: Literal["straight", "gay", "bisexual"]
+    category: str = Field(min_length=1, max_length=40)
+    categories: list[str] = Field(default_factory=list, max_length=10)
     line_user_id: str | None = Field(default=None, max_length=255)
     phone: str | None = Field(default=None, max_length=50)
     return_rule_set_id: int | None = None
@@ -322,13 +335,24 @@ class StaffStatusIn(BaseModel):
 class StaffPatchIn(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     phone: str | None = Field(default=None, max_length=50)
-    category: Literal["straight", "gay", "bisexual"] | None = None
+    category: str | None = Field(default=None, min_length=1, max_length=40)
+    categories: list[str] | None = Field(default=None, max_length=10)
     return_rule_set_id: int | None = None
     photo_url: str | None = Field(default=None, max_length=1000)
     height: str | int | None = None
     weight: str | int | None = None
     role: Literal["攻擊手", "守備方", "無特定", "攻守兼備"] | None = None
     bio: str | None = Field(default=None, max_length=60)
+
+
+class StaffBulkCategoryIn(BaseModel):
+    staff_ids: list[int] = Field(min_length=1, max_length=500)
+    categories: list[str] = Field(min_length=1, max_length=10)
+
+
+class StaffCategoryIn(BaseModel):
+    key: str = Field(min_length=1, max_length=40, pattern=r"^[a-zA-Z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=120)
 
 
 class StaffPhoneChangeIn(BaseModel):
@@ -425,8 +449,8 @@ def _public_request_key(request: Request) -> str:
     return (request.client.host if request.client else "unknown")[:80]
 
 
-def _enforce_public_booking_rate(request: Request, phone: str) -> None:
-    phone_key = re.sub(r"\D", "", phone)[-10:]
+def _enforce_public_booking_rate(request: Request, phone: str | None) -> None:
+    phone_key = re.sub(r"\D", "", phone or "anonymous")[-10:]
     key = f"{_public_request_key(request)}:{phone_key}"
     now = now_taipei_naive()
     cutoff = now - timedelta(minutes=PUBLIC_BOOKING_WINDOW_MINUTES)
@@ -564,6 +588,12 @@ def register_admin_api(
         extra_amount = Column(Integer, nullable=False, default=0)
         total_amount = Column(Integer, nullable=False, default=0)
         commission_amount = Column(Integer, nullable=True)
+        discount_employee_amount = Column(Integer, nullable=False, default=0)
+        discount_shop_amount = Column(Integer, nullable=False, default=0)
+        surcharge_employee_amount = Column(Integer, nullable=False, default=0)
+        surcharge_shop_amount = Column(Integer, nullable=False, default=0)
+        staff_return_amount = Column(Integer, nullable=False, default=0)
+        shop_recovery_amount = Column(Integer, nullable=False, default=0)
         location_type = Column(String(30), nullable=False, default="onsite")
         notes = Column(Text, nullable=True)
         updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
@@ -701,7 +731,8 @@ def register_admin_api(
         promotion_id = Column(Integer, ForeignKey("promotions.id"), nullable=True)
         start_time = Column(DateTime, nullable=False, index=True)
         end_time = Column(DateTime, nullable=False)
-        contact_phone = Column(String(20), nullable=False)
+        contact_phone = Column(String(20), nullable=True)
+        customer_name_snapshot = Column(String(120), nullable=True)
         notes = Column(Text, nullable=True)
         source = Column(String(30), nullable=False, default="booking_web")
         status = Column(String(30), nullable=False, default="pending", index=True)
@@ -731,6 +762,14 @@ def register_admin_api(
         setting_value = Column(Text, nullable=False)
         updated_by_user_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True)
         updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
+
+    class StaffCategory(Base):
+        __tablename__ = "staff_categories"
+        id = Column(Integer, primary_key=True)
+        key = Column(String(40), unique=True, nullable=False)
+        name = Column(String(120), nullable=False)
+        active = Column(Boolean, nullable=False, default=True)
+        created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
 
     app.state.admin_models = {
         "AdminUser": AdminUser,
@@ -787,6 +826,90 @@ def register_admin_api(
         db.flush()
         audit(db, actor, "update", "system_setting", "customer_service_url", before=before, after={"url": normalized})
         db.commit()
+        return normalized
+
+    app.state.get_system_setting = get_system_setting
+    app.state.update_customer_service_url = update_customer_service_url
+
+    def normalize_phone(value: str | None) -> str:
+        cleaned = re.sub(r"[\s()\-]", "", (value or "").strip())
+        if cleaned.startswith("+886"):
+            cleaned = "0" + cleaned[4:]
+        if not re.fullmatch(r"09\d{8}", cleaned):
+            raise HTTPException(status_code=422, detail="手機號碼必須是 09 開頭的 10 碼數字")
+        return cleaned
+
+    def get_system_setting(key: str, db: Session, default: str | None = None) -> str | None:
+        item = db.query(SystemSetting).filter(SystemSetting.setting_key == key).first()
+        return item.setting_value if item else default
+
+    def unique_staff_phone(db: Session, value: str, *, exclude_staff_id: int | None = None) -> str:
+        phone = normalize_phone(value)
+        query = db.query(Staff).filter(Staff.phone == phone)
+        if exclude_staff_id is not None:
+            query = query.filter(Staff.id != exclude_staff_id)
+        if query.first():
+            raise HTTPException(status_code=409, detail="此手機 ID 已綁定其他師傅")
+        return phone
+
+    def customer_phone_rows(db: Session, customer) -> list:
+        rows = db.query(CustomerPhone).filter(CustomerPhone.user_id == customer.id).order_by(CustomerPhone.is_primary.desc(), CustomerPhone.id).all()
+        if not rows and customer.phone:
+            try:
+                normalized = normalize_phone(customer.phone)
+            except HTTPException:
+                return []
+            owner = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
+            if not owner:
+                owner = CustomerPhone(user_id=customer.id, phone=normalized, is_primary=True)
+                db.add(owner)
+                db.flush()
+                rows = [owner]
+        return rows
+
+    def customer_for_phone(db: Session, phone: str):
+        normalized = normalize_phone(phone)
+        record = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
+        if record:
+            return db.query(User).filter(User.id == record.user_id).first(), normalized
+        return db.query(User).filter(User.phone == normalized).first(), normalized
+
+    def anonymous_booking_customer(db: Session):
+        customer = db.query(User).filter(User.line_user_id == "guest:anonymous").first()
+        if not customer:
+            customer = User(line_user_id="guest:anonymous", display_name="訪客", customer_grade="N")
+            db.add(customer)
+            db.flush()
+        return customer
+
+    def sync_customer_phones(db: Session, customer, values: list[str]) -> list[str]:
+        normalized_values = list(dict.fromkeys(normalize_phone(value) for value in values))
+        for phone in normalized_values:
+            owner = db.query(CustomerPhone).filter(CustomerPhone.phone == phone, CustomerPhone.user_id != customer.id).first()
+            if owner:
+                raise HTTPException(status_code=409, detail=f"手機號碼 {phone} 已屬於其他客戶")
+        existing = {row.phone: row for row in db.query(CustomerPhone).filter(CustomerPhone.user_id == customer.id).all()}
+        for phone, row in existing.items():
+            if phone not in normalized_values:
+                db.delete(row)
+        for index, phone in enumerate(normalized_values):
+            row = existing.get(phone)
+            if row:
+                row.is_primary = index == 0
+            else:
+                db.add(CustomerPhone(user_id=customer.id, phone=phone, is_primary=index == 0))
+        customer.phone = normalized_values[0]
+        return normalized_values
+
+    def attach_customer_phone(db: Session, customer, phone: str) -> str:
+        normalized = normalize_phone(phone)
+        owner = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
+        if owner and owner.user_id != customer.id:
+            raise HTTPException(status_code=409, detail="此手機號碼已綁定其他客戶，請聯絡真人客服協助合併")
+        if not owner:
+            db.add(CustomerPhone(user_id=customer.id, phone=normalized, is_primary=not bool(customer.phone)))
+        if not customer.phone:
+            customer.phone = normalized
         return normalized
 
     app.state.get_system_setting = get_system_setting
@@ -870,7 +993,7 @@ def register_admin_api(
         return normalized
 
     def resolve_public_customer(db: Session, payload: PublicBookingCreateIn):
-        phone_customer, contact_phone = customer_for_phone(db, payload.phone)
+        phone_customer, contact_phone = (customer_for_phone(db, payload.phone) if payload.phone else (None, None))
         line_identity = _verify_line_id_token(payload.id_token) if payload.id_token else None
         supplied_line_user_id = (payload.line_user_id or "").strip()
         if supplied_line_user_id and not LINE_USER_ID_PATTERN.fullmatch(supplied_line_user_id):
@@ -894,7 +1017,8 @@ def register_admin_api(
                 )
                 db.add(customer)
                 db.flush()
-            attach_customer_phone(db, customer, contact_phone)
+            if contact_phone:
+                attach_customer_phone(db, customer, contact_phone)
             if not getattr(customer, "display_name", None):
                 customer.display_name = line_identity.get("name") or payload.customer_name.strip()
             if getattr(customer, "customer_grade", "N") not in {"SSR", "SR"}:
@@ -919,7 +1043,8 @@ def register_admin_api(
                 )
                 db.add(customer)
                 db.flush()
-            attach_customer_phone(db, customer, contact_phone)
+            if contact_phone:
+                attach_customer_phone(db, customer, contact_phone)
             if not getattr(customer, "display_name", None):
                 customer.display_name = (payload.line_display_name or payload.customer_name).strip()
             if getattr(customer, "customer_grade", "N") not in {"SSR", "SR"}:
@@ -928,6 +1053,8 @@ def register_admin_api(
 
         customer = phone_customer
         if not customer:
+            if not contact_phone:
+                return anonymous_booking_customer(db), None, "web_anonymous"
             customer = User(
                 line_user_id=f"manual:{secrets.token_hex(16)}",
                 phone=contact_phone,
@@ -936,7 +1063,8 @@ def register_admin_api(
             )
             db.add(customer)
             db.flush()
-        attach_customer_phone(db, customer, contact_phone)
+        if contact_phone:
+            attach_customer_phone(db, customer, contact_phone)
         if not getattr(customer, "display_name", None):
             customer.display_name = payload.customer_name.strip()
         if getattr(customer, "customer_grade", "N") not in {"SSR", "SR"}:
@@ -1067,19 +1195,27 @@ def register_admin_api(
         db.query(BookingRequest).filter(BookingRequest.requested_staff_id == staff_id).update({BookingRequest.requested_staff_id: None}, synchronize_session=False)
         db.query(Payment).filter(Payment.received_by_staff_id == staff_id).update({Payment.received_by_staff_id: None}, synchronize_session=False)
         db.query(StaffReturn).filter(StaffReturn.staff_id == staff_id).delete(synchronize_session=False)
-        db.query(Shift).filter(Shift.staff_id == staff_id).delete(synchronize_session=False)
+        db.query(Shift).filter(Shift.staff_id == staff_id).update({"status": "cancelled", "change_reason": "員工資料清洗"}, synchronize_session=False)
         if item.line_user_id and not item.line_user_id.startswith(("pending:", "seeded:")) and not db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == item.line_user_id).first():
             db.add(RevokedStaffLine(line_user_id=item.line_user_id, staff_name=item.name, revoked_by_user_id=actor_id))
         for model in (StaffScheduleToken, StaffPrivateHealth, StaffSession, StaffMagicLink, StaffPhoto):
             db.query(model).filter(model.staff_id == staff_id).delete(synchronize_session=False)
         deleted_name = item.name
-        db.delete(item)
+        # Keep the public identity row so historical orders continue to render,
+        # while scrubbing credentials and private contact data permanently.
+        item.phone = None
+        item.phone_temp = None
+        item.line_user_id = f"deleted:{staff_id}"
+        item.bio = None
+        item.employment_status = "retired"
+        item.is_online = False
+        item.online_start_time = None
         audit(db, actor, "permanent_delete", "staff", staff_id, reason=reason, before=before)
         if commit:
             db.commit()
         else:
             db.flush()
-        return {"ok": True, "deleted_staff_id": staff_id, "deleted_staff_name": deleted_name}
+        return {"ok": True, "deleted_staff_id": staff_id, "deleted_staff_name": deleted_name, "history_preserved": True}
 
     app.state.permanently_delete_staff = permanently_delete_staff
 
@@ -1477,6 +1613,13 @@ def register_admin_api(
         }
 
     def staff_dict(item) -> dict[str, Any]:
+        try:
+            categories = json.loads(getattr(item, "categories_json", None) or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            categories = []
+        categories = [str(value)[:40] for value in categories if str(value).strip()]
+        if not categories and getattr(item, "category", None):
+            categories = [item.category]
         return {
             "id": item.id,
             "name": item.name,
@@ -1484,6 +1627,7 @@ def register_admin_api(
             "phone_change_pending": bool(getattr(item, "phone", None) and getattr(item, "phone_temp", None)),
             "requested_phone": getattr(item, "phone_temp", None) if getattr(item, "phone", None) else None,
             "category": getattr(item, "category", None),
+            "categories": categories,
             "employment_status": getattr(item, "employment_status", "active"),
             "line_connected": not item.line_user_id.startswith(("pending:", "seeded:")) if item.line_user_id else False,
             "is_online": bool(getattr(item, "is_online", False)),
@@ -1554,6 +1698,29 @@ def register_admin_api(
             discounts = min(500, discounts)
         total = max(0, base + fees - discounts)
         return {"base_price": base, "extra_amount": fees, "discount_amount": discounts, "total_amount": int(round(total)), "commission_amount": 0}
+
+    def calculate_settlement_totals(*, total_amount: int, baseline_return: int = 0,
+                                    discount_employee_amount: int = 0,
+                                    discount_shop_amount: int = 0,
+                                    surcharge_employee_amount: int = 0,
+                                    surcharge_shop_amount: int = 0) -> dict[str, int]:
+        """Calculate flexible A/B/C/D settlement adjustments with integer math."""
+        total = max(0, int(round(total_amount or 0)))
+        baseline = max(0, int(round(baseline_return or 0)))
+        a = max(0, int(round(discount_employee_amount or 0)))
+        b = max(0, int(round(discount_shop_amount or 0)))
+        c = max(0, int(round(surcharge_employee_amount or 0)))
+        d = max(0, int(round(surcharge_shop_amount or 0)))
+        staff_return = max(0, baseline - a + c)
+        shop_recovery = max(0, total - staff_return - b + d)
+        return {
+            "discount_employee_amount": a,
+            "discount_shop_amount": b,
+            "surcharge_employee_amount": c,
+            "surcharge_shop_amount": d,
+            "staff_return_amount": int(round(staff_return)),
+            "shop_recovery_amount": int(round(shop_recovery)),
+        }
 
     def promotion_rows(db: Session, promotion_ids: list[int] | None) -> list[Any]:
         ids = [int(value) for value in (promotion_ids or []) if value]
@@ -1660,6 +1827,21 @@ def register_admin_api(
         rule_set_id = getattr(staff_obj, "return_rule_set_id", None) or cache["default_rule_set_id"]
         service_code = plan.code if plan else (item.plan_name or "").split("-", 1)[0]
         return_rule = cache["rules"].get((rule_set_id, "E" if service_code == "OUT" else service_code)) if rule_set_id else None
+        baseline_return = staff_return.amount if staff_return else (return_rule.amount if return_rule else 0)
+        settlement = calculate_settlement_totals(
+            total_amount=detail.total_amount if detail else appointment_price_from_legacy(item),
+            baseline_return=baseline_return,
+            discount_employee_amount=getattr(detail, "discount_employee_amount", 0) if detail else 0,
+            discount_shop_amount=getattr(detail, "discount_shop_amount", 0) if detail else 0,
+            surcharge_employee_amount=getattr(detail, "surcharge_employee_amount", 0) if detail else 0,
+            surcharge_shop_amount=getattr(detail, "surcharge_shop_amount", 0) if detail else 0,
+        )
+        if detail is not None:
+            # New settlement columns are the authoritative order snapshot;
+            # zero is a valid explicit override and must not fall back to the
+            # legacy StaffReturn row.
+            settlement["staff_return_amount"] = int(getattr(detail, "staff_return_amount", 0) or 0)
+            settlement["shop_recovery_amount"] = int(getattr(detail, "shop_recovery_amount", 0) or 0)
         phone = (detail.contact_phone if detail and detail.contact_phone else getattr(user, "phone", None)) or getattr(item, "customer_phone_snapshot", None)
         grade = getattr(user, "customer_grade", "N") if user else "N"
         canonical_status = "pending" if item.status == "pending" else "completed" if item.status == "completed" else "confirmed"
@@ -1669,7 +1851,7 @@ def register_admin_api(
             "customer_id": item.user_id,
             "customer_serial": customer_serial(item.user_id, phone, grade),
             "customer_grade": grade,
-            "customer_name": getattr(user, "display_name", None) or getattr(item, "customer_name_snapshot", None) or "未命名客戶",
+            "customer_name": (getattr(item, "customer_name_snapshot", None) if getattr(user, "line_user_id", "") == "guest:anonymous" else None) or getattr(user, "display_name", None) or getattr(item, "customer_name_snapshot", None) or "未命名客戶",
             "phone": phone,
             "staff_id": item.staff_id,
             "staff_name": staff_obj.name if staff_obj else getattr(item, "staff_name_snapshot", None) or "未指定",
@@ -1699,6 +1881,7 @@ def register_admin_api(
             "cash_return_status": payment.cash_return_status if payment else None,
             "expected_return_amount": staff_return.amount if staff_return else (return_rule.amount if return_rule else 0),
             "commission_amount": getattr(detail, "commission_amount", None) if detail else None,
+            **settlement,
             "staff_return_status": staff_return.status if staff_return else "not_created",
         }
 
@@ -1708,7 +1891,7 @@ def register_admin_api(
 
     def public_appointment_dict(db: Session, item, cache: dict[str, Any] | None = None) -> dict[str, Any]:
         row = appointment_dict(db, item, cache)
-        for key in ("customer_id", "customer_serial", "customer_name", "phone", "base_price", "discount_amount", "extra_amount", "total_amount", "notes", "payment_method", "cash_return_status", "expected_return_amount", "staff_return_status"):
+        for key in ("customer_id", "customer_serial", "customer_name", "phone", "base_price", "discount_amount", "extra_amount", "total_amount", "notes", "payment_method", "cash_return_status", "expected_return_amount", "staff_return_status", "commission_amount", "discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount"):
             row.pop(key, None)
         row["customer_name"] = "已隱藏"
         row["phone"] = None
@@ -1784,7 +1967,7 @@ def register_admin_api(
             "customer_id": item.user_id,
             "customer_serial": customer_serial(item.user_id, item.contact_phone, getattr(customer, "customer_grade", "N")),
             "customer_grade": getattr(customer, "customer_grade", "N"),
-            "customer_name": getattr(customer, "display_name", None) or "未命名客戶",
+            "customer_name": getattr(item, "customer_name_snapshot", None) or getattr(customer, "display_name", None) or "未命名客戶",
             "phone": item.contact_phone,
             "staff_id": item.requested_staff_id,
             "staff_name": staff_obj.name if staff_obj else "未指定",
@@ -1847,6 +2030,7 @@ def register_admin_api(
         *,
         customer,
         contact_phone: str,
+        customer_name: str | None = None,
         service_plan_id: int,
         start_time: datetime,
         staff_id: int | None,
@@ -1885,6 +2069,7 @@ def register_admin_api(
             start_time=start_dt,
             end_time=appointment_end(start_dt, plan.duration_minutes),
             contact_phone=contact_phone,
+            customer_name_snapshot=(customer_name or getattr(customer, "display_name", None) or "未命名客戶").strip()[:120],
             notes=(notes or "").strip() or None,
             source=source,
             status="pending",
@@ -1954,7 +2139,7 @@ def register_admin_api(
         )
         db.add(appointment)
         db.flush()
-        db.add(AppointmentDetail(
+        detail = AppointmentDetail(
             appointment_id=appointment.id,
             service_plan_id=plan.id,
             promotion_id=promotion.id if promotion else None,
@@ -1966,7 +2151,16 @@ def register_admin_api(
             total_amount=max(0, plan.price - discount),
             location_type="external" if plan.location_type == "external" else "pending",
             notes=f"由預約通知 {booking_request_dict(db, item)['request_id']} 確認成立" + (f"\n客戶備註：{item.notes}" if item.notes else ""),
-        ))
+        )
+        db.add(detail)
+        db.flush()
+        rule = return_rule_for_appointment(db, appointment, detail)
+        settlement = calculate_settlement_totals(
+            total_amount=detail.total_amount,
+            baseline_return=rule.amount if rule else 0,
+        )
+        for key, value in settlement.items():
+            setattr(detail, key, value)
         item.status = "confirmed"
         item.appointment_id = appointment.id
         item.reviewed_by_user_id = getattr(actor, "id", None)
@@ -2027,6 +2221,11 @@ def register_admin_api(
                     logger.warning("%s was not seeded because its initial PIN environment variable is missing", username)
                     continue
                 db.add(AdminUser(username=username, display_name=display_name, role=role_name, pin_hash=password_hash.hash(pin)))
+
+            existing_categories = {row[0] for row in db.query(StaffCategory.key).all()}
+            for key, name in (("straight", "直男師傅"), ("gay", "圈內師傅"), ("bisexual", "雙性師傅")):
+                if key not in existing_categories:
+                    db.add(StaffCategory(key=key, name=name, active=True))
 
             seed_plans = [
                 ("A", "舒壓方案", 60, 1500, "不指定優惠／指壓或油壓", "onsite", False),
@@ -2158,11 +2357,14 @@ def register_admin_api(
         liff_id = os.getenv("LINE_LIFF_ID", "").strip()
         return {
             "services": [service_dict(item) for item in services],
-            "promotions": [promotion_dict(item) for item in promotions],
+            # Keep this endpoint backward compatible while hiding promotion
+            # choices from anonymous booking clients.
+            "promotions": [],
             "staff": [{
                 "id": item.id,
                 "name": item.name,
                 "category": item.category,
+                "categories": staff_dict(item).get("categories", []),
                 "employment_status": item.employment_status,
                 "line_connected": False,
                 "height": item.height,
@@ -2239,10 +2441,11 @@ def register_admin_api(
             db,
             customer=customer,
             contact_phone=contact_phone,
+            customer_name=payload.customer_name,
             service_plan_id=payload.service_plan_id,
             start_time=payload.start_time,
             staff_id=payload.staff_id,
-            promotion_id=payload.promotion_id,
+            promotion_id=None,
             notes=payload.notes,
             source=source,
             idempotency_key=payload.idempotency_key,
@@ -2482,6 +2685,50 @@ def register_admin_api(
             } for item in audit_rows],
         }
 
+    @app.patch("/api/admin/settings/customer-service")
+    def update_customer_service_setting(payload: CustomerServiceSettingIn, db: Session = Depends(get_db), user=Depends(require_roles("admin", "manager"))):
+        return {"customer_service_url": update_customer_service_url(user.id, payload.url, db)}
+
+    @app.get("/api/admin/bootstrap")
+    def bootstrap(db: Session = Depends(get_db), user=Depends(current_admin)):
+        appointments = db.query(Appointment).filter(Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES)).order_by(Appointment.start_time.desc()).limit(300).all()
+        booking_requests = db.query(BookingRequest).order_by(BookingRequest.created_at.desc()).limit(500).all()
+        shift_rows = db.query(Shift).filter(Shift.status == "active").order_by(Shift.start_time).limit(500).all()
+        shift_staff = _model_map(db, Staff, {item.staff_id for item in shift_rows})
+        customers = db.query(User).order_by(User.created_at.desc()).limit(1000).all()
+        audit_rows = db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(20).all()
+        audit_actors = _model_map(db, AdminUser, {item.actor_user_id for item in audit_rows if item.actor_user_id})
+        return {
+            "user": serialize_admin(user),
+            "appointments": appointment_dicts(db, appointments),
+            "booking_requests": booking_request_dicts(db, booking_requests),
+            "staff": [staff_dict(item) for item in db.query(Staff).order_by(Staff.name).all()],
+            "shifts": [shift_dict(item) | {"staff_name": shift_staff[item.staff_id].name if item.staff_id in shift_staff else "未知"} for item in shift_rows],
+            "services": [service_dict(item) for item in db.query(ServicePlan).filter(ServicePlan.deleted_at.is_(None)).order_by(ServicePlan.id).all()],
+            "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.deleted_at.is_(None)).order_by(Promotion.id).all()],
+            "rooms": [{"id": item.id, "name": item.name, "active": item.active} for item in db.query(Room).order_by(Room.id).all()],
+            "venues": [{"id": item.id, "name": item.name, "address": item.address, "room_name": item.room_name, "rental_cost": item.rental_cost, "notes": item.notes, "active": item.active} for item in db.query(Venue).order_by(Venue.name).all()],
+            "customers": customer_dicts(db, customers),
+            "admin_users": [serialize_admin(item) for item in db.query(AdminUser).order_by(AdminUser.id).all()] if user.role in {"admin", "manager"} else [],
+            "return_rule_sets": return_rule_sets_dict(db),
+            "settings": {
+                "customer_service_url": get_system_setting(
+                    "customer_service_url",
+                    db,
+                    os.getenv("CUSTOMER_SERVICE_URL", DEFAULT_CUSTOMER_SERVICE_URL),
+                ),
+            },
+            "audit_logs": [{
+                "id": item.id,
+                "actor_name": audit_actors[item.actor_user_id].display_name if item.actor_user_id in audit_actors else "系統／員工",
+                "action": item.action,
+                "entity_type": item.entity_type,
+                "entity_id": item.entity_id,
+                "reason": item.reason,
+                "created_at": _iso(item.created_at),
+            } for item in audit_rows],
+        }
+
     @app.get("/api/admin/booking-requests")
     def list_booking_requests(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
         items = db.query(BookingRequest).order_by(BookingRequest.created_at.desc()).limit(1000).all()
@@ -2599,7 +2846,7 @@ def register_admin_api(
 
     @app.get("/api/admin/customers")
     def list_customers(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
-        return customer_dicts(db, db.query(User).order_by(User.created_at.desc()).limit(1000).all())
+        return customer_dicts(db, db.query(User).filter(User.line_user_id != "guest:anonymous").order_by(User.created_at.desc()).limit(1000).all())
 
     @app.patch("/api/admin/customers/{customer_id}")
     def update_customer(customer_id: int, payload: CustomerPatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
@@ -2706,7 +2953,7 @@ def register_admin_api(
             start_time=start_dt,
             end_time=end_dt,
             status="confirmed",
-            customer_name_snapshot=customer.display_name,
+            customer_name_snapshot=payload.customer_name.strip(),
             customer_phone_snapshot=contact_phone,
             staff_name_snapshot=staff_obj.name if payload.staff_id else None,
         )
@@ -2717,6 +2964,14 @@ def register_admin_api(
             for key in ("base_price", "discount_amount", "extra_amount", "total_amount", "commission_amount"):
                 if hasattr(payload, key) and getattr(payload, key) is not None:
                     totals[key] = int(getattr(payload, key))
+        settlement = calculate_settlement_totals(
+            total_amount=totals["total_amount"],
+            baseline_return=0,
+            discount_employee_amount=payload.discount_employee_amount or 0,
+            discount_shop_amount=payload.discount_shop_amount or 0,
+            surcharge_employee_amount=payload.surcharge_employee_amount or 0,
+            surcharge_shop_amount=payload.surcharge_shop_amount or 0,
+        )
         detail = AppointmentDetail(
             appointment_id=appointment.id,
             service_plan_id=plan.id,
@@ -2734,10 +2989,36 @@ def register_admin_api(
             extra_amount=totals["extra_amount"],
             total_amount=totals["total_amount"],
             commission_amount=totals["commission_amount"],
+            discount_employee_amount=settlement["discount_employee_amount"],
+            discount_shop_amount=settlement["discount_shop_amount"],
+            surcharge_employee_amount=settlement["surcharge_employee_amount"],
+            surcharge_shop_amount=settlement["surcharge_shop_amount"],
+            staff_return_amount=settlement["staff_return_amount"],
+            shop_recovery_amount=settlement["shop_recovery_amount"],
             location_type=payload.location_type,
             notes=payload.notes,
         )
         db.add(detail)
+        db.flush()
+        # Snapshot the current staff rule into the order settlement. Later rule
+        # edits must not change already-created order amounts.
+        baseline_return = return_rule_for_appointment(db, appointment, detail)
+        baseline_return = baseline_return.amount if baseline_return else 0
+        settlement = calculate_settlement_totals(
+            total_amount=detail.total_amount,
+            baseline_return=baseline_return,
+            discount_employee_amount=detail.discount_employee_amount,
+            discount_shop_amount=detail.discount_shop_amount,
+            surcharge_employee_amount=detail.surcharge_employee_amount,
+            surcharge_shop_amount=detail.surcharge_shop_amount,
+        )
+        for key, value in settlement.items():
+            setattr(detail, key, value)
+        if payload.is_admin_override and actor.role in {"admin", "manager"}:
+            for key in ("discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount"):
+                value = getattr(payload, key, None)
+                if value is not None:
+                    setattr(detail, key, int(value))
         audit(db, actor, "create", "appointment", appointment.id, after={"start": start_dt, "end": end_dt, "staff_id": payload.staff_id, "room_id": payload.room_id, "promotion_id": payload.promotion_id})
         db.commit()
         db.refresh(appointment)
@@ -2770,11 +3051,9 @@ def register_admin_api(
         plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id, ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).first()
         if not plan:
             raise HTTPException(status_code=404, detail="找不到啟用中的服務方案")
+        # Public clients never choose promotions. Eligibility is controlled by
+        # backend rules; management can apply or override them in the admin UI.
         promotion = None
-        if payload.promotion_id:
-            promotion = db.query(Promotion).filter(Promotion.id == payload.promotion_id, Promotion.active.is_(True), Promotion.deleted_at.is_(None)).first()
-            if not promotion or plan.duration_minutes < 90 or promotion_discount(promotion, plan.price) <= 0:
-                raise HTTPException(status_code=404, detail="這個優惠目前無法使用")
 
         start_dt = parse_local_datetime(payload.start_time)
         try:
@@ -2820,18 +3099,18 @@ def register_admin_api(
             start_time=start_dt,
             end_time=end_dt,
             status="confirmed",
-            customer_name_snapshot=customer.display_name,
+            customer_name_snapshot=payload.customer_name.strip(),
             customer_phone_snapshot=contact_phone,
             staff_name_snapshot=db.query(Staff).filter(Staff.id == assigned_staff_id).first().name,
         )
         db.add(appointment)
         db.flush()
-        discount = 0 if plan.duration_minutes < 90 else promotion_discount(promotion, plan.price)
+        discount = 0
         source_label = "LINE 連結網頁預約" if source in {"liff", "line"} else "網頁預約"
         notes = f"來源：{source_label}"
         if payload.notes and payload.notes.strip():
             notes += f"\n客戶備註：{payload.notes.strip()}"
-        db.add(AppointmentDetail(
+        detail = AppointmentDetail(
             appointment_id=appointment.id,
             service_plan_id=plan.id,
             promotion_id=promotion.id if promotion else None,
@@ -2843,13 +3122,18 @@ def register_admin_api(
             total_amount=max(0, plan.price - discount),
             location_type="external" if plan.location_type == "external" else "pending",
             notes=notes,
-        ))
+        )
+        db.add(detail)
+        db.flush()
+        rule = return_rule_for_appointment(db, appointment, detail)
+        for key, value in calculate_settlement_totals(total_amount=detail.total_amount, baseline_return=rule.amount if rule else 0).items():
+            setattr(detail, key, value)
         claim.appointment_id = appointment.id
         audit(db, None, "create_public_booking", "appointment", appointment.id, reason=source_label, after={
             "start": start_dt,
             "end": end_dt,
             "staff_id": assigned_staff_id,
-            "promotion_id": payload.promotion_id,
+            "promotion_id": None,
         })
         db.commit()
         db.refresh(appointment)
@@ -2893,7 +3177,12 @@ def register_admin_api(
         admin_override = bool(changes.pop("is_admin_override", False))
         if admin_override and actor.role not in {"admin", "manager"}:
             raise HTTPException(status_code=403, detail="只有店長或 Admin 可以使用管理覆寫")
-        monetary_fields = {"base_price", "discount_amount", "extra_amount", "total_amount"}
+        monetary_fields = {
+            "base_price", "discount_amount", "extra_amount", "total_amount",
+            "discount_employee_amount", "discount_shop_amount",
+            "surcharge_employee_amount", "surcharge_shop_amount",
+            "staff_return_amount", "shop_recovery_amount", "commission_amount",
+        }
         if actor.role == "clerk" and monetary_fields.intersection(changes):
             raise HTTPException(status_code=403, detail="客服不能直接覆寫金額，請由店長或 Admin 處理")
         customer = db.query(User).filter(User.id == appointment.user_id).first()
@@ -2969,6 +3258,16 @@ def register_admin_api(
             detail.discount_amount = totals["discount_amount"]
             detail.extra_amount = totals["extra_amount"]
             detail.total_amount = totals["total_amount"]
+            settlement = calculate_settlement_totals(
+                total_amount=detail.total_amount,
+                baseline_return=(return_rule_for_appointment(db, appointment, detail).amount if return_rule_for_appointment(db, appointment, detail) else 0),
+                discount_employee_amount=getattr(detail, "discount_employee_amount", 0),
+                discount_shop_amount=getattr(detail, "discount_shop_amount", 0),
+                surcharge_employee_amount=getattr(detail, "surcharge_employee_amount", 0),
+                surcharge_shop_amount=getattr(detail, "surcharge_shop_amount", 0),
+            )
+            for key, value in settlement.items():
+                setattr(detail, key, value)
         if "room_id" in changes:
             detail.room_id = payload.room_id
             detail.room_name_snapshot = db.query(Room).filter(Room.id == payload.room_id).first().name if payload.room_id else None
@@ -2983,13 +3282,25 @@ def register_admin_api(
             for field in monetary_fields:
                 if field in changes:
                     setattr(detail, field, changes[field])
-            if "commission_amount" in changes:
-                detail.commission_amount = changes["commission_amount"]
             if monetary_fields.intersection(changes) and "total_amount" not in changes:
                 detail.total_amount = max(0, detail.base_price - detail.discount_amount + detail.extra_amount)
+            # Any A/B/C/D edit automatically updates both settlement totals;
+            # explicit final values from management remain authoritative.
+            if monetary_fields.intersection(changes):
+                auto_settlement = calculate_settlement_totals(
+                    total_amount=detail.total_amount,
+                    baseline_return=(return_rule_for_appointment(db, appointment, detail).amount if return_rule_for_appointment(db, appointment, detail) else 0),
+                    discount_employee_amount=getattr(detail, "discount_employee_amount", 0),
+                    discount_shop_amount=getattr(detail, "discount_shop_amount", 0),
+                    surcharge_employee_amount=getattr(detail, "surcharge_employee_amount", 0),
+                    surcharge_shop_amount=getattr(detail, "surcharge_shop_amount", 0),
+                )
+                for key, value in auto_settlement.items():
+                    if key not in changes:
+                        setattr(detail, key, value)
         after = appointment_dict(db, appointment)
         time_changed = before.get("start_time") != after.get("start_time") or before.get("end_time") != after.get("end_time")
-        amount_changed = any(before.get(field) != after.get(field) for field in ("base_price", "discount_amount", "extra_amount", "total_amount", "commission_amount"))
+        amount_changed = any(before.get(field) != after.get(field) for field in ("base_price", "discount_amount", "extra_amount", "total_amount", "commission_amount", "discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount"))
         audit(db, actor, "update", "appointment", appointment.id, reason=payload.force_reason, before=before, after=after)
         db.commit()
         if appointment_update_notifier and (time_changed or amount_changed) and not admin_override:
@@ -3023,7 +3334,10 @@ def register_admin_api(
         staff_obj = db.query(Staff).filter(Staff.id == payload.staff_id).with_for_update().first()
         if not staff_obj or getattr(staff_obj, "employment_status", "active") != "active":
             raise HTTPException(status_code=404, detail="找不到在職師傅")
-        if not override_time_rules and not staff_may_change_shift(start_dt):
+        clerk_current_or_future = actor.role != "clerk" or start_dt.date() >= now_taipei_naive().date()
+        if actor.role == "clerk" and not clerk_current_or_future:
+            raise HTTPException(status_code=403, detail="客服只能調整今日及未來日期的排班")
+        if not override_time_rules and actor.role != "clerk" and not staff_may_change_shift(start_dt):
             raise HTTPException(status_code=422, detail="開始時間已進入 90 分鐘鎖定範圍，請聯絡店長或開啟客服強制權限")
         if not override_time_rules and shift_conflict(db, payload.staff_id, start_dt, end_dt):
             raise HTTPException(status_code=409, detail="此師傅的排班時間重疊")
@@ -3041,21 +3355,22 @@ def register_admin_api(
         item = db.query(Shift).filter(Shift.id == shift_id, Shift.status == "active").with_for_update().first()
         if not item:
             raise HTTPException(status_code=404, detail="找不到排班")
-        if actor.role not in {"admin", "manager"}:
-            raise HTTPException(status_code=403, detail="只有店長或 Admin 可以編輯排班")
         start_value = payload.start_time if payload.start_time is not None else item.start_time
         end_value = payload.end_time if payload.end_time is not None else item.end_time
         try:
             start_dt, end_dt, is_next_day = validate_extended_shift_period(start_value, end_value, is_next_day=bool(payload.is_next_day) if payload.is_next_day is not None else bool(item.is_next_day))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if actor.role == "clerk" and start_dt.date() < now_taipei_naive().date():
+            raise HTTPException(status_code=403, detail="客服不能異動昨日以前的歷史排班")
         if shift_conflict(db, item.staff_id, start_dt, end_dt, item.id):
             raise HTTPException(status_code=409, detail="此師傅的排班時間重疊")
         before = shift_dict(item)
         item.start_time = start_dt
         item.end_time = end_dt
         item.is_next_day = is_next_day
-        item.modified_by_admin_id = actor.id
+        if actor.role in {"admin", "manager"}:
+            item.modified_by_admin_id = actor.id
         item.change_reason = payload.force_reason
         audit(db, actor, "update", "shift", item.id, reason=payload.force_reason, before=before, after=shift_dict(item))
         db.commit()
@@ -3067,8 +3382,10 @@ def register_admin_api(
         item = db.query(Shift).filter(Shift.id == shift_id, Shift.status == "active").with_for_update().first()
         if not item:
             raise HTTPException(status_code=404, detail="找不到排班")
+        if actor.role == "clerk" and item.start_time.date() < now_taipei_naive().date():
+            raise HTTPException(status_code=403, detail="客服不能異動昨日以前的歷史排班")
         locked = not staff_may_change_shift(item.start_time)
-        if locked and not actor_can_override_time_rules(actor, db):
+        if actor.role != "clerk" and locked and not actor_can_override_time_rules(actor, db):
             raise HTTPException(status_code=422, detail="此班已鎖定，請由店長、Admin 或具強制權限的客服處理")
         before = shift_dict(item)
         if actor.role in {"admin", "manager"}:
@@ -3247,6 +3564,57 @@ def register_admin_api(
     def list_staff(db: Session = Depends(get_db), user=Depends(current_admin)):
         return [staff_dict(item) for item in db.query(Staff).order_by(Staff.name).all()]
 
+    @app.post("/api/admin/staff/bulk-category")
+    def bulk_staff_category(payload: StaffBulkCategoryIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        categories = list(dict.fromkeys(payload.categories))
+        rows = db.query(Staff).filter(Staff.id.in_(payload.staff_ids)).with_for_update().all()
+        if len(rows) != len(set(payload.staff_ids)):
+            raise HTTPException(status_code=404, detail="找不到部分員工")
+        for item in rows:
+            item.categories_json = json.dumps(categories, ensure_ascii=False)
+            item.category = categories[0]
+        audit(db, actor, "bulk_update", "staff_category", ",".join(str(item.id) for item in rows), after={"categories": categories})
+        db.commit()
+        return [staff_dict(item) for item in rows]
+
+    @app.get("/api/admin/staff-categories")
+    def list_staff_categories(db: Session = Depends(get_db), actor=Depends(current_admin)):
+        rows = db.query(StaffCategory).filter(StaffCategory.active.is_(True)).order_by(StaffCategory.id).all()
+        return [{"id": item.id, "key": item.key, "name": item.name, "active": item.active} for item in rows]
+
+    @app.post("/api/admin/staff-categories", status_code=201)
+    def create_staff_category(payload: StaffCategoryIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        if db.query(StaffCategory).filter(StaffCategory.key == payload.key).first():
+            raise HTTPException(status_code=409, detail="員工分類代碼已存在")
+        item = StaffCategory(key=payload.key.strip(), name=payload.name.strip(), active=True)
+        db.add(item)
+        db.flush()
+        audit(db, actor, "create", "staff_category", item.id, after={"key": item.key, "name": item.name})
+        db.commit()
+        return {"id": item.id, "key": item.key, "name": item.name, "active": item.active}
+
+    @app.patch("/api/admin/staff-categories/{category_id}")
+    def update_staff_category(category_id: int, payload: StaffCategoryIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(StaffCategory).filter(StaffCategory.id == category_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到員工分類")
+        before = {"key": item.key, "name": item.name}
+        item.key = payload.key.strip()
+        item.name = payload.name.strip()
+        audit(db, actor, "update", "staff_category", item.id, before=before, after={"key": item.key, "name": item.name})
+        db.commit()
+        return {"id": item.id, "key": item.key, "name": item.name, "active": item.active}
+
+    @app.delete("/api/admin/staff-categories/{category_id}")
+    def delete_staff_category(category_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(StaffCategory).filter(StaffCategory.id == category_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到員工分類")
+        item.active = False
+        audit(db, actor, "delete", "staff_category", item.id, before={"key": item.key, "name": item.name})
+        db.commit()
+        return {"ok": True, "id": category_id}
+
     @app.get("/api/admin/return-rules")
     def list_return_rules(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
         return return_rule_sets_dict(db)
@@ -3277,6 +3645,7 @@ def register_admin_api(
             name=payload.name,
             phone=phone,
             category=payload.category,
+            categories_json=json.dumps(list(dict.fromkeys(payload.categories or [payload.category])), ensure_ascii=False),
             employment_status="active",
             return_rule_set_id=payload.return_rule_set_id,
             photo_url=photo_url or None,
@@ -3319,6 +3688,13 @@ def register_admin_api(
             changes["weight"] = normalize_staff_measurement(changes["weight"], label="體重", minimum=30, maximum=250)
         if "bio" in changes:
             changes["bio"] = (changes["bio"] or "").strip()[:60] or None
+        if "categories" in changes:
+            categories = list(dict.fromkeys(changes.pop("categories") or []))
+            if not categories and changes.get("category"):
+                categories = [changes["category"]]
+            if categories:
+                changes["categories_json"] = json.dumps(categories, ensure_ascii=False)
+                changes.setdefault("category", categories[0])
         if "return_rule_set_id" in changes and changes["return_rule_set_id"] is not None:
             if not db.query(ReturnRuleSet).filter(ReturnRuleSet.id == changes["return_rule_set_id"], ReturnRuleSet.active.is_(True)).first():
                 raise HTTPException(status_code=404, detail="找不到回帳表")

@@ -193,7 +193,7 @@ export default function BookingPage() {
     setError('');
     if (requestOnly && !staff) return setError('請先從指定師傅卡片中選擇一位師傅');
     if (!service || !availability) return setError('請先選擇可預約的方案與時段');
-    if (!/^09\d{8}$/.test(phone)) return setError('手機號碼必須是 09 開頭的 10 碼數字');
+    if (phone && !/^09\d{8}$/.test(phone)) return setError('手機號碼必須是 09 開頭的 10 碼數字');
     if (!name.trim()) return setError('請填寫您的稱呼');
     setIdempotencyKey(globalThis.crypto?.randomUUID?.() || `web-${Date.now()}-${Math.random().toString(16).slice(2)}`);
     setStage('review');
@@ -206,8 +206,8 @@ export default function BookingPage() {
     setError('');
     try {
       const payload = {
-        customer_name: name.trim(), phone, service_plan_id: service.id, start_time: startTime,
-        staff_id: staff ? staff.id : null, promotion_id: promotion ? promotion.id : null,
+        customer_name: name.trim(), phone: phone || null, service_plan_id: service.id, start_time: startTime,
+        staff_id: staff ? staff.id : null,
         notes: notes.trim() || null, idempotency_key: idempotencyKey, website: '',
         id_token: idToken || null, line_user_id: lineUserId || null, line_display_name: name.trim() || null,
         source: requestOnly ? 'official_website' : 'booking_web',
@@ -291,22 +291,22 @@ export default function BookingPage() {
           {requestOnly && staff && <div className={styles.assignment}>已指定 {staff.name}。不論目前是否排班，都只會先送出通知並保留這位師傅，等待客服確認。</div>}
           {!requestOnly && availability?.can_choose_staff && <div className={styles.staffGrid}>
             <button type="button" onClick={() => setStaffId('')} className={!staffId ? styles.staffSelected : styles.staff}><i>?</i><span><strong>不指定</strong><small>由店長安排</small></span></button>
-            {availability.staff.map((item) => <button type="button" key={item.id} onClick={() => setStaffId(String(item.id))} className={staffId === String(item.id) ? styles.staffSelected : styles.staff}><i>{item.name.slice(0, 1)}</i><span><strong>{item.name}</strong><small>{categoryLabel(item.category)}</small></span></button>)}
+            {availability.staff.map((item) => { const photo = resolveStaffPhotoUrl(options?.staff.find((candidate) => candidate.id === item.id)?.photo_url); return <button type="button" key={item.id} onClick={() => setStaffId(String(item.id))} className={staffId === String(item.id) ? styles.staffSelected : styles.staff}>{photo ? <img src={photo} alt="" /> : <i>{item.name.slice(0, 1)}</i>}<span><strong>{item.name}</strong><small>{categoryLabel(item.category)}</small></span></button>; })}
           </div>}
           {!requestOnly && availability && !availability.can_choose_staff && <div className={styles.assignment}>此方案不指定師傅，將由店長依班表安排。</div>}
         </section>
 
         <section>
           <div className={styles.sectionTitle}><span>03</span><div><h2>優惠與聯絡資料</h2><p>優惠資格將由現場或客服確認</p></div></div>
-          <label className={service && service.duration_minutes < 90 ? styles.promotionWarning : styles.field}>優惠方案<select value={promotionId} onChange={(event) => setPromotionId(event.target.value)}><option value="">不使用優惠</option>{options?.promotions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>{service && service.duration_minutes < 90 && <small>未滿 90 分鐘不適用優惠；管理端可強制套用。</small>}</label>
+          <div className={styles.field}><strong>優惠</strong><small>優惠資格由後端依客戶資料與活動規則自動判定，預約頁不需選擇。</small></div>
           <div className={styles.twoColumns}>
             <label className={styles.field}>您的稱呼<input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：王先生" maxLength={120} required /></label>
-            <label className={styles.field}>手機號碼<input value={phone} onChange={(event) => setPhone(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="09xxxxxxxx" inputMode="numeric" pattern="09\d{8}" required /></label>
+            <label className={styles.field}>手機號碼（選填）<input value={phone} onChange={(event) => setPhone(event.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="09xxxxxxxx" inputMode="numeric" pattern="09\d{8}" /></label>
           </div>
           <label className={styles.field}>備註（選填）<textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} maxLength={1000} placeholder="特殊需求或方便聯絡的方式" /></label>
           <input className={styles.honeypot} name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" />
         </section>
-        <div className={styles.total}><span>預估金額<small>{promotion ? `已套用 ${promotion.name}` : '未使用優惠'}</small></span><strong>{money(total)}</strong></div>
+        <div className={styles.total}><span>預估金額<small>優惠由後端依資格確認</small></span><strong>{money(total)}</strong></div>
         <button className={styles.primary} disabled={!availability || checking || (requestOnly && !staff)}>查看預約明細</button>
       </form>}
 
@@ -316,8 +316,8 @@ export default function BookingPage() {
           <div><dt>預約時間</dt><dd>{startTime.replace('T', ' ')}–{availability?.end_time.slice(11, 16)}</dd></div>
           <div><dt>服務方案</dt><dd>{service?.name}・{service?.duration_minutes} 分</dd></div>
           <div><dt>師傅選擇</dt><dd>{staff?.name || '不指定，由店長安排'}・{requestOnly ? '待客服確認' : '排班中／已上線'}</dd></div>
-          <div><dt>優惠</dt><dd>{promotion?.name || '不使用優惠'}</dd></div>
-          <div><dt>客戶</dt><dd>{name}・{phone}</dd></div>
+          <div><dt>優惠</dt><dd>優惠由客服／後端確認</dd></div>
+          <div><dt>客戶</dt><dd>{name}{phone ? `・${phone}` : ''}</dd></div>
           {notes && <div><dt>備註</dt><dd>{notes}</dd></div>}
         </dl>
         <div className={styles.total}><span>預估金額<small>實際金額以現場確認為準</small></span><strong>{money(total)}</strong></div>
