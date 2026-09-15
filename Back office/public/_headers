@@ -1,6 +1,10 @@
 /*
-  Cache-Control: no-cache, no-store, must-revalidate
   X-Content-Type-Options: nosniff
+
+/
+  Cache-Control: no-cache, no-store, must-revalidate
+/booking/
+  Cache-Control: no-cache, no-store, must-revalidate
 
 /_next/static/*
   Cache-Control: public, max-age=31536000, immutable
