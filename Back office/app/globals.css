@@ -81,6 +81,11 @@ button { font: inherit; }
 .topbar-actions { display: flex; align-items: center; gap: 10px; }
 .icon-button, .primary-button { border: 0; border-radius: 10px; cursor: pointer; }
 .icon-button { width: 40px; height: 40px; background: white; color: #d4a05f; box-shadow: 0 4px 18px rgb(23 51 47 / 5%); }
+.internal-refresh-button { flex: 0 0 40px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 21px; line-height: 1; color: var(--forest); border: 1px solid rgba(18,63,55,.14); transition: transform .2s, opacity .2s; }
+.internal-refresh-button:hover:not(:disabled) { transform: rotate(20deg); }
+.internal-refresh-button:disabled { cursor: wait; opacity: .62; }
+.internal-refresh-button.is-refreshing { animation: refresh-spin .9s linear infinite; }
+@keyframes refresh-spin { to { transform: rotate(360deg); } }
 .primary-button { padding: 11px 18px; background: var(--green); color: white; font-weight: 700; box-shadow: 0 7px 18px rgb(31 90 79 / 18%); }
 .content-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 22px; align-items: start; }
 .main-column, .right-column { min-width: 0; display: grid; gap: 22px; }

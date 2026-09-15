@@ -38,7 +38,8 @@ export function usePublishedSiteDraft() {
         if (active) setContent(payload.content || {});
       })
       .catch(() => {
-        if (active) setContent({});
+        // Never fall back to stale template content when the published API is unavailable.
+        if (active) setContent(undefined);
       });
     return () => { active = false; };
   }, []);
@@ -49,43 +50,40 @@ export function usePublishedSiteDraft() {
 export function PublishedPageHeader({ slug, fallbackTitle, fallbackIntro }: { slug: string; fallbackTitle: string; fallbackIntro: string }) {
   const content = usePublishedSiteDraft();
   const page = content?.pages?.[slug];
-  return <div><h2>{page?.title || fallbackTitle}</h2><span>{page?.intro || fallbackIntro}</span></div>;
+  void fallbackTitle;
+  void fallbackIntro;
+  return <div><h2>{page?.title || (content ? '內容更新中' : '正在讀取官網內容')}</h2>{page?.intro && <span>{page.intro}</span>}</div>;
 }
 
 export function PublishedPageTitle({ slug, fallback }: { slug: string; fallback: string }) {
   const content = usePublishedSiteDraft();
-  return <h1>{content?.pages?.[slug]?.english || fallback}</h1>;
+  void fallback;
+  return <h1>{content?.pages?.[slug]?.english || 'PUBLISHED CONTENT'}</h1>;
 }
 
 export function PublishedPageBody({ slug, children }: { slug: string; children: ReactNode }) {
   const content = usePublishedSiteDraft();
   const body = content?.pages?.[slug]?.body?.trim();
-  if (!body) return <>{children}</>;
-  return <>{children}<div className="published-page-copy">{body.split(/\n\s*\n/).filter(Boolean).map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div></>;
+  void children;
+  if (!content) return <div className="updating-card"><span>OFFICIAL SITE</span><h2>內容暫時無法取得</h2><p>請稍後重新整理，最新發布內容只從官方資料庫載入。</p></div>;
+  if (!body) return <div className="updating-card"><span>OFFICIAL SITE</span><h2>內容更新中</h2><p>目前尚未發布此頁面的內容。</p></div>;
+  return <div className="published-page-copy">{body.split(/\n\s*\n/).filter(Boolean).map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div>;
 }
 
-export const fallbackAboutCards: PublishedPageCard[] = [
-  { number: '01', label: 'VALUE', title: 'EQUALITY', body: '不預設、不評價，讓每位來訪者都能被好好接住。' },
-  { number: '02', label: 'VALUE', title: 'PRECISION', body: '清楚說明方案與時間，讓需求被準確理解。' },
-  { number: '03', label: 'VALUE', title: 'EASE', body: '像回到熟悉的地方，安靜放下今天累積的重量。' },
-];
-
-export const fallbackRecruitCards: PublishedPageCard[] = [
-  { number: '01', label: 'CURRENT STATUS', title: '內容更新中', body: '之後會在這裡放置職缺內容、合作方式、基本條件與聯絡管道。' },
-];
-
-export const fallbackOfferCards: PublishedPageCard[] = [
-  { number: '01', label: 'CURRENT OFFER', title: '夜間服務費', body: '服務時間落在 00:00—06:00 時，會依當期公告收取夜間服務費。' },
-  { number: '02', label: 'CURRENT OFFER', title: '預先加時', body: '預約時可先提出延長需求，客服會依師傅班表確認可安排的時間。' },
-  { number: '03', label: 'CURRENT OFFER', title: '現場加時', body: '服務進行中若仍有需要，可先與師傅確認，再由客服協助安排。' },
-];
+// Compatibility exports for existing page imports. Published content is the only source;
+// these arrays intentionally contain no template or fake records.
+export const fallbackAboutCards: PublishedPageCard[] = [];
+export const fallbackRecruitCards: PublishedPageCard[] = [];
+export const fallbackOfferCards: PublishedPageCard[] = [];
 
 export function PublishedCardGrid({ slug, fallbackCards, onlyWhenEnabled = false }: { slug: string; fallbackCards: readonly PublishedPageCard[]; onlyWhenEnabled?: boolean }) {
   const content = usePublishedSiteDraft();
   const page = content?.pages?.[slug];
+  void fallbackCards;
+  if (!content) return <div className="updating-card"><span>OFFICIAL SITE</span><h2>內容暫時無法取得</h2><p>請稍後重新整理，最新發布內容只從官方資料庫載入。</p></div>;
   if (onlyWhenEnabled && page?.cardGridEnabled !== true) return null;
   if (page && page.cardGridEnabled === false) return null;
-  const cards = Array.isArray(page?.cards) ? page.cards : fallbackCards;
+  const cards = Array.isArray(page?.cards) ? page.cards : [];
   if (!cards.length) return null;
   const count = cards.length === 1 ? 'single' : cards.length === 3 ? 'triple' : 'multiple';
   return <div className={`value-grid value-grid--${count}`} data-card-count={cards.length}>{cards.map((card, index) => <article key={`${card.number || index}-${card.title || index}`}><span>{card.number || String(index + 1).padStart(2, '0')}</span><small>{card.label || 'CARD'}</small><h2>{card.title || 'Untitled card'}</h2><p>{card.body || ''}</p></article>)}</div>;
@@ -105,50 +103,48 @@ type ServicePlanView = {
 
 export function PublishedServices({ fallbackPlans, fallbackBookingUrl }: { fallbackPlans: readonly ServicePlanView[]; fallbackBookingUrl: string }) {
   const content = usePublishedSiteDraft();
-  const bookingUrl = content?.booking?.url || fallbackBookingUrl;
+  void fallbackPlans;
+  void fallbackBookingUrl;
+  const bookingUrl = content?.booking?.url || '';
   const plans = useMemo(() => {
-    if (!content || !Array.isArray(content.services)) return fallbackPlans;
+    if (!content || !Array.isArray(content.services)) return [];
     return content.services.filter((item) => item.visible).map((item) => {
-      const detail = fallbackPlans.find((plan) => plan.code === item.code);
       return {
         code: item.code,
         name: item.name,
-        english: detail?.english || 'PERSONALIZED RESET',
+        english: item.code,
         duration: item.duration,
         price: item.price,
         summary: item.summary,
-        tags: detail?.tags || ['預約制', '依需求安排', '客服確認'],
-        lead: detail?.lead || `${item.duration} 的服務會由客服與師傅依照你的需求安排。`,
-        paragraphs: detail?.paragraphs || [item.summary || '預約時可先告訴客服希望加強的部位、偏好的力道與服務節奏，現場再由師傅確認細節。'],
+        tags: [] as string[],
+        lead: item.summary,
+        paragraphs: item.summary ? [item.summary] : [],
       };
     });
-  }, [content, fallbackPlans]);
+  }, [content]);
+
+  if (!content) return <div className="updating-card"><span>SERVICES</span><h2>內容暫時無法取得</h2><p>請稍後重新整理，最新方案只從官方資料庫載入。</p></div>;
 
   return <>
-    <div className="service-overview"><small>{plans.length} WAYS TO RESET</small><p>所有方案皆可於每日 10:00—24:00 洽詢預約。實際流程會由師傅依身體回饋微調。</p></div>
+    <div className="service-overview"><small>{plans.length} PUBLISHED SERVICES</small></div>
     <div className="service-journeys">{plans.map((plan, index) => <article key={plan.code} className="service-journey">
       <header><span className="service-index">{String(index + 1).padStart(2, '0')}</span><i>{plan.code}</i><div><small>{plan.english}</small><h2>{plan.name}</h2></div><div className="service-quick-info"><small>{plan.summary}</small><p>{plan.duration}</p></div><strong>{plan.price}</strong></header>
-      <div className="service-journey-body"><h3>{plan.lead}</h3><div className="service-prose">{plan.paragraphs.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div><ul>{plan.tags.map((tag) => <li key={tag}>{tag}</li>)}</ul><a href={bookingUrl} target="_blank" rel="noreferrer">SELECT THIS PLAN ↗</a></div>
+      <div className="service-journey-body"><h3>{plan.lead || '方案內容請洽客服確認。'}</h3><div className="service-prose">{plan.paragraphs.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div>{plan.tags.length > 0 && <ul>{plan.tags.map((tag) => <li key={tag}>{tag}</li>)}</ul>}{bookingUrl && <a href={bookingUrl} target="_blank" rel="noreferrer">SELECT THIS PLAN ↗</a>}</div>
     </article>)}</div>
     {plans.length === 0 && <div className="updating-card"><span>SERVICES</span><h2>內容更新中</h2><p>方案正在整理，請先透過 LINE 客服詢問。</p></div>}
-    <div className="service-notes"><h2>BOOKING NOTES</h2><dl><div><dt>午夜加成</dt><dd>00:00—06:00 · NT$ 600</dd></div><div><dt>預約時加時</dt><dd>每 30 分鐘 NT$ 500</dd></div><div><dt>現場加時</dt><dd>每 30 分鐘 NT$ 700</dd></div><div><dt>外出交通</dt><dd>超過 3 公里，每公里 NT$ 80</dd></div></dl><p>客服值班時間為每日 10:00—24:00；其他時段的服務請在客服值班時間內提前完成預約。方案、師傅與優惠可能調整，最終內容以 LINE 客服確認為準。</p></div>
   </>;
 }
 
-const fallbackOffers: PublishedOffer[] = [
-  { name: '生日月優惠', summary: '在生日月替自己留一段完整的休息時間。', status: '顯示中' },
-  { name: '新進師傅體驗', summary: '認識不同手法與服務節奏，找到更適合自己的選擇。', status: '顯示中' },
-  { name: '平日時段精選', summary: '避開繁忙時段，享受更安靜從容的體驗。', status: '顯示中' },
-];
-
 export function PublishedOffers({ fallbackBookingUrl }: { fallbackBookingUrl: string }) {
   const content = usePublishedSiteDraft();
-  const bookingUrl = content?.booking?.url || fallbackBookingUrl;
+  void fallbackBookingUrl;
+  const bookingUrl = content?.booking?.url || '';
+  if (!content) return <div className="updating-card"><span>OFFERS</span><h2>內容暫時無法取得</h2><p>請稍後重新整理，最新優惠只從官方資料庫載入。</p></div>;
   if (content?.pages?.offers?.cardGridEnabled === true) return <PublishedCardGrid slug="offers" fallbackCards={fallbackOfferCards} onlyWhenEnabled />;
-  const offers = content && Array.isArray(content.offers) ? content.offers.filter((item) => item.status === '顯示中') : fallbackOffers;
+  const offers = Array.isArray(content.offers) ? content.offers.filter((item) => item.status === '顯示中') : [];
 
   if (offers.length === 0) return <div className="updating-card"><span>OFFERS</span><h2>內容更新中</h2><p>目前優惠正在整理，最新內容可向 LINE 客服確認。</p><a href={bookingUrl} target="_blank" rel="noreferrer">前往線上預約 ↗</a></div>;
 
-  return <div className="offer-grid">{offers.map((offer, index) => <article key={offer.id || `${offer.name}-${index}`}><span>{String(index + 1).padStart(2, '0')}</span><small>CURRENT OFFER</small><h2>{offer.name}</h2><p>{offer.summary}</p><em>顯示中</em><a href={bookingUrl} target="_blank" rel="noreferrer">查看可預約時段 ↗</a></article>)}</div>;
+  return <div className="offer-grid">{offers.map((offer, index) => <article key={offer.id || `${offer.name}-${index}`}><span>{String(index + 1).padStart(2, '0')}</span><small>CURRENT OFFER</small><h2>{offer.name}</h2><p>{offer.summary}</p><em>顯示中</em>{bookingUrl && <a href={bookingUrl} target="_blank" rel="noreferrer">查看可預約時段 ↗</a>}</article>)}</div>;
 }
 

@@ -16,7 +16,7 @@ const pageMeta = {
   privacy: ['PRIVACY', '你的資料，我們謹慎對待', '只在提供服務所需的範圍內使用資料。'],
 } as const;
 
-const bookingUrl = 'https://equalspa-admin.pages.dev/booking';
+const bookingUrl = '';
 
 const plans = [
   {
@@ -86,7 +86,7 @@ function UpdatingContent({ type }: { type: 'groups' | 'loyalty' }) {
 }
 
 function PrivacyContent() {
-  return <div className="privacy-copy"><h2>DATA USE</h2><p>伊果 SPA 僅在回覆諮詢、安排預約與完成服務所需的範圍內使用顧客提供的資料。未經同意，不會把資料用於無關用途。</p><h2>LINE & BOOKING</h2><p>透過 LINE 提供的顯示名稱、聯絡方式及預約內容，可能保存於營運系統中，以便客服確認與服務追蹤。</p><h2>YOUR RIGHTS</h2><p>若需查詢、更正或刪除資料，請透過 LINE 預約客服 @017ktlhm 聯絡。</p></div>;
+  return <PublishedPageBody slug="privacy"><div className="privacy-copy" /></PublishedPageBody>;
 }
 
 function PageContent({ slug }: { slug: keyof typeof pageMeta }) {
@@ -121,6 +121,6 @@ export default async function ContentPage({ params }: { params: Promise<{ slug: 
   if (!(slug in pageMeta)) notFound();
   const typedSlug = slug as keyof typeof pageMeta;
   const [english, title, intro] = pageMeta[typedSlug];
-  return <main className={`interior-shell page-${typedSlug}`}><PointerLight /><SiteHeader /><article className="interior-page"><header className="page-title"><p>EQUAL SPA / {String(Object.keys(pageMeta).indexOf(typedSlug) + 1).padStart(2, '0')}</p><PublishedPageTitle slug={typedSlug} fallback={english} /><PublishedPageHeader slug={typedSlug} fallbackTitle={title} fallbackIntro={intro} /></header><section className="page-content"><PageContent slug={typedSlug} /></section><footer className="site-footer"><div><b>伊果 SPA</b><span>EQUAL SPA · TAIPEI XIMEN</span></div><a href={bookingUrl} target="_blank" rel="noreferrer">ONLINE BOOKING</a><small>© {new Date().getFullYear()} EQUAL SPA</small></footer></article><WingMenu /></main>;
+  return <main className={`interior-shell page-${typedSlug}`}><PointerLight /><SiteHeader /><article className="interior-page"><header className="page-title"><p>EQUAL SPA / {String(Object.keys(pageMeta).indexOf(typedSlug) + 1).padStart(2, '0')}</p><PublishedPageTitle slug={typedSlug} fallback={english} /><PublishedPageHeader slug={typedSlug} fallbackTitle={title} fallbackIntro={intro} /></header><section className="page-content"><PageContent slug={typedSlug} /></section><footer className="site-footer"><div><b>伊果 SPA</b><span>EQUAL SPA · TAIPEI XIMEN</span></div>{bookingUrl && <a href={bookingUrl} target="_blank" rel="noreferrer">ONLINE BOOKING</a>}<small>© {new Date().getFullYear()} EQUAL SPA</small></footer></article><WingMenu /></main>;
 }
 

@@ -722,7 +722,8 @@ def build_clerk_admin_menu(identity=None, db=None):
                 {"type": "text", "text": "客服管理選單", "weight": "bold", "color": "#FCD34D", "size": "xl"},
                 {"type": "text", "text": f"{display_name}・客服", "color": "#E9D5FF", "size": "sm", "margin": "sm"},
                 {"type": "text", "text": "客服可查看預約與訂單資訊；帳號、刪除及系統設定請由店長或 Admin 操作。", "color": "#E9D5FF", "size": "xs", "wrap": True, "margin": "sm"},
-                {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "查看本日預約", "data": "action=admin_view"}},
+                {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "今日預約", "data": "action=admin_view&range=today"}},
+                {"type": "button", "style": "primary", "color": "#6D28D9", "margin": "sm", "action": {"type": "postback", "label": "本週預約", "data": "action=admin_view&range=week"}},
                 {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "今日排班", "data": "action=clerk_today_shifts"}},
                 {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "本週排班", "data": "action=clerk_week_shifts"}},
                 {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "uri", "label": "開啟排班後台", "uri": ADMIN_DASHBOARD_URL.rstrip("/") + "/"}},
@@ -763,7 +764,9 @@ def build_root_admin_menu(identity=None, db=None):
                     {"type": "text", "text": "管理員選單", "weight": "bold", "color": "#FCD34D", "size": "xl"},
                     {"type": "text", "text": f"{display_name}・{role_label}", "color": "#E9D5FF", "size": "sm", "margin": "sm"},
                     {"type": "text", "text": "員工照片請用後台上傳：JPG／PNG／WebP，最大 3 MB；也可填公開 http(s) 網址。", "color": "#E9D5FF", "size": "xs", "wrap": True, "margin": "sm"},
-                    {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "查看本日預約", "data": "action=admin_view"}},
+                    {"type": "button", "style": "primary", "color": "#7C3AED", "margin": "md", "action": {"type": "postback", "label": "今日預約", "data": "action=admin_view&range=today"}},
+                    {"type": "button", "style": "primary", "color": "#6D28D9", "margin": "sm", "action": {"type": "postback", "label": "本週預約", "data": "action=admin_view&range=week"}},
+                    {"type": "button", "style": "secondary", "margin": "sm", "action": {"type": "postback", "label": "查看員工排班", "data": "action=clerk_today_shifts"}},
                     {"type": "button", "style": "primary", "color": "#312E81", "margin": "sm", "action": {"type": "postback", "label": "串接／解除師傅 LINE", "data": "action=admin_staff&offset=0"}},
                     {"type": "button", "style": "primary", "color": "#1E3A8A", "margin": "sm", "action": {"type": "message", "label": "管理客服帳號", "text": "管理客服帳號"}},
                     *admin_links,
@@ -1334,17 +1337,25 @@ def handle_root_action(data, user_id, db, is_staff_side=False):
             return TextSendMessage(text=getattr(exc, "detail", "取消預約通知失敗，請改從後台查看。"))
     
     if action_name == "admin_view":
-        today = date.today()
+        view_range = parse_qs(data).get("range", ["today"])[0]
+        today = now_taipei_naive().date()
+        start_date = today - timedelta(days=today.weekday()) if view_range == "week" else today
+        end_date = start_date + timedelta(days=7 if view_range == "week" else 1)
+        start_dt = datetime.combine(start_date, datetime.min.time())
+        end_dt = datetime.combine(end_date, datetime.min.time())
         appointments = db.query(Appointment).filter(
-            Appointment.start_time >= datetime.combine(today, datetime.min.time()),
-            Appointment.start_time < datetime.combine(today, datetime.max.time())
-        ).all()
-        
+            Appointment.start_time >= start_dt,
+            Appointment.start_time < end_dt,
+        ).order_by(Appointment.start_time).all()
+        label = "本週預約" if view_range == "week" else "今日預約"
         if not appointments:
-            return TextSendMessage(text="今日目前無預約")
-        
+            return TextSendMessage(text=f"{label}目前無預約")
         bubbles = [build_appointment_bubble(appt, db=db, show_return=not (identity and identity.get("role") == "clerk")) for appt in appointments[:10]]
-        return FlexSendMessage(alt_text="本日預約", contents={"type": "carousel", "contents": bubbles})
+        for bubble in bubbles:
+            if bubble.get("body", {}).get("contents"):
+                bubble["body"]["contents"][0]["text"] = label
+        range_label = f"{start_date.strftime('%m/%d')}–{(end_date - timedelta(days=1)).strftime('%m/%d')}" if view_range == "week" else start_date.strftime('%m/%d')
+        return FlexSendMessage(alt_text=f"{label} {range_label}", contents={"type": "carousel", "contents": bubbles})
 
     elif action_name in {"clerk_today_shifts", "clerk_week_shifts"}:
         Shift = getattr(app.state, "admin_models", {}).get("Shift")

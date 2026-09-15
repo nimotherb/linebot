@@ -196,6 +196,10 @@ function StatusPill({ status }: { status: string }) {
   return <span className={`status ${tone}`}>{status}</span>;
 }
 
+function InternalRefreshButton({ busy, onClick, label }: { busy: boolean; onClick: () => void; label: string }) {
+  return <button className={`icon-button internal-refresh-button${busy ? ' is-refreshing' : ''}`} type="button" aria-label={label} title={label} aria-busy={busy} disabled={busy} onClick={onClick}>{busy ? '…' : '↻'}</button>;
+}
+
 function ClockSelect({ name, defaultValue = '00:00' }: { name: string; defaultValue?: string }) {
   return <select name={name} defaultValue={defaultValue} required>{CLOCK_OPTIONS.map((value) => <option key={value} value={value}>{value}</option>)}</select>;
 }
@@ -249,6 +253,7 @@ export default function Home() {
   const [exportEnd, setExportEnd] = useState(todayIso);
   const [loginError, setLoginError] = useState('');
   const [loginBusy, setLoginBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [staffToken, setStaffToken] = useState('');
   const [staffPortalName, setStaffPortalName] = useState('師傅');
   const [staffPortalError, setStaffPortalError] = useState('');
@@ -469,6 +474,20 @@ export default function Home() {
   const notify = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(null), 3200);
+  };
+
+  const refreshBackendData = async () => {
+    if (refreshing || (appMode !== 'live' && appMode !== 'staff')) return;
+    setRefreshing(true);
+    try {
+      const data = appMode === 'staff' ? await api.staffBootstrap() : await api.bootstrap();
+      applyBootstrap(data, appMode === 'staff' ? 'staff' : 'live');
+      notify('資料已從後端更新。');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '資料更新失敗，請稍後再試。');
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const completedAppointments = appointments.filter((item) => item.status === '已完成');
@@ -1431,6 +1450,7 @@ export default function Home() {
       <div className="toolbar">
         <div className="search-box"><span>⌕</span><input value={appointmentSearch} onChange={(event) => setAppointmentSearch(event.target.value)} placeholder="搜尋訂單、客戶、電話或師傅" /></div>
         <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>{['全部', '待確認', '已確認', '取消訂單'].map((status) => <option key={status} value={status === '取消訂單' ? '已取消' : status}>{status}</option>)}</select>
+        <InternalRefreshButton busy={refreshing} onClick={refreshBackendData} label="重新取得訂單資料" />
         {appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('appointments')}>⇩ 匯出</button>}
       </div>
       <BulkTools entity="appointments" ids={filteredAppointments.flatMap((item) => item.apiId ? [item.apiId] : [])} label="預約／訂單" />
@@ -1515,12 +1535,12 @@ export default function Home() {
   );
 
   const renderCustomers = () => (
-    <section className="panel table-panel"><div className="toolbar"><div className="search-box"><span>⌕</span><input value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="搜尋名稱、手機或客人識別" /></div><button className="secondary-button" onClick={() => exportCsv('customers')}>⇩ 匯出客戶</button></div><BulkTools entity="customers" ids={filteredCustomers.flatMap((item) => item.apiId ? [item.apiId] : [])} label="客戶" /><div className="data-table customer-table"><div className="table-head"><span>客戶名稱</span><span>客人識別</span><span>手機 ID</span><span>到訪</span><span>累計消費</span><span>最近到訪</span></div>{filteredCustomers.map((customer) => <div className="table-row customer-edit-row interactive" role="button" tabIndex={0} key={customer.id} onClick={() => setModal({ type: 'customer', id: customer.id })}><span><label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={!!customer.apiId && (selectedIds.customers || []).includes(customer.apiId)} onChange={() => customer.apiId && toggleSelected('customers', customer.apiId)} /><span>選取</span></label><strong>{customer.name}</strong><small>名稱可由後台或 LINE 建立</small></span><span><strong>{customer.vipSerial}</strong><small>客戶訂單與確認通知使用</small></span><span><strong>{customer.phones.join('、') || '未提供'}</strong><small>{customer.phones.length > 1 ? `${customer.phones.length} 支手機` : '主要手機'}</small></span><span><strong>{customer.visits} 次</strong></span><span><strong>{formatCurrency(customer.spent)}</strong></span><span><strong>{customer.lastVisit}</strong><small>{customer.note}</small></span></div>)}</div></section>
+    <section className="panel table-panel"><div className="toolbar"><div className="search-box"><span>⌕</span><input value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="搜尋名稱、手機或客人識別" /></div><InternalRefreshButton busy={refreshing} onClick={refreshBackendData} label="重新取得客戶資料" /><button className="secondary-button" onClick={() => exportCsv('customers')}>⇩ 匯出客戶</button></div><BulkTools entity="customers" ids={filteredCustomers.flatMap((item) => item.apiId ? [item.apiId] : [])} label="客戶" /><div className="data-table customer-table"><div className="table-head"><span>客戶名稱</span><span>客人識別</span><span>手機 ID</span><span>到訪</span><span>累計消費</span><span>最近到訪</span></div>{filteredCustomers.map((customer) => <div className="table-row customer-edit-row interactive" role="button" tabIndex={0} key={customer.id} onClick={() => setModal({ type: 'customer', id: customer.id })}><span><label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={!!customer.apiId && (selectedIds.customers || []).includes(customer.apiId)} onChange={() => customer.apiId && toggleSelected('customers', customer.apiId)} /><span>選取</span></label><strong>{customer.name}</strong><small>名稱可由後台或 LINE 建立</small></span><span><strong>{customer.vipSerial}</strong><small>客戶訂單與確認通知使用</small></span><span><strong>{customer.phones.join('、') || '未提供'}</strong><small>{customer.phones.length > 1 ? `${customer.phones.length} 支手機` : '主要手機'}</small></span><span><strong>{customer.visits} 次</strong></span><span><strong>{formatCurrency(customer.spent)}</strong></span><span><strong>{customer.lastVisit}</strong><small>{customer.note}</small></span></div>)}</div></section>
   );
 
   const renderStaff = () => (
     <section className="panel table-panel">
-      <div className="toolbar"><select value={staffCategoryFilter} onChange={(event) => setStaffCategoryFilter(event.target.value as typeof staffCategoryFilter)}><option>全部</option>{staffCategories.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}</select><div className="filter-note"><strong>{filteredStaff.length}</strong><span>位符合篩選</span></div><div className="toolbar-spacer" />{canManageAll && <button className="secondary-button" onClick={() => setModal({ type: 'staffCategoryList' })}>管理分類</button>}{canManageAll && <button className="primary-button" onClick={() => setModal({ type: 'staff' })}>＋ 新增員工</button>}</div>
+      <div className="toolbar"><select value={staffCategoryFilter} onChange={(event) => setStaffCategoryFilter(event.target.value as typeof staffCategoryFilter)}><option>全部</option>{staffCategories.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}</select><div className="filter-note"><strong>{filteredStaff.length}</strong><span>位符合篩選</span></div><div className="toolbar-spacer" /><InternalRefreshButton busy={refreshing} onClick={refreshBackendData} label="重新取得員工資料" />{canManageAll && <button className="secondary-button" onClick={() => setModal({ type: 'staffCategoryList' })}>管理分類</button>}{canManageAll && <button className="primary-button" onClick={() => setModal({ type: 'staff' })}>＋ 新增員工</button>}</div>
       <div className="staff-card-grid">{pagedStaff.map((member) => <article className={member.status === '暫時退役' ? 'staff-card retired' : 'staff-card'} key={member.id}>
         <header>{member.photoUrl ? <img className="large-avatar staff-photo" src={member.photoUrl} alt={`${member.name}師傅`} /> : <span className="large-avatar">{member.name.slice(0, 1)}</span>}<StatusPill status={member.status} /></header>
         <h3>{member.name}</h3><p>{(member.categories || [member.category]).map(categoryName).join('、')}・{[member.height && `${member.height} cm`, member.weight && `${member.weight} kg`, member.role].filter(Boolean).join('・') || member.id}</p>

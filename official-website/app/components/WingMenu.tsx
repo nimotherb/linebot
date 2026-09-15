@@ -3,20 +3,6 @@
 import { type CSSProperties, useEffect, useRef, useState } from 'react';
 import { usePublishedSiteDraft } from './PublishedSiteContent';
 
-const bookingUrl = 'https://equalspa-admin.pages.dev/booking';
-
-const defaultMenuItems = [
-  { id: 'home', label: '首頁', slug: 'home', english: 'HOME', desktopVisible: true, mobileVisible: true },
-  { id: 'about', label: '關於伊果', slug: 'about', english: 'ABOUT', desktopVisible: true, mobileVisible: true },
-  { id: 'services', label: '服務項目', slug: 'services', english: 'SERVICES', desktopVisible: true, mobileVisible: true },
-  { id: 'therapists', label: '專業師傅', slug: 'therapists', english: 'THERAPISTS', desktopVisible: true, mobileVisible: true },
-  { id: 'offers', label: '最新優惠', slug: 'offers', english: 'OFFERS', desktopVisible: true, mobileVisible: true },
-  { id: 'location', label: '交通資訊', slug: 'location', english: 'LOCATION', desktopVisible: true, mobileVisible: true },
-  { id: 'recruit', label: '人才招募', slug: 'recruit', english: 'RECRUIT', desktopVisible: true, mobileVisible: true },
-  { id: 'groups', label: '群組', slug: 'groups', english: 'GROUP', desktopVisible: true, mobileVisible: true },
-  { id: 'loyalty', label: '酬賓計畫', slug: 'loyalty', english: 'LOYALTY', desktopVisible: true, mobileVisible: true },
-] as const;
-
 export function PointerLight() {
   useEffect(() => {
     const updateGlow = (event: PointerEvent) => {
@@ -31,15 +17,15 @@ export function PointerLight() {
 
 export function SiteHeader() {
   const content = usePublishedSiteDraft();
-  const currentBookingUrl = content?.booking?.url || bookingUrl;
+  const currentBookingUrl = content?.booking?.url || '';
   return (
     <header className="home-header">
       <a className="micro-brand" href="/" aria-label="伊果 SPA 首頁">
         <span>E</span><span>伊果 SPA</span>
       </a>
-      <a className="line-link" href={currentBookingUrl} target="_blank" rel="noreferrer">
-        LINE 預約 <b>@017ktlhm</b>
-      </a>
+      {currentBookingUrl && <a className="line-link" href={currentBookingUrl} target="_blank" rel="noreferrer">
+        LINE 預約 <b>{content?.booking?.lineId || ''}</b>
+      </a>}
     </header>
   );
 }
@@ -48,8 +34,8 @@ export function WingMenu() {
   const [menuOpen, setMenuOpen] = useState(false);
   const content = usePublishedSiteDraft();
   const dockRef = useRef<HTMLDivElement>(null);
-  const menuItems = content?.navigation?.length ? content.navigation : defaultMenuItems;
-  const currentBookingUrl = content?.booking?.url || bookingUrl;
+  const menuItems = content?.navigation || [];
+  const currentBookingUrl = content?.booking?.url || '';
 
   useEffect(() => {
     const closeWithEscape = (event: KeyboardEvent) => {
@@ -82,9 +68,9 @@ export function WingMenu() {
             </a>
           ))}
         </div>
-        <a className="menu-line-cta" href={currentBookingUrl} target="_blank" rel="noreferrer" tabIndex={menuOpen ? 0 : -1}>
+        {currentBookingUrl && <a className="menu-line-cta" href={currentBookingUrl} target="_blank" rel="noreferrer" tabIndex={menuOpen ? 0 : -1}>
           <span>ONLINE BOOKING</span><strong>開始預約 ↗</strong>
-        </a>
+        </a>}
         <div className="menu-utility">
           <a href="/site-admin" tabIndex={menuOpen ? 0 : -1}>SITE STUDIO</a>
           <a href="/privacy" tabIndex={menuOpen ? 0 : -1}>隱私權</a>
