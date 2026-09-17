@@ -27,10 +27,10 @@
 兩個 Pages 專案部署成功後，在 Render 的 Environment 更新以下值：
 
 ```dotenv
-ADMIN_ALLOWED_ORIGINS=https://equalspa.pages.dev,https://equalspa-admin.pages.dev
-ADMIN_DASHBOARD_URL=https://equalspa-admin.pages.dev/
-STAFF_SCHEDULE_BASE_URL=https://equalspa-admin.pages.dev/?staff_token=
-BOOKING_WEB_URL=https://equalspa-admin.pages.dev/booking/
+ADMIN_ALLOWED_ORIGINS=https://equalspa.tw,https://www.equalspa.tw,https://admin.equalspa.tw,https://equalspa.pages.dev,https://equalspa-admin.pages.dev,http://localhost:3000
+ADMIN_DASHBOARD_URL=https://admin.equalspa.tw/
+STAFF_SCHEDULE_BASE_URL=https://admin.equalspa.tw/?staff_token=
+BOOKING_WEB_URL=https://admin.equalspa.tw/booking
 ```
 
 如果已綁定正式網域，請把正式網域也加入 `ADMIN_ALLOWED_ORIGINS`，各網址之間用逗號分隔且不要加結尾斜線。其餘三個導向網址則改成正式後台網域。

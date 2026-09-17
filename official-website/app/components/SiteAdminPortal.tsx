@@ -4,7 +4,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import SiteAdminEditor from './SiteAdminEditor';
 import type { PromotionRecord, ServiceRecord, SiteAdminApi, SiteContentPayload, SiteDraft } from './SiteAdminEditor';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com';
+const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com').replace(/\/$/, '');
 const TOKEN_KEY = 'equalspa_site_studio_token';
 
 type AdminRole = 'admin' | 'manager' | 'clerk';

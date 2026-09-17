@@ -78,8 +78,8 @@ LINE_ADMIN_PENDING: dict[str, datetime] = {}
 VALID_STAFF_ROLES = {"攻擊手", "守備方", "無特定", "攻守兼備"}
 DEFAULT_CUSTOMER_SERVICE_URL = "https://line.me/R/ti/p/@684wdola"
 SUPPORT_URL = os.getenv("CUSTOMER_SERVICE_URL", DEFAULT_CUSTOMER_SERVICE_URL)
-BOOKING_WEB_URL = os.getenv("BOOKING_WEB_URL", "https://equalspa-admin.pages.dev/booking")
-ADMIN_DASHBOARD_URL = os.getenv("ADMIN_DASHBOARD_URL", "https://equalspa-admin.pages.dev/")
+BOOKING_WEB_URL = os.getenv("BOOKING_WEB_URL", "https://admin.equalspa.tw/booking")
+ADMIN_DASHBOARD_URL = os.getenv("ADMIN_DASHBOARD_URL", "https://admin.equalspa.tw/")
 PUBLIC_API_BASE_URL = (
     os.getenv("PUBLIC_API_BASE_URL")
     or os.getenv("RENDER_EXTERNAL_URL")

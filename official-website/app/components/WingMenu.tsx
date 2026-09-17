@@ -74,7 +74,7 @@ export function WingMenu() {
         <div className="menu-utility">
           <a href="/site-admin" tabIndex={menuOpen ? 0 : -1}>SITE STUDIO</a>
           <a href="/privacy" tabIndex={menuOpen ? 0 : -1}>隱私權</a>
-          <a href="https://equalspa-admin.pages.dev/" target="_blank" rel="noreferrer" tabIndex={menuOpen ? 0 : -1}>EQUAL OPERATIONS</a>
+          <a href="https://admin.equalspa.tw/" target="_blank" rel="noreferrer" tabIndex={menuOpen ? 0 : -1}>EQUAL OPERATIONS</a>
         </div>
       </nav>
     </div>

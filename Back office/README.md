@@ -18,6 +18,6 @@ pnpm install
 pnpm dev
 ```
 
-後端預設位置為 `https://linebot-3r2w.onrender.com`，可使用 `NEXT_PUBLIC_API_BASE_URL` 指向其他 FastAPI 服務。
+後端正式位置為 `https://linebot-3r2w.onrender.com`，可使用 `NEXT_PUBLIC_API_BASE_URL` 指向其他 FastAPI 服務。
 
 > 不要把 PIN、LINE token、Aiven 密碼或 `.env` 提交到 GitHub。

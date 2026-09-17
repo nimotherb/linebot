@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://equalspa.pages.dev'),
+  metadataBase: new URL('https://equalspa.tw'),
   title: '伊果 SPA',
   description: '最新網站內容由 Equal SPA 後台發布。',
   alternates: { canonical: '/' },

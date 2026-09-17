@@ -1078,7 +1078,14 @@ def register_admin_api(
     app.state.issue_staff_magic_link = issue_staff_magic_link
     app.state.issue_staff_schedule_link = issue_staff_schedule_link
 
-    allowed_origins = [value.strip() for value in os.getenv("ADMIN_ALLOWED_ORIGINS", "http://localhost:3000").split(",") if value.strip()]
+    allowed_origins = [
+        value.strip().rstrip("/")
+        for value in os.getenv(
+            "ADMIN_ALLOWED_ORIGINS",
+            "https://equalspa.tw,https://www.equalspa.tw,https://admin.equalspa.tw,https://equalspa.pages.dev,https://equalspa-admin.pages.dev,http://localhost:3000",
+        ).split(",")
+        if value.strip()
+    ]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -3831,7 +3838,7 @@ def register_admin_api(
             db.add(StaffScheduleToken(staff_id=staff_id, token_hash=_token_hash(raw_token)))
         audit(db, actor, "rotate_schedule_link", "staff", staff_id)
         db.commit()
-        base = os.getenv("STAFF_SCHEDULE_BASE_URL", "http://localhost:3000/?staff_token=")
+        base = os.getenv("STAFF_SCHEDULE_BASE_URL", "https://admin.equalspa.tw/?staff_token=")
         return {"token": raw_token, "url": f"{base}{raw_token}", "staff_name": staff_obj.name}
 
     @app.get("/api/admin/staff/{staff_id}/private-health")
