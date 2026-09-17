@@ -17,7 +17,7 @@ os.environ["CUSTOMER_SERIAL_START"] = "4800"
 
 import main as main_module  # noqa: E402
 import admin_api as admin_api_module  # noqa: E402
-from main import Base, CustomerPhone, SessionLocal, Staff, User, app, build_booking_web_message, build_line_staff_binding_menu, build_staff_bubble, build_staff_week_appointments, engine, handle_line_admin_message, handle_root_action, now_taipei_naive, on_startup, parse_staff_profile_text, public_https_url, repair_legacy_staff_profile_fields, set_staff_online_schedule  # noqa: E402
+from main import Base, CustomerPhone, SessionLocal, Staff, User, app, build_booking_web_message, build_line_staff_binding_menu, build_staff_bubble, build_staff_schedule_reminder_flex, build_staff_week_appointments, engine, handle_line_admin_message, handle_root_action, now_taipei_naive, on_startup, parse_staff_profile_text, public_https_url, repair_legacy_staff_profile_fields, set_staff_online_schedule  # noqa: E402
 from identifiers import customer_serial  # noqa: E402
 
 
@@ -42,6 +42,41 @@ def test_line_booking_uses_one_small_web_entry_without_postbacks():
     assert all(action.type == "uri" for action in actions)
     assert actions[0].uri.startswith("https://")
     assert "booking" in actions[0].uri
+
+
+def test_staff_schedule_reminder_flex_contains_only_two_dates_and_one_link():
+    message = build_staff_schedule_reminder_flex(["2026-09-21", "2026-09-28"], "https://admin.equalspa.tw/?staff_token=test")
+    assert message.alt_text == "下／後週排班提醒"
+    contents = message.contents
+    body_text = " ".join(item.text for item in contents.body.contents if getattr(item, "text", None))
+    assert "09/21" in body_text and "09/28" in body_text
+    assert len(contents.footer.contents) == 1
+    assert contents.footer.contents[0].action.type == "uri"
+    assert contents.footer.contents[0].action.uri.endswith("staff_token=test")
+
+
+def test_staff_schedule_reminder_endpoint_requires_admin_auth(client):
+    response = client.post("/api/admin/staff-schedules/reminders/dispatch", json={"staff_ids": [1]})
+    assert response.status_code == 401
+
+
+def test_staff_schedule_reminder_records_unconnected_and_deduplicates(client):
+    headers = login(client)
+    with SessionLocal() as db:
+        staff_id = db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.id).first().id
+    first = client.post("/api/admin/staff-schedules/reminders/dispatch", headers=headers, json={"staff_ids": [staff_id]})
+    assert first.status_code == 200, first.text
+    assert first.json()["skipped"] == 1
+    assert first.json()["results"][0]["reason"] == "無串接(Line)"
+    second = client.post("/api/admin/staff-schedules/reminders/dispatch", headers=headers, json={"staff_ids": [staff_id]})
+    assert second.status_code == 200, second.text
+    assert second.json()["results"][0]["reason"] == "已派發過，已跳過"
+
+
+def test_staff_schedule_reminder_force_is_admin_only(client):
+    manager_headers = login(client, "jerry", "654321")
+    response = client.post("/api/admin/staff-schedules/reminders/dispatch", headers=manager_headers, json={"staff_ids": [1], "force": True})
+    assert response.status_code == 403
 
 
 def test_line_root_staff_binding_menu_is_text_only_and_paginated(client):

@@ -1229,6 +1229,41 @@ def build_customer_service_setting_menu(db: Session):
     )
 
 
+def build_staff_schedule_reminder_flex(week_starts: list[str], schedule_url: str):
+    """Build the manual two-week availability request without exposing shifts."""
+    day_names = ["禮拜一", "禮拜二", "禮拜三", "禮拜四", "禮拜五", "禮拜六", "禮拜日"]
+    date_lines = []
+    for raw_start in week_starts[:2]:
+        start = date.fromisoformat(raw_start)
+        end = start + timedelta(days=6)
+        date_lines.append(
+            f"{start.month:02d}/{start.day:02d}（{day_names[start.weekday()]}）–"
+            f"{end.month:02d}/{end.day:02d}（{day_names[end.weekday()]}）"
+        )
+    return FlexSendMessage(
+        alt_text="下／後週排班提醒",
+        contents={
+            "type": "bubble",
+            "size": "kilo",
+            "styles": {"body": {"backgroundColor": "#F7F3EA"}, "footer": {"backgroundColor": "#123F37"}},
+            "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
+                {"type": "text", "text": "下／後週排班提醒", "weight": "bold", "size": "xl", "color": "#123F37", "wrap": True},
+                {"type": "text", "text": "請開啟後台排定未來可接案的時段。", "size": "sm", "color": "#52645F", "wrap": True},
+                *[{"type": "text", "text": value, "size": "md", "color": "#123F37", "weight": "bold", "margin": "sm"} for value in date_lines],
+            ]},
+            "footer": {"type": "box", "layout": "vertical", "contents": [
+                {"type": "button", "style": "primary", "color": "#123F37", "action": {"type": "uri", "label": "後台排班", "uri": schedule_url}},
+            ]},
+        },
+    )
+
+
+def dispatch_staff_schedule_reminder(staff, message) -> None:
+    if not bot_staff_api:
+        raise RuntimeError("LINE_TOKEN_STAFF 未設定")
+    bot_staff_api.push_message(staff.line_user_id, message)
+
+
 def build_staff_week_appointments(staff, db: Session):
     """Build a compact Flex carousel of this staff member's next seven days."""
     start = now_taipei_naive().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -2578,5 +2613,7 @@ register_admin_api(
     booking_request_notifier=notify_booking_request_parties,
     staff_line_notifier=notify_staff_line_linked,
     appointment_line_dispatcher=dispatch_appointment_line,
+    staff_schedule_reminder_builder=build_staff_schedule_reminder_flex,
+    staff_schedule_reminder_dispatcher=dispatch_staff_schedule_reminder,
 )
 

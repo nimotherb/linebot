@@ -24,6 +24,16 @@ def now_taipei_naive() -> datetime:
     return datetime.now(TAIPEI).replace(tzinfo=None)
 
 
+def staff_schedule_reminder_week_starts(reference: datetime | None = None) -> tuple[datetime, datetime]:
+    """Return the Monday starts for the next and following business weeks."""
+    current = (reference or now_taipei_naive()).date()
+    current_monday = current - timedelta(days=current.weekday())
+    return (
+        datetime.combine(current_monday + timedelta(days=7), datetime.min.time()),
+        datetime.combine(current_monday + timedelta(days=14), datetime.min.time()),
+    )
+
+
 def parse_local_datetime(value: str | datetime) -> datetime:
     """Return a naive Taipei datetime from LINE/API ISO input."""
     if isinstance(value, datetime):

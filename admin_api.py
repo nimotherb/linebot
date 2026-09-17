@@ -44,6 +44,7 @@ from scheduling import (
     validate_shift_period,
     validate_extended_shift_period,
     parse_extended_local_datetime,
+    staff_schedule_reminder_week_starts,
 )
 from identifiers import customer_serial
 
@@ -179,6 +180,11 @@ class ShiftPatchIn(BaseModel):
     end_time: datetime | str | None = None
     is_next_day: bool | None = None
     force_reason: str | None = Field(default=None, max_length=500)
+
+
+class StaffScheduleReminderDispatchIn(BaseModel):
+    staff_ids: list[int] = Field(min_length=1, max_length=500)
+    force: bool = False
 
 
 class ServiceCreateIn(BaseModel):
@@ -483,6 +489,8 @@ def register_admin_api(
     booking_request_notifier=None,
     staff_line_notifier=None,
     appointment_line_dispatcher=None,
+    staff_schedule_reminder_builder=None,
+    staff_schedule_reminder_dispatcher=None,
 ) -> None:
     """Register models, startup seeding, and all API endpoints."""
 
@@ -641,6 +649,37 @@ def register_admin_api(
         created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
         revoked_at = Column(DateTime, nullable=True)
 
+    class StaffScheduleReminderBatch(Base):
+        __tablename__ = "staff_schedule_reminder_batches"
+        id = Column(Integer, primary_key=True)
+        batch_id = Column(String(40), unique=True, nullable=False, index=True)
+        actor_user_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
+        later_week_start = Column(String(10), nullable=False)
+        following_week_start = Column(String(10), nullable=False)
+        force = Column(Boolean, nullable=False, default=False)
+        created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
+        sent_at = Column(DateTime, nullable=True)
+
+    class StaffScheduleReminderDispatch(Base):
+        __tablename__ = "staff_schedule_reminder_dispatches"
+        id = Column(Integer, primary_key=True)
+        batch_id = Column(Integer, ForeignKey("staff_schedule_reminder_batches.id"), nullable=False, index=True)
+        dedupe_key = Column(String(180), unique=True, nullable=False, index=True)
+        staff_id = Column(Integer, ForeignKey("staffs.id"), nullable=False, index=True)
+        staff_name_snapshot = Column(String(255), nullable=False)
+        line_uid_snapshot = Column(String(255), nullable=True)
+        later_week_start = Column(String(10), nullable=False)
+        following_week_start = Column(String(10), nullable=False)
+        request_type = Column(String(40), nullable=False, default="staff_schedule_request")
+        card_snapshot = Column(Text, nullable=True)
+        later_week_has_schedule = Column(Boolean, nullable=False, default=False)
+        following_week_has_schedule = Column(Boolean, nullable=False, default=False)
+        status = Column(String(20), nullable=False)
+        failure_reason = Column(String(500), nullable=True)
+        force = Column(Boolean, nullable=False, default=False)
+        created_at = Column(DateTime, nullable=False, default=now_taipei_naive)
+        sent_at = Column(DateTime, nullable=True)
+
     class StaffPrivateHealth(Base):
         __tablename__ = "staff_private_health"
         id = Column(Integer, primary_key=True)
@@ -794,6 +833,8 @@ def register_admin_api(
         "Payment": Payment,
         "AuditLog": AuditLog,
         "StaffScheduleToken": StaffScheduleToken,
+        "StaffScheduleReminderBatch": StaffScheduleReminderBatch,
+        "StaffScheduleReminderDispatch": StaffScheduleReminderDispatch,
         "StaffPrivateHealth": StaffPrivateHealth,
         "StaffSession": StaffSession,
         "StaffMagicLink": StaffMagicLink,
@@ -3355,6 +3396,162 @@ def register_admin_api(
             admin = db.query(AdminUser).filter(AdminUser.id == item.modified_by_admin_id).first() if getattr(item, "modified_by_admin_id", None) else None
             result.append(shift_dict(item) | {"staff_name": staff_obj.name if staff_obj else "未知", "modified_by_admin_name": admin.display_name if admin else None})
         return result
+
+    @app.post("/api/admin/staff-schedules/reminders/dispatch")
+    def dispatch_staff_schedule_reminders(
+        payload: StaffScheduleReminderDispatchIn,
+        db: Session = Depends(get_db),
+        actor=Depends(require_roles("admin", "manager", "clerk")),
+    ):
+        if payload.force and actor.role != "admin":
+            raise HTTPException(status_code=403, detail="只有 Admin 可以強制重新派發排班提醒")
+        if not staff_schedule_reminder_builder or not staff_schedule_reminder_dispatcher:
+            raise HTTPException(status_code=503, detail="排班提醒 LINE 功能尚未設定")
+
+        later_start, following_start = staff_schedule_reminder_week_starts()
+        later_end = later_start + timedelta(days=7)
+        following_end = following_start + timedelta(days=7)
+        later_key = later_start.date().isoformat()
+        following_key = following_start.date().isoformat()
+        batch_day = now_taipei_naive().strftime("%Y%m%d")
+        sequence = db.query(StaffScheduleReminderBatch).filter(
+            StaffScheduleReminderBatch.created_at >= now_taipei_naive().replace(hour=0, minute=0, second=0, microsecond=0),
+        ).count() + 1
+        batch_id = f"SR-{batch_day}-{sequence:03d}"
+        while db.query(StaffScheduleReminderBatch).filter(StaffScheduleReminderBatch.batch_id == batch_id).first():
+            sequence += 1
+            batch_id = f"SR-{batch_day}-{sequence:03d}"
+        batch = StaffScheduleReminderBatch(
+            batch_id=batch_id,
+            actor_user_id=actor.id,
+            later_week_start=later_key,
+            following_week_start=following_key,
+            force=payload.force,
+        )
+        db.add(batch)
+        db.flush()
+
+        results: list[dict[str, Any]] = []
+        unique_staff_ids = list(dict.fromkeys(payload.staff_ids))
+        for staff_id in unique_staff_ids:
+            staff_obj = db.query(Staff).filter(Staff.id == staff_id).first()
+            if not staff_obj:
+                results.append({"staff_id": staff_id, "staff_name": "未知", "status": "failed", "reason": "找不到員工"})
+                continue
+
+            later_has_schedule = db.query(Shift.id).filter(
+                Shift.staff_id == staff_id,
+                Shift.status == "active",
+                Shift.start_time < later_end,
+                Shift.end_time > later_start,
+            ).first() is not None
+            following_has_schedule = db.query(Shift.id).filter(
+                Shift.staff_id == staff_id,
+                Shift.status == "active",
+                Shift.start_time < following_end,
+                Shift.end_time > following_start,
+            ).first() is not None
+            line_uid = (getattr(staff_obj, "line_user_id", None) or "").strip()
+            connected = bool(LINE_USER_ID_PATTERN.fullmatch(line_uid)) and not line_uid.startswith(("pending:", "seeded:"))
+
+            existing = db.query(StaffScheduleReminderDispatch).filter(
+                StaffScheduleReminderDispatch.staff_id == staff_id,
+                StaffScheduleReminderDispatch.later_week_start == later_key,
+                StaffScheduleReminderDispatch.following_week_start == following_key,
+                StaffScheduleReminderDispatch.request_type == "staff_schedule_request",
+            ).first()
+            if existing and not payload.force:
+                result = {
+                    "staff_id": staff_id,
+                    "staff_name": staff_obj.name,
+                    "status": "skipped",
+                    "reason": "已派發過，已跳過",
+                    "line_uid_status": "connected" if connected else "unconnected",
+                    "later_week_has_schedule": later_has_schedule,
+                    "following_week_has_schedule": following_has_schedule,
+                }
+                results.append(result)
+                db.add(StaffScheduleReminderDispatch(
+                    batch_id=batch.id,
+                    dedupe_key=f"{staff_id}:{later_key}:{following_key}:staff_schedule_request:{batch_id}",
+                    staff_id=staff_id,
+                    staff_name_snapshot=staff_obj.name,
+                    line_uid_snapshot=getattr(staff_obj, "line_user_id", None),
+                    later_week_start=later_key,
+                    following_week_start=following_key,
+                    card_snapshot=None,
+                    later_week_has_schedule=later_has_schedule,
+                    following_week_has_schedule=following_has_schedule,
+                    status="skipped",
+                    failure_reason="已派發過，已跳過",
+                    force=False,
+                ))
+                continue
+
+            card_snapshot = None
+            status_value = "skipped"
+            failure_reason = None
+            sent_at = None
+            if not connected:
+                failure_reason = "無串接(Line)"
+            elif later_has_schedule and following_has_schedule:
+                failure_reason = "兩週皆已有排班"
+            else:
+                try:
+                    raw_token = issue_staff_schedule_link(staff_obj, db)
+                    schedule_base = os.getenv("STAFF_SCHEDULE_BASE_URL", "https://admin.equalspa.tw/?staff_token=")
+                    schedule_url = f"{schedule_base}{raw_token}"
+                    message = staff_schedule_reminder_builder([later_key, following_key], schedule_url)
+                    card_snapshot = _json({"alt_text": getattr(message, "alt_text", "下／後週排班提醒"), "contents": getattr(message, "contents", None)})
+                    staff_schedule_reminder_dispatcher(staff_obj, message)
+                    status_value = "sent"
+                    sent_at = now_taipei_naive()
+                except Exception as exc:
+                    logger.exception("排班提醒派發失敗 staff_id=%s", staff_id)
+                    failure_reason = str(exc)[:500] or "LINE API error"
+                    status_value = "failed"
+
+            detail = StaffScheduleReminderDispatch(
+                batch_id=batch.id,
+                dedupe_key=(
+                    f"{staff_id}:{later_key}:{following_key}:staff_schedule_request:{batch_id}"
+                    if payload.force else f"{staff_id}:{later_key}:{following_key}:staff_schedule_request"
+                ),
+                staff_id=staff_id,
+                staff_name_snapshot=staff_obj.name,
+                line_uid_snapshot=line_uid or None,
+                later_week_start=later_key,
+                following_week_start=following_key,
+                card_snapshot=card_snapshot,
+                later_week_has_schedule=later_has_schedule,
+                following_week_has_schedule=following_has_schedule,
+                status=status_value,
+                failure_reason=failure_reason,
+                force=payload.force,
+                sent_at=sent_at,
+            )
+            db.add(detail)
+            results.append({
+                "staff_id": staff_id,
+                "staff_name": staff_obj.name,
+                "status": status_value,
+                "line_uid_status": "connected" if connected else "unconnected",
+                "later_week_has_schedule": later_has_schedule,
+                "following_week_has_schedule": following_has_schedule,
+                **({"reason": failure_reason} if failure_reason else {}),
+            })
+
+        batch.sent_at = now_taipei_naive()
+        audit(db, actor, "dispatch", "staff_schedule_reminder_batch", batch_id, after={"week_starts": [later_key, following_key], "results": results, "force": payload.force})
+        db.commit()
+        return {
+            "batch_id": batch_id,
+            "week_starts": [later_key, following_key],
+            "sent": sum(item["status"] == "sent" for item in results),
+            "failed": sum(item["status"] == "failed" for item in results),
+            "skipped": sum(item["status"] == "skipped" for item in results),
+            "results": results,
+        }
 
     @app.post("/api/admin/shifts", status_code=201)
     def create_shift(payload: ShiftCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):

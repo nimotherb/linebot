@@ -7,9 +7,22 @@ from scheduling import (
     appointment_end,
     periods_overlap,
     staff_may_change_shift,
+    staff_schedule_reminder_week_starts,
     validate_booking_start,
     validate_shift_period,
 )
+
+
+def test_staff_schedule_reminder_weeks_are_next_two_mondays():
+    later, following = staff_schedule_reminder_week_starts(datetime(2026, 9, 20, 23, 59))
+    assert later == datetime(2026, 9, 21)
+    assert following == datetime(2026, 9, 28)
+
+
+def test_staff_schedule_reminder_weeks_cross_year_boundary():
+    later, following = staff_schedule_reminder_week_starts(datetime(2026, 12, 31))
+    assert later == datetime(2027, 1, 4)
+    assert following == datetime(2027, 1, 11)
 
 
 @pytest.mark.parametrize("minutes", [60, 90, 100, 120])

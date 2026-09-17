@@ -193,6 +193,25 @@ export type PublicBookingAvailability = {
 
 export type StaffCategoryView = { id: number; key: string; name: string; sort_order: number; active: boolean };
 
+export type StaffScheduleReminderResult = {
+  staff_id: number;
+  staff_name: string;
+  status: 'sent' | 'failed' | 'skipped';
+  reason?: string;
+  line_uid_status?: 'connected' | 'unconnected';
+  later_week_has_schedule?: boolean;
+  following_week_has_schedule?: boolean;
+};
+
+export type StaffScheduleReminderResponse = {
+  batch_id: string;
+  week_starts: string[];
+  sent: number;
+  failed: number;
+  skipped: number;
+  results: StaffScheduleReminderResult[];
+};
+
 export type PublicBookingIdentity = { name?: string; phone?: string; birthday?: string | null };
 
 export type RawBookingRequest = {
@@ -659,6 +678,13 @@ export class SpaApi {
 
   staffDeleteShift(shiftId: number) {
     return this.request<{ ok: boolean }>(`/api/staff/shifts/${shiftId}`, { method: 'DELETE' });
+  }
+
+  dispatchStaffScheduleReminders(staffIds: number[], force = false) {
+    return this.request<StaffScheduleReminderResponse>('/api/admin/staff-schedules/reminders/dispatch', {
+      method: 'POST',
+      body: JSON.stringify({ staff_ids: staffIds, force }),
+    });
   }
 
   createUser(payload: Record<string, unknown>) {
