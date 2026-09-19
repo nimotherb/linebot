@@ -188,6 +188,7 @@ export type PublicBookingAvailability = {
   can_choose_staff: boolean;
   request_only?: boolean;
   available_for_instant_booking?: boolean;
+  rooms_full?: boolean;
   staff: Array<{ id: number; name: string; category?: string; categories?: string[] }>;
 };
 

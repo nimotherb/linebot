@@ -773,7 +773,7 @@ def register_admin_api(
         __tablename__ = "booking_requests"
         id = Column(Integer, primary_key=True)
         idempotency_key = Column(String(80), unique=True, nullable=False, index=True)
-        user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+        user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
         requested_staff_id = Column(Integer, ForeignKey("staffs.id"), nullable=True, index=True)
         service_plan_id = Column(Integer, ForeignKey("service_plans.id"), nullable=False)
         promotion_id = Column(Integer, ForeignKey("promotions.id"), nullable=True)
@@ -885,12 +885,10 @@ def register_admin_api(
     app.state.update_customer_service_url = update_customer_service_url
 
     def anonymous_booking_customer(db: Session):
-        customer = db.query(User).filter(User.line_user_id == "guest:anonymous").first()
-        if not customer:
-            customer = User(line_user_id="guest:anonymous", display_name="訪客", customer_grade="N")
-            db.add(customer)
-            db.flush()
-        return customer
+        # Anonymous visits are order snapshots, never a synthetic customer or
+        # placeholder LINE UID.  The caller stores name/phone/birthday on the
+        # appointment or booking-request row instead.
+        return None
 
     def append_creation_timestamp(notes: str | None) -> str:
         """Keep the original note and append an immutable creation timestamp."""
@@ -989,7 +987,7 @@ def register_admin_api(
             if customer and phone_customer and customer.id != phone_customer.id:
                 raise HTTPException(status_code=409, detail="LINE 帳號與手機屬於不同客戶，請聯絡真人客服協助合併")
             if not customer and phone_customer:
-                if not str(phone_customer.line_user_id).startswith("manual:"):
+                if phone_customer.line_user_id and not str(phone_customer.line_user_id).startswith("manual:"):
                     raise HTTPException(status_code=409, detail="此手機已綁定其他 LINE，請聯絡真人客服")
                 phone_customer.line_user_id = line_identity["sub"]
                 customer = phone_customer
@@ -1015,7 +1013,7 @@ def register_admin_api(
             if customer and phone_customer and customer.id != phone_customer.id:
                 raise HTTPException(status_code=409, detail="LINE UID 與手機屬於不同客戶，請聯絡真人客服協助合併")
             if not customer and phone_customer:
-                if not str(phone_customer.line_user_id).startswith("manual:"):
+                if phone_customer.line_user_id and not str(phone_customer.line_user_id).startswith("manual:"):
                     raise HTTPException(status_code=409, detail="此手機已綁定其他 LINE，請聯絡真人客服")
                 phone_customer.line_user_id = supplied_line_user_id
                 customer = phone_customer
@@ -1041,7 +1039,7 @@ def register_admin_api(
             if not contact_phone:
                 return anonymous_booking_customer(db), None, "web_anonymous"
             customer = User(
-                line_user_id=f"manual:{secrets.token_hex(16)}",
+                line_user_id=None,
                 phone=contact_phone,
                 display_name=payload.customer_name.strip(),
                 customer_grade="R",
@@ -2096,7 +2094,7 @@ def register_admin_api(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         item = BookingRequest(
             idempotency_key=idempotency_key,
-            user_id=customer.id,
+            user_id=customer.id if customer else None,
             requested_staff_id=staff_obj.id if staff_obj else None,
             service_plan_id=plan.id,
             promotion_id=promotion.id if promotion else None,
@@ -2151,7 +2149,7 @@ def register_admin_api(
             conflict = None if override_time_rules else staff_appointment_conflict(db, staff_obj.id, item.start_time, item.end_time)
             if conflict:
                 raise HTTPException(status_code=409, detail=f"指定師傅與訂單 AP-{conflict.id} 時間重疊，請先修改")
-        customer_conflict = None if override_time_rules else db.query(Appointment).filter(
+        customer_conflict = None if override_time_rules or item.user_id is None else db.query(Appointment).filter(
             Appointment.user_id == item.user_id,
             Appointment.start_time == item.start_time,
             Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES),
@@ -2168,7 +2166,10 @@ def register_admin_api(
             start_time=item.start_time,
             end_time=item.end_time,
             status="confirmed",
-            customer_name_snapshot=getattr(db.query(User).filter(User.id == item.user_id).first(), "display_name", None),
+            customer_name_snapshot=(
+                getattr(db.query(User).filter(User.id == item.user_id).first(), "display_name", None)
+                if item.user_id is not None else item.customer_name_snapshot
+            ),
             customer_phone_snapshot=item.contact_phone,
             customer_birthday_snapshot=getattr(item, "customer_birthday_snapshot", None),
             staff_name_snapshot=staff_obj.name if item.requested_staff_id else None,
@@ -2206,7 +2207,8 @@ def register_admin_api(
         db.refresh(appointment)
         if appointment_notifier:
             try:
-                appointment_notifier(appointment, db, origin="客服確認預約通知")
+                rooms_full = plan.location_type == "onsite" and not room_capacity_available(db, appointment.start_time, appointment.end_time)
+                appointment_notifier(appointment, db, origin="客服確認預約通知", rooms_full=rooms_full)
             except Exception:
                 logger.exception("Unable to push confirmed booking request appointment_id=%s", appointment.id)
         return item, appointment, False
@@ -2438,6 +2440,7 @@ def register_admin_api(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         end_dt = appointment_end(start_dt, plan.duration_minutes)
         staff_items = available_staff(db, start_dt, end_dt)
+        rooms_full = plan.location_type == "onsite" and not room_capacity_available(db, start_dt, end_dt)
         if request_only and requested_staff_id:
             requested_staff = db.query(Staff).filter(Staff.id == requested_staff_id, Staff.employment_status == "active").first()
             if not requested_staff:
@@ -2448,17 +2451,17 @@ def register_admin_api(
                 "end_time": _iso(end_dt),
                 "can_choose_staff": True,
                 "request_only": True,
-                "available_for_instant_booking": requested_staff.id in available_ids and (plan.location_type != "onsite" or room_capacity_available(db, start_dt, end_dt)),
+                "available_for_instant_booking": requested_staff.id in available_ids,
+                "rooms_full": rooms_full,
                 "staff": [{"id": requested_staff.id, "name": requested_staff.name, "category": requested_staff.category, "categories": staff_dict(requested_staff).get("categories", [])}],
             }
         if not staff_items:
             raise HTTPException(status_code=409, detail="這個時段目前沒有可預約師傅，請改選其他時間")
-        if plan.location_type == "onsite" and not room_capacity_available(db, start_dt, end_dt):
-            raise HTTPException(status_code=409, detail="這個時段兩間房都已使用，請改選其他時間")
         return {
             "start_time": _iso(start_dt),
             "end_time": _iso(end_dt),
             "can_choose_staff": plan.can_choose_staff,
+            "rooms_full": rooms_full,
             "staff": [{"id": item.id, "name": item.name, "category": item.category, "categories": staff_dict(item).get("categories", [])} for item in staff_items],
         }
 
@@ -2951,7 +2954,18 @@ def register_admin_api(
             if conflict:
                 raise HTTPException(status_code=409, detail=f"師傅與訂單 AP-{conflict.id} 時間重疊")
 
-        if payload.location_type == "onsite":
+        # A full two-room window is a valid booking state.  Keep staff
+        # selection available, but clear the room snapshot and let客服 arrange
+        # the venue later instead of rejecting the transaction.
+        rooms_full = payload.location_type == "onsite" and not room_capacity_available(db, start_dt, end_dt)
+        effective_room_id = payload.room_id
+        effective_venue_id = payload.venue_id
+        effective_location_type = payload.location_type
+        if rooms_full:
+            effective_room_id = None
+            effective_venue_id = None
+            effective_location_type = "pending"
+        elif payload.location_type == "onsite":
             if not payload.room_id:
                 raise HTTPException(status_code=422, detail="店內預約必須選擇房間")
             room = db.query(Room).filter(Room.id == payload.room_id, Room.active.is_(True)).with_for_update().first()
@@ -2963,7 +2977,7 @@ def register_admin_api(
 
         customer, contact_phone = customer_for_phone(db, payload.phone)
         if not customer:
-            customer = User(line_user_id=f"manual:{secrets.token_hex(16)}", phone=contact_phone, display_name=payload.customer_name, customer_grade="N")
+            customer = User(line_user_id=None, phone=contact_phone, display_name=payload.customer_name, customer_grade="N")
             db.add(customer)
             db.flush()
             sync_customer_phones(db, customer, [contact_phone])
@@ -3012,13 +3026,13 @@ def register_admin_api(
             appointment_id=appointment.id,
             service_plan_id=plan.id,
             promotion_id=promotion.id if promotion else None,
-            room_id=payload.room_id,
-            venue_id=payload.venue_id,
+            room_id=effective_room_id,
+            venue_id=effective_venue_id,
             service_name_snapshot=plan.name,
             promotion_name_snapshot="、".join(item.name for item in promotions) if promotions else None,
             promotion_ids_json=json.dumps([item.id for item in promotions]),
-            room_name_snapshot=(db.query(Room).filter(Room.id == payload.room_id).first().name if payload.room_id else None),
-            venue_name_snapshot=(db.query(Venue).filter(Venue.id == payload.venue_id).first().name if payload.venue_id else None),
+            room_name_snapshot=(db.query(Room).filter(Room.id == effective_room_id).first().name if effective_room_id else None),
+            venue_name_snapshot=(db.query(Venue).filter(Venue.id == effective_venue_id).first().name if effective_venue_id else None),
             contact_phone=contact_phone,
             base_price=totals["base_price"],
             discount_amount=totals["discount_amount"],
@@ -3031,8 +3045,10 @@ def register_admin_api(
             surcharge_shop_amount=settlement["surcharge_shop_amount"],
             staff_return_amount=settlement["staff_return_amount"],
             shop_recovery_amount=settlement["shop_recovery_amount"],
-            location_type=payload.location_type,
-            notes=append_creation_timestamp(payload.notes),
+            location_type=effective_location_type,
+            notes=append_creation_timestamp(
+                f"{payload.notes or ''}\n場地狀態：待客服安排" if rooms_full else payload.notes
+            ),
         )
         db.add(detail)
         db.flush()
@@ -3058,12 +3074,12 @@ def register_admin_api(
             if payload.staff_return_amount is not None or payload.shop_recovery_amount is not None:
                 detail.settlement_overridden_by_admin_id = actor.id
                 detail.settlement_override_at = now_taipei_naive()
-        audit(db, actor, "create", "appointment", appointment.id, after={"start": start_dt, "end": end_dt, "staff_id": payload.staff_id, "room_id": payload.room_id, "promotion_id": payload.promotion_id})
+        audit(db, actor, "create", "appointment", appointment.id, after={"start": start_dt, "end": end_dt, "staff_id": payload.staff_id, "room_id": effective_room_id, "rooms_full": rooms_full, "promotion_id": payload.promotion_id})
         db.commit()
         db.refresh(appointment)
-        if appointment_notifier and not payload.is_admin_override:
+        if appointment_notifier:
             try:
-                appointment_notifier(appointment, db, origin="後台建立")
+                appointment_notifier(appointment, db, origin="後台建立", rooms_full=rooms_full)
             except Exception:
                 logger.exception("Unable to push appointment notification appointment_id=%s", appointment.id)
         return appointment_dict(db, appointment)
@@ -3114,17 +3130,17 @@ def register_admin_api(
         # 未選擇師傅時保留 NULL，交由店長後續安排；不可建立或偷塞
         # 虛擬師傅資料。只有明確指定時才綁定當下可用的在職師傅。
         assigned_staff_id = payload.staff_id
-        if plan.location_type == "onsite" and not room_capacity_available(db, start_dt, end_dt):
-            raise HTTPException(status_code=409, detail="這個時段兩間房都已使用，請改選其他時間")
+        rooms_full = plan.location_type == "onsite" and not room_capacity_available(db, start_dt, end_dt)
 
         customer, contact_phone, source = resolve_public_customer(db, payload)
-        customer = db.query(User).filter(User.id == customer.id).with_for_update().first()
-        if payload.birthday and source != "web_anonymous":
+        if customer is not None:
+            customer = db.query(User).filter(User.id == customer.id).with_for_update().first()
+        if payload.birthday and source != "web_anonymous" and customer is not None:
             customer.birthday = payload.birthday.strip()
         birthday_value = payload.birthday or getattr(customer, "birthday", None)
         eligible_promotions = birthday_promotions(db, birthday_value, start_dt, source=source)
         promotion = eligible_promotions[0] if eligible_promotions else None
-        duplicate = db.query(Appointment).filter(
+        duplicate = None if customer is None else db.query(Appointment).filter(
             Appointment.user_id == customer.id,
             Appointment.start_time == start_dt,
             Appointment.status.notin_(CANCELLED_APPOINTMENT_STATUSES),
@@ -3140,7 +3156,7 @@ def register_admin_api(
             return {"duplicate": True, "appointment": receipt}
 
         appointment = Appointment(
-            user_id=customer.id,
+            user_id=customer.id if customer else None,
             staff_id=assigned_staff_id,
             duration=plan.duration_minutes,
             plan_name=f"{plan.code}-{plan.name}",
@@ -3157,6 +3173,8 @@ def register_admin_api(
         totals = calculate_order_totals(base_price=plan.price, duration_minutes=plan.duration_minutes, promotions=eligible_promotions)
         source_label = "LINE 連結網頁預約" if source in {"liff", "line"} else "網頁預約"
         notes = f"來源：{source_label}"
+        if rooms_full:
+            notes += "\n場地狀態：待客服安排"
         if payload.notes and payload.notes.strip():
             notes += f"\n客戶備註：{payload.notes.strip()}"
         detail = AppointmentDetail(
@@ -3190,9 +3208,8 @@ def register_admin_api(
         db.refresh(appointment)
         if appointment_notifier:
             try:
-                # 已有正式排班並直接成立的訂單只派給該師傅；指定／全師傅
-                # 的預約通知使用另一個 requests 端點，仍由客服審核。
-                appointment_notifier(appointment, db, origin=source_label, notify_management=False)
+                # Push only after the booking transaction is committed.
+                appointment_notifier(appointment, db, origin=source_label, notify_management=True, rooms_full=rooms_full)
             except Exception:
                 logger.exception("Unable to push public booking notification appointment_id=%s", appointment.id)
         receipt = appointment_dict(db, appointment)

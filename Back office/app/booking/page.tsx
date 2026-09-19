@@ -315,6 +315,7 @@ export default function BookingPage() {
           </div>
           <label className={styles.field}>備註（選填）<textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} maxLength={1000} placeholder="特殊需求或方便聯絡的方式" /></label>
           <label className={styles.field}>生日（選填）<input type="date" value={birthday} onChange={(event) => setBirthday(event.target.value)} /></label>
+          {availability?.rooms_full && <div className={styles.roomNotice} role="status">此時段兩間房皆已使用；場地將由客服後續安排。</div>}
           <input className={styles.honeypot} name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" />
         </section>
         <div className={styles.total}><span>預估金額<small>優惠由後端依資格確認</small></span><strong>{money(total)}</strong></div>
