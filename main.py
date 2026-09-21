@@ -2248,190 +2248,175 @@ def _process_webhook(body: bytes, signature: str, bot_api, handler):
         pass
 
 
-def notify_appointment_parties(
+LINE_KINDS = {"customer", "staff", "service", "management"}
+LINE_UID_PATTERN = re.compile(r"^U[0-9a-fA-F]{32}$")
+
+
+def _line_bot_for_instance(bot_instance: str):
+    return bot_customer_api if bot_instance == "customer_bot" else bot_staff_api
+
+
+def _line_error(exc: Exception) -> tuple[int | None, str | None, str]:
+    status_code = getattr(exc, "status_code", None)
+    request_id = getattr(exc, "request_id", None)
+    if not request_id:
+        headers = getattr(exc, "headers", {}) or {}
+        request_id = headers.get("x-line-request-id") or headers.get("X-Line-Request-Id")
+    reason = "line_api_error"
+    if status_code == 429:
+        reason = "monthly_limit_reached"
+    elif status_code:
+        reason = f"line_http_{status_code}"
+    return status_code, request_id, reason
+
+
+def _line_status_label(status: str) -> str:
+    return {
+        "sent": "已發送", "failed": "失敗", "skipped": "已跳過",
+        "monthly_limit_reached": "LINE 月額度已用完",
+    }.get(status, status)
+
+
+def dispatch_appointment_notifications(
     appointment,
     db: Session,
     *,
-    origin: str = "後台建立",
+    trigger_type: str,
+    actor_user_id: int | None = None,
+    origin: str = "預約通知",
     notify_management: bool = True,
     rooms_full: bool = False,
-) -> None:
-    """Push a committed appointment without ever rolling back its transaction.
-
-    Recipient resolution and every delivery result are persisted as an audit
-    record.  A failed push is appended to the internal order note so客服 can
-    retry it manually; the appointment itself remains committed.
-    """
+) -> dict:
+    """Resolve, validate, push, and persist one immutable notification batch."""
     models = getattr(app.state, "admin_models", {})
     AdminUser = models.get("AdminUser")
     RevokedStaffLine = models.get("RevokedStaffLine")
+    Batch = models.get("LineNotificationBatch")
+    Dispatch = models.get("LineNotificationDispatch")
+    if not Batch or not Dispatch:
+        return {"sent": 0, "skipped": 0, "failed": 1, "status": "failed", "status_label": "派發失敗", "results": []}
+
+    previous = db.query(Batch).filter(Batch.appointment_id == appointment.id).order_by(Batch.dispatch_sequence.desc()).first()
+    sequence = (previous.dispatch_sequence if previous else 0) + 1
+    batch = Batch(appointment_id=appointment.id, dispatch_sequence=sequence, trigger_type=trigger_type, status="pending", actor_user_id=actor_user_id)
+    db.add(batch)
+    db.flush()
     recipients: list[dict] = []
-    customer_uid = getattr(getattr(appointment, "user", None), "line_user_id", None)
-    recipients.append({"uid": customer_uid, "kind": "customer", "label": "預約客人", "api": bot_customer_api})
+    user = getattr(appointment, "user", None)
+    customer_uid = getattr(user, "line_user_id", None)
+    recipients.append({"uid": customer_uid, "kind": "customer", "label": "預約客人", "bot_instance": "customer_bot", "entity": user})
     staff_obj = getattr(appointment, "staff", None)
-    staff_uid = getattr(staff_obj, "line_user_id", None) if staff_obj else None
-    if rooms_full:
-        recipients.append({"uid": staff_uid, "kind": "staff", "label": "指定師傅", "api": bot_staff_api, "forced_reason": "兩間房皆已使用，不通知員工"})
-    elif staff_obj:
-        recipients.append({"uid": staff_uid, "kind": "staff", "label": "指定師傅", "api": bot_staff_api})
+    if staff_obj:
+        recipients.append({"uid": getattr(staff_obj, "line_user_id", None), "kind": "staff", "label": "指定師傅", "bot_instance": "staff_bot", "entity": staff_obj, "forced_reason": "rooms_full_no_staff" if rooms_full else None})
     if notify_management and AdminUser:
-        for account in db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.role.in_(["admin", "manager", "clerk"])).all():
-            recipients.append({"uid": account.line_user_id, "kind": account.role, "label": account.display_name or account.username, "api": bot_staff_api})
+        for account in db.query(AdminUser).filter(AdminUser.role.in_(["admin", "manager", "clerk"])).all():
+            if account.role == "clerk":
+                kind = "service"
+            elif account.role in {"admin", "manager"}:
+                kind = "management"
+            else:
+                continue
+            recipients.append({"uid": account.line_user_id, "kind": kind, "label": account.display_name or account.username, "bot_instance": "staff_bot", "entity": account})
 
     results: list[dict] = []
-    seen: set[str] = set()
-    uid_pattern = re.compile(r"U[0-9a-fA-F]{32}")
+    seen: set[tuple[str, str]] = set()
     for item in recipients:
-        uid = (item.get("uid") or "").strip() if isinstance(item.get("uid"), str) else item.get("uid")
-        result = {"uid": uid, "kind": item["kind"], "label": item["label"]}
-        if item.get("forced_reason"):
-            result.update(status="skipped", reason=item["forced_reason"])
-            results.append(result)
-            continue
-        if not uid:
-            result.update(status="skipped", reason="missing_uid")
-            results.append(result)
-            continue
-        if uid in seen:
-            result.update(status="skipped", reason="duplicate")
-            results.append(result)
-            continue
-        seen.add(uid)
-        if not uid_pattern.fullmatch(uid):
-            result.update(status="skipped", reason="invalid_uid")
-            results.append(result)
-            continue
-        if RevokedStaffLine and db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == uid).first():
-            result.update(status="skipped", reason="revoked_uid")
-            results.append(result)
-            continue
-        api = item.get("api")
-        if not api:
-            result.update(status="failed", reason="line_token_unconfigured")
-            results.append(result)
-            continue
-        try:
-            is_staff_card = item["kind"] == "staff"
-            # Management and客服 cards may include the customer-facing details;
-            # the staff card deliberately hides name/phone and has no actions.
-            message = build_order_flex(
-                appointment,
-                alt_text=f"{origin}・新訂單" if item["kind"] != "customer" else "伊果 SPA 預約已成立",
-                is_staff_notify=is_staff_card,
-                db=db,
-                show_return=False,
-            )
-            api.push_message(uid, message)
-            result.update(status="sent")
-        except Exception as exc:
-            logging.exception("預約確認推送失敗 appointment_id=%s uid=%s", appointment.id, uid)
-            result.update(status="failed", reason=str(exc)[:200])
+        uid = item.get("uid")
+        uid = uid.strip() if isinstance(uid, str) else uid
+        bot_instance = item["bot_instance"]
+        result = {"uid": uid, "kind": item["kind"], "label": item["label"], "bot_instance": bot_instance}
+        reason = item.get("forced_reason")
+        status = "skipped"
+        http_status = None
+        request_id = None
+        if reason:
+            pass
+        elif not uid:
+            reason = "missing_uid"
+        elif not LINE_UID_PATTERN.fullmatch(uid):
+            reason = "invalid_uid"
+        elif (bot_instance, uid) in seen:
+            reason = "duplicate"
+        elif RevokedStaffLine and db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == uid).first():
+            reason = "revoked_uid"
+        else:
+            seen.add((bot_instance, uid))
+            entity = item.get("entity")
+            if item["kind"] == "staff" and (not entity or getattr(entity, "employment_status", "active") != "active"):
+                reason = "inactive_recipient"
+            elif item["kind"] in {"service", "management"} and (not entity or not getattr(entity, "is_active", False)):
+                reason = "inactive_recipient"
+            elif item["kind"] == "customer" and (not entity or getattr(entity, "line_user_id", None) != uid):
+                reason = "recipient_not_found"
+            elif item["kind"] == "staff" and (not entity or getattr(entity, "line_user_id", None) != uid):
+                reason = "recipient_not_found"
+            elif item["kind"] in {"service", "management"} and (not entity or getattr(entity, "line_user_id", None) != uid):
+                reason = "recipient_not_found"
+            else:
+                api = _line_bot_for_instance(bot_instance)
+                if not api:
+                    status = "failed"
+                    reason = "line_token_unconfigured"
+                else:
+                    try:
+                        alt_text = "伊果 SPA 預約已成立" if item["kind"] == "customer" and trigger_type == "appointment_created" else ("預約資料已更新" if trigger_type == "appointment_updated" else f"{origin}・預約通知")
+                        message = build_order_flex(appointment, alt_text=alt_text, is_staff_notify=item["kind"] == "staff", db=db, show_return=False)
+                        api.push_message(uid, message)
+                        status = "sent"
+                        reason = None
+                    except Exception as exc:
+                        status = "failed"
+                        http_status, request_id, reason = _line_error(exc)
+                        logging.warning("LINE push failed appointment=%s kind=%s status=%s reason=%s", appointment.id, item["kind"], http_status, reason)
+        result.update(status=status, reason=reason, http_status=http_status, line_request_id=request_id)
         results.append(result)
+        db.add(Dispatch(batch_id=batch.id, appointment_id=appointment.id, dispatch_sequence=sequence, kind=item["kind"], recipient_label=item["label"], uid=uid, bot_instance=bot_instance, status=status, reason=reason, http_status=http_status, line_request_id=request_id, error_message=_line_status_label(reason) if reason in {"monthly_limit_reached", "line_token_unconfigured"} else None, actor_user_id=actor_user_id, trigger_type=trigger_type))
 
-    failed = [item for item in results if item.get("status") == "failed"]
-    valid_uid_results = [item for item in results if item.get("status") in {"sent", "failed"}]
+    sent = sum(item["status"] == "sent" for item in results)
+    failed = sum(item["status"] == "failed" for item in results)
+    skipped = sum(item["status"] == "skipped" for item in results)
+    if any(item.get("reason") == "monthly_limit_reached" for item in results):
+        batch_status = "monthly_limit_reached"
+    elif sent == 0 and failed == 0:
+        batch_status = "no_valid_recipient"
+    elif failed and sent == 0:
+        batch_status = "failed"
+    elif failed or skipped:
+        batch_status = "partial"
+    else:
+        batch_status = "sent"
+    batch.status = batch_status
+    batch.sent_count, batch.failed_count, batch.skipped_count = sent, failed, skipped
     detail_model = models.get("AppointmentDetail")
     detail = db.query(detail_model).filter(detail_model.appointment_id == appointment.id).first() if detail_model else None
-    note_reasons = [f"{item['label']}：{item.get('reason', '推播失敗')}" for item in failed]
-    if not valid_uid_results:
-        note_reasons.append("沒有有效 LINE UID")
+    note_reasons = [item.get("reason") for item in results if item.get("status") != "sent" and item.get("reason") not in {"duplicate", "rooms_full_no_staff"}]
     if note_reasons and detail is not None:
+        safe = "；".join(_line_status_label(reason) for reason in sorted(set(note_reasons)))
+        addition = f"[系統通知] LINE 推播未完成（{origin}）：{safe}"
         note = (detail.notes or "").rstrip()
-        addition = f"[系統通知] LINE 推播未完成（{origin}）：" + "；".join(note_reasons)
         if addition not in note:
             detail.notes = f"{note}\n{addition}" if note else addition
     audit_model = models.get("AuditLog")
     if audit_model:
-        db.add(audit_model(
-            actor_user_id=None,
-            action="line_push",
-            entity_type="appointment",
-            entity_id=str(appointment.id),
-            reason=origin,
-            after_json=json.dumps({"rooms_full": rooms_full, "results": results}, ensure_ascii=False, default=str),
-        ))
+        db.add(audit_model(actor_user_id=actor_user_id, action="line_notification_batch", entity_type="appointment", entity_id=str(appointment.id), reason=trigger_type, after_json=json.dumps({"batch_id": batch.id, "dispatch_sequence": sequence, "status": batch_status, "sent": sent, "failed": failed, "skipped": skipped}, ensure_ascii=False)))
     try:
         db.commit()
     except Exception:
         db.rollback()
-        logging.exception("Unable to persist LINE notification audit appointment_id=%s", appointment.id)
+        logging.exception("Unable to persist LINE notification batch appointment=%s", appointment.id)
+    return {"batch_id": batch.id, "dispatch_sequence": sequence, "trigger_type": trigger_type, "status": batch_status, "status_label": {"sent": "已派發", "partial": "部分派發", "failed": "派發失敗", "no_valid_recipient": "無有效收件人", "monthly_limit_reached": "LINE 月額度已用完"}.get(batch_status, batch_status), "sent": sent, "failed": failed, "skipped": skipped, "results": results}
 
 
-def notify_appointment_update(appointment, db: Session, *, time_changed: bool, amount_changed: bool) -> None:
-    """Notify customer, assigned staff, clerks and management on time/amount edits."""
-    AdminUser = getattr(app.state, "admin_models", {}).get("AdminUser")
-    changed = "、".join(label for label, active in (("時間", time_changed), ("金額", amount_changed)) if active)
-    text = f"訂單 AP-{appointment.id} 的{changed}已更新，請重新查看預約。"
-    customer_line_id = appointment.user.line_user_id if appointment.user and appointment.user.line_user_id and not appointment.user.line_user_id.startswith(("manual:", "liff:", "guest:")) else None
-    staff_line_id = appointment.staff.line_user_id if appointment.staff and appointment.staff.line_user_id and not appointment.staff.line_user_id.startswith(("pending:", "seeded:")) else None
-    message = TextSendMessage(text=text)
-    customer_card = build_order_flex(appointment, alt_text="預約資料已更新", db=db, show_return=False)
-    staff_card = build_order_flex(appointment, alt_text="預約資料已更新", is_staff_notify=True, db=db, show_return=False)
-    if bot_customer_api and customer_line_id:
-        try:
-            bot_customer_api.push_message(customer_line_id, message)
-            bot_customer_api.push_message(customer_line_id, customer_card)
-        except Exception:
-            logging.exception("預約更新推送失敗 recipient=客戶 appointment_id=%s", appointment.id)
-    if bot_staff_api and staff_line_id:
-        try:
-            bot_staff_api.push_message(staff_line_id, message)
-            bot_staff_api.push_message(staff_line_id, staff_card)
-        except Exception:
-            logging.exception("預約更新推送失敗 recipient=師傅 appointment_id=%s", appointment.id)
-    if bot_staff_api and AdminUser:
-        for account in db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.line_user_id.isnot(None)).all():
-            if account.line_user_id in {staff_line_id, customer_line_id}:
-                continue
-            try:
-                bot_staff_api.push_message(account.line_user_id, message)
-                bot_staff_api.push_message(account.line_user_id, staff_card)
-            except Exception:
-                logging.exception("預約更新推送失敗 recipient=管理帳號 %s appointment_id=%s", account.username, appointment.id)
+def notify_appointment_parties(appointment, db: Session, *, origin: str = "後台建立", notify_management: bool = True, rooms_full: bool = False, actor_user_id: int | None = None) -> dict:
+    return dispatch_appointment_notifications(appointment, db, trigger_type="appointment_created", origin=origin, actor_user_id=actor_user_id, notify_management=notify_management, rooms_full=rooms_full)
+
+
+def notify_appointment_update(appointment, db: Session, *, time_changed: bool, amount_changed: bool) -> dict:
+    return dispatch_appointment_notifications(appointment, db, trigger_type="appointment_updated", origin="訂單修改", notify_management=True)
 
 
 def dispatch_appointment_line(appointment, db: Session, *, actor=None) -> dict:
-    """Explicitly dispatch the latest order card to all valid stakeholders."""
-    models = getattr(app.state, "admin_models", {})
-    AdminUser = models.get("AdminUser")
-    RevokedStaffLine = models.get("RevokedStaffLine")
-    recipients: list[tuple[str, str, object]] = []
-    if appointment.user and appointment.user.line_user_id and not appointment.user.line_user_id.startswith(("manual:", "liff:", "guest:")):
-        recipients.append((appointment.user.line_user_id, "customer", bot_customer_api))
-    if appointment.staff and appointment.staff.line_user_id and not appointment.staff.line_user_id.startswith(("pending:", "seeded:")):
-        recipients.append((appointment.staff.line_user_id, "staff", bot_staff_api))
-    if AdminUser:
-        for account in db.query(AdminUser).filter(AdminUser.is_active.is_(True), AdminUser.line_user_id.isnot(None)).all():
-            recipients.append((account.line_user_id, account.role, bot_staff_api))
-    seen: set[str] = set()
-    results = []
-    import re as _re
-    for uid, kind, api in recipients:
-        if uid in seen:
-            results.append({"uid": uid, "status": "skipped", "reason": "duplicate"})
-            continue
-        seen.add(uid)
-        if not _re.fullmatch(r"U[0-9a-fA-F]{32}", uid or ""):
-            results.append({"uid": uid, "status": "skipped", "reason": "invalid_uid"})
-            continue
-        if RevokedStaffLine and db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == uid).first():
-            results.append({"uid": uid, "status": "skipped", "reason": "revoked"})
-            continue
-        if not api:
-            results.append({"uid": uid, "status": "failed", "reason": "line_token_unconfigured"})
-            continue
-        try:
-            api.push_message(uid, build_order_flex(appointment, alt_text="伊果 SPA 預約資料", is_staff_notify=kind != "customer", db=db))
-            results.append({"uid": uid, "status": "sent", "kind": kind})
-        except Exception as exc:
-            logging.exception("LINE 訂單派發失敗 appointment_id=%s uid=%s", appointment.id, uid)
-            results.append({"uid": uid, "status": "failed", "reason": str(exc)[:200]})
-    return {
-        "sent": sum(item["status"] == "sent" for item in results),
-        "skipped": sum(item["status"] == "skipped" for item in results),
-        "failed": sum(item["status"] == "failed" for item in results),
-        "results": results,
-    }
+    return dispatch_appointment_notifications(appointment, db, trigger_type="manual_dispatch", origin="手動派發", actor_user_id=getattr(actor, "id", None), notify_management=True)
 
 
 def notify_booking_request_parties(booking_request, db: Session, *, origin: str = "booking_web") -> None:

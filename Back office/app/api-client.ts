@@ -18,6 +18,20 @@ export type AdminIdentity = {
 
 export type StaffIdentity = { id: number; name: string; role: 'staff' };
 
+export type LineNotificationBatch = {
+  id: number;
+  appointment_id: number;
+  dispatch_sequence: number;
+  trigger_type: 'appointment_created' | 'appointment_updated' | 'manual_dispatch' | string;
+  trigger_label: string;
+  status: 'sent' | 'partial' | 'failed' | 'no_valid_recipient' | 'monthly_limit_reached' | string;
+  status_label: string;
+  sent_count: number;
+  failed_count: number;
+  skipped_count: number;
+  created_at: string | null;
+};
+
 type RawAppointment = {
   id: number;
   order_id: string;
@@ -529,7 +543,11 @@ export class SpaApi {
   }
 
   notifyAppointmentLine(id: number) {
-    return this.request<{ sent: number; skipped: number; failed: number; results: Array<Record<string, unknown>> }>(`/api/admin/appointments/${id}/notify-line`, { method: 'POST' });
+    return this.request<{ batch_id: number; dispatch_sequence: number; trigger_type: string; status: string; status_label: string; sent: number; skipped: number; failed: number; results: Array<Record<string, unknown>> }>(`/api/admin/appointments/${id}/notify-line`, { method: 'POST' });
+  }
+
+  getLineNotificationHistory(id: number) {
+    return this.request<LineNotificationBatch[]>(`/api/admin/appointments/${id}/line-notification-history`);
   }
 
   updateShift(id: number, payload: Record<string, unknown>) {

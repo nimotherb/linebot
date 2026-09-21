@@ -641,6 +641,38 @@ def register_admin_api(
         after_json = Column(Text, nullable=True)
         created_at = Column(DateTime, nullable=False, default=now_taipei_naive, index=True)
 
+    class LineNotificationBatch(Base):
+        __tablename__ = "line_notification_batches"
+        id = Column(Integer, primary_key=True)
+        appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=False, index=True)
+        dispatch_sequence = Column(Integer, nullable=False)
+        trigger_type = Column(String(40), nullable=False, index=True)
+        status = Column(String(40), nullable=False)
+        sent_count = Column(Integer, nullable=False, default=0)
+        failed_count = Column(Integer, nullable=False, default=0)
+        skipped_count = Column(Integer, nullable=False, default=0)
+        actor_user_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
+        created_at = Column(DateTime, nullable=False, default=now_taipei_naive, index=True)
+
+    class LineNotificationDispatch(Base):
+        __tablename__ = "line_notification_dispatches"
+        id = Column(Integer, primary_key=True)
+        batch_id = Column(Integer, ForeignKey("line_notification_batches.id"), nullable=False, index=True)
+        appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=False, index=True)
+        dispatch_sequence = Column(Integer, nullable=False)
+        kind = Column(String(20), nullable=False)
+        recipient_label = Column(String(160), nullable=True)
+        uid = Column(String(255), nullable=True)
+        bot_instance = Column(String(30), nullable=False)
+        status = Column(String(20), nullable=False)
+        reason = Column(String(100), nullable=True)
+        http_status = Column(Integer, nullable=True)
+        line_request_id = Column(String(255), nullable=True)
+        error_message = Column(String(500), nullable=True)
+        actor_user_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
+        trigger_type = Column(String(40), nullable=False)
+        created_at = Column(DateTime, nullable=False, default=now_taipei_naive, index=True)
+
     class StaffScheduleToken(Base):
         __tablename__ = "staff_schedule_tokens"
         id = Column(Integer, primary_key=True)
@@ -832,6 +864,8 @@ def register_admin_api(
         "AppointmentDetail": AppointmentDetail,
         "Payment": Payment,
         "AuditLog": AuditLog,
+        "LineNotificationBatch": LineNotificationBatch,
+        "LineNotificationDispatch": LineNotificationDispatch,
         "StaffScheduleToken": StaffScheduleToken,
         "StaffScheduleReminderBatch": StaffScheduleReminderBatch,
         "StaffScheduleReminderDispatch": StaffScheduleReminderDispatch,
@@ -1917,6 +1951,33 @@ def register_admin_api(
         cache = appointment_cache(db, items)
         return [public_appointment_dict(db, item, cache) if public else appointment_dict(db, item, cache) for item in items]
 
+    def line_notification_batch_dict(item) -> dict[str, Any]:
+        trigger_labels = {
+            "appointment_created": "建立預約",
+            "appointment_updated": "訂單修改",
+            "manual_dispatch": "手動派發",
+        }
+        status_labels = {
+            "sent": "已派發",
+            "partial": "部分派發",
+            "failed": "派發失敗",
+            "no_valid_recipient": "無有效收件人",
+            "monthly_limit_reached": "LINE 月額度已用完",
+        }
+        return {
+            "id": item.id,
+            "appointment_id": item.appointment_id,
+            "dispatch_sequence": item.dispatch_sequence,
+            "trigger_type": item.trigger_type,
+            "trigger_label": trigger_labels.get(item.trigger_type, item.trigger_type),
+            "status": item.status,
+            "status_label": status_labels.get(item.status, item.status),
+            "sent_count": item.sent_count,
+            "failed_count": item.failed_count,
+            "skipped_count": item.skipped_count,
+            "created_at": _iso(item.created_at),
+        }
+
     def public_appointment_dict(db: Session, item, cache: dict[str, Any] | None = None) -> dict[str, Any]:
         row = appointment_dict(db, item, cache)
         for key in ("customer_id", "customer_serial", "customer_name", "phone", "base_price", "discount_amount", "extra_amount", "total_amount", "notes", "payment_method", "cash_return_status", "expected_return_amount", "staff_return_status", "commission_amount", "discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount", "promotion_id", "promotion_ids", "promotion_name"):
@@ -2208,7 +2269,7 @@ def register_admin_api(
         if appointment_notifier:
             try:
                 rooms_full = plan.location_type == "onsite" and not room_capacity_available(db, appointment.start_time, appointment.end_time)
-                appointment_notifier(appointment, db, origin="客服確認預約通知", rooms_full=rooms_full)
+                appointment_notifier(appointment, db, origin="客服確認預約通知", rooms_full=rooms_full, actor_user_id=actor.id)
             except Exception:
                 logger.exception("Unable to push confirmed booking request appointment_id=%s", appointment.id)
         return item, appointment, False
@@ -3079,7 +3140,7 @@ def register_admin_api(
         db.refresh(appointment)
         if appointment_notifier:
             try:
-                appointment_notifier(appointment, db, origin="後台建立", rooms_full=rooms_full)
+                appointment_notifier(appointment, db, origin="後台建立", rooms_full=rooms_full, actor_user_id=actor.id)
             except Exception:
                 logger.exception("Unable to push appointment notification appointment_id=%s", appointment.id)
         return appointment_dict(db, appointment)
@@ -3399,6 +3460,14 @@ def register_admin_api(
         audit(db, actor, "notify_line", "appointment", appointment.id, after=result)
         db.commit()
         return result
+
+    @app.get("/api/admin/appointments/{appointment_id}/line-notification-history")
+    def line_notification_history(appointment_id: int, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
+        if not db.query(Appointment).filter(Appointment.id == appointment_id).first():
+            raise HTTPException(status_code=404, detail="找不到預約")
+        Batch = app.state.admin_models["LineNotificationBatch"]
+        rows = db.query(Batch).filter(Batch.appointment_id == appointment_id).order_by(Batch.dispatch_sequence.asc()).all()
+        return [line_notification_batch_dict(row) for row in rows]
 
     @app.get("/api/admin/shifts")
     def list_shifts(start: datetime | None = None, end: datetime | None = None, db: Session = Depends(get_db), user=Depends(current_admin)):
