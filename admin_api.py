@@ -135,7 +135,7 @@ class AppointmentPatchIn(BaseModel):
     customer_name: str | None = Field(default=None, min_length=1, max_length=120)
     phone: str | None = Field(default=None, min_length=8, max_length=30)
     birthday: str | None = Field(default=None, max_length=10)
-    status: Literal["pending", "confirmed", "completed", "cancelled", "待確認", "已確認", "已完成", "已取消"] | None = None
+    status: Literal["pending", "confirmed", "completed", "cancelled", "no_show", "待確認", "已確認", "已完成", "已取消", "未到店"] | None = None
     staff_id: int | None = None
     room_id: int | None = None
     venue_id: int | None = None
@@ -613,6 +613,9 @@ def register_admin_api(
         settlement_override_at = Column(DateTime, nullable=True)
         location_type = Column(String(30), nullable=False, default="onsite")
         notes = Column(Text, nullable=True)
+        cancellation_snapshot_json = Column(Text, nullable=True)
+        cancellation_reason = Column(String(500), nullable=True)
+        cancelled_at = Column(DateTime, nullable=True)
         updated_at = Column(DateTime, nullable=False, default=now_taipei_naive, onupdate=now_taipei_naive)
 
     class Payment(Base):
@@ -1838,7 +1841,7 @@ def register_admin_api(
         payment_map: dict[int, Any] = {}
         if appointment_ids:
             for payment in db.query(Payment).filter(
-                Payment.appointment_id.in_(appointment_ids), Payment.status == "paid",
+                Payment.appointment_id.in_(appointment_ids), Payment.status.in_(["paid", "cancelled"]),
             ).order_by(Payment.appointment_id, Payment.id.desc()).all():
                 payment_map.setdefault(payment.appointment_id, payment)
         staff_return_map = {
@@ -1905,6 +1908,10 @@ def register_admin_api(
             else "cancelled" if item.status in {"cancelled", "已取消"}
             else "confirmed"
         )
+        cancelled = canonical_status == "cancelled"
+        if cancelled:
+            settlement = {key: 0 for key in settlement}
+        payment_status = "cancelled" if cancelled and payment else (payment.status if payment else "unpaid")
         return {
             "id": item.id,
             "order_id": f"AP-{item.start_time.strftime('%m%d')}-{item.id:03d}",
@@ -1926,17 +1933,17 @@ def register_admin_api(
             "status": canonical_status,
             "status_label": STATUS_TO_ZH[canonical_status],
             "room_id": detail.room_id if detail else None,
-            "room_name": room.name if room else (getattr(detail, "room_name_snapshot", None) if detail and detail.location_type == "onsite" else None),
+            "room_name": None if cancelled else (room.name if room else (getattr(detail, "room_name_snapshot", None) if detail and detail.location_type == "onsite" else None)),
             "venue_id": detail.venue_id if detail else None,
-            "venue_name": venue.name if venue else (getattr(detail, "venue_name_snapshot", None) if detail and detail.location_type == "external" else None),
-            "venue_address": venue.address if venue else None,
-            "location_type": detail.location_type if detail else "pending",
-            "base_price": detail.base_price if detail else appointment_price_from_legacy(item),
-            "discount_amount": detail.discount_amount if detail else 0,
-            "extra_amount": detail.extra_amount if detail else 0,
-            "total_amount": detail.total_amount if detail else appointment_price_from_legacy(item),
+            "venue_name": None if cancelled else (venue.name if venue else (getattr(detail, "venue_name_snapshot", None) if detail and detail.location_type == "external" else None)),
+            "venue_address": None if cancelled else (venue.address if venue else None),
+            "location_type": "cancelled" if cancelled else (detail.location_type if detail else "pending"),
+            "base_price": 0 if cancelled else (detail.base_price if detail else appointment_price_from_legacy(item)),
+            "discount_amount": 0 if cancelled else (detail.discount_amount if detail else 0),
+            "extra_amount": 0 if cancelled else (detail.extra_amount if detail else 0),
+            "total_amount": 0 if cancelled else (detail.total_amount if detail else appointment_price_from_legacy(item)),
             "notes": detail.notes if detail else None,
-            "payment_status": payment.status if payment else "unpaid",
+            "payment_status": payment_status,
             "payment_method": payment.method if payment else None,
             "cash_return_status": payment.cash_return_status if payment else None,
             "expected_return_amount": staff_return.amount if staff_return else (return_rule.amount if return_rule else 0),
@@ -1951,7 +1958,7 @@ def register_admin_api(
         cache = appointment_cache(db, items)
         return [public_appointment_dict(db, item, cache) if public else appointment_dict(db, item, cache) for item in items]
 
-    def line_notification_batch_dict(item) -> dict[str, Any]:
+    def line_notification_batch_dict(item, db: Session | None = None) -> dict[str, Any]:
         trigger_labels = {
             "appointment_created": "建立預約",
             "appointment_updated": "訂單修改",
@@ -1964,6 +1971,15 @@ def register_admin_api(
             "no_valid_recipient": "無有效收件人",
             "monthly_limit_reached": "LINE 月額度已用完",
         }
+        failed_kinds: list[dict[str, Any]] = []
+        if db is not None:
+            Dispatch = app.state.admin_models.get("LineNotificationDispatch")
+            if Dispatch:
+                labels = {"customer": "客戶", "staff": "員工", "service": "客服", "management": "管理層"}
+                grouped: dict[str, int] = {}
+                for dispatch in db.query(Dispatch).filter(Dispatch.batch_id == item.id, Dispatch.status == "failed").all():
+                    grouped[dispatch.kind] = grouped.get(dispatch.kind, 0) + 1
+                failed_kinds = [{"kind": kind, "label": labels.get(kind, kind), "count": count} for kind, count in sorted(grouped.items())]
         return {
             "id": item.id,
             "appointment_id": item.appointment_id,
@@ -1975,6 +1991,7 @@ def register_admin_api(
             "sent_count": item.sent_count,
             "failed_count": item.failed_count,
             "skipped_count": item.skipped_count,
+            "failed_kinds": failed_kinds,
             "created_at": _iso(item.created_at),
         }
 
@@ -2900,6 +2917,79 @@ def register_admin_api(
             "preserved": ["staffs", "users", "customer_phones", "shifts", "service_plans", "promotions", "rooms", "admin_users"],
         }
 
+    def _appointment_status(value: str | None) -> str | None:
+        return ZH_TO_STATUS.get(value, value) if value else None
+
+    def _cancel_appointment_state(db: Session, appointment, detail, reason: str | None) -> None:
+        snapshot = {
+            "status": appointment.status,
+            "room_id": getattr(detail, "room_id", None),
+            "venue_id": getattr(detail, "venue_id", None),
+            "room_name": getattr(detail, "room_name_snapshot", None),
+            "venue_name": getattr(detail, "venue_name_snapshot", None),
+            "location_type": getattr(detail, "location_type", "pending"),
+            "base_price": int(getattr(detail, "base_price", 0) or 0),
+            "discount_amount": int(getattr(detail, "discount_amount", 0) or 0),
+            "extra_amount": int(getattr(detail, "extra_amount", 0) or 0),
+            "total_amount": int(getattr(detail, "total_amount", 0) or 0),
+            "commission_amount": int(getattr(detail, "commission_amount", 0) or 0),
+            "staff_return_amount": int(getattr(detail, "staff_return_amount", 0) or 0),
+            "shop_recovery_amount": int(getattr(detail, "shop_recovery_amount", 0) or 0),
+        }
+        detail.cancellation_snapshot_json = _json(snapshot)
+        detail.cancellation_reason = (reason or "未提供原因").strip()
+        detail.cancelled_at = now_taipei_naive()
+        detail.room_id = None
+        detail.venue_id = None
+        detail.room_name_snapshot = None
+        detail.venue_name_snapshot = None
+        detail.location_type = "cancelled"
+        for field in ("base_price", "discount_amount", "extra_amount", "total_amount", "commission_amount", "discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount"):
+            if hasattr(detail, field):
+                setattr(detail, field, 0)
+        addition = f"[系統] 已取消：{detail.cancellation_reason}"
+        if addition not in (detail.notes or ""):
+            detail.notes = f"{detail.notes.rstrip()}\n{addition}".strip()
+        for payment in db.query(Payment).filter(Payment.appointment_id == appointment.id, Payment.status == "paid").all():
+            payment.status = "cancelled"
+            payment.note = f"{(payment.note or '').rstrip()}\n[系統] 訂單取消，未入帳".strip()
+        for staff_return in db.query(StaffReturn).filter(StaffReturn.appointment_id == appointment.id).all():
+            staff_return.status = "cancelled"
+
+    def _restore_appointment_state(db: Session, appointment, detail, *, status: str, room_id: int | None, venue_id: int | None, location_type: str | None, reason: str) -> None:
+        try:
+            snapshot = json.loads(detail.cancellation_snapshot_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            snapshot = {}
+        plan = db.query(ServicePlan).filter(ServicePlan.id == detail.service_plan_id, ServicePlan.deleted_at.is_(None)).first() if detail.service_plan_id else None
+        promotion_ids: list[int] = []
+        if detail.promotion_ids_json:
+            try:
+                promotion_ids = [int(value) for value in json.loads(detail.promotion_ids_json or "[]")]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                promotion_ids = [detail.promotion_id] if detail.promotion_id else []
+        promotions = promotion_rows(db, promotion_ids)
+        totals = calculate_order_totals(base_price=int(plan.price if plan else snapshot.get("base_price", 0) or 0), duration_minutes=appointment.duration, promotions=promotions, extra_amount=int(snapshot.get("extra_amount", 0) or 0))
+        for key in ("base_price", "discount_amount", "extra_amount", "total_amount", "commission_amount"):
+            setattr(detail, key, totals.get(key, 0))
+        detail.room_id = room_id
+        detail.venue_id = venue_id
+        detail.room_name_snapshot = db.query(Room).filter(Room.id == room_id).first().name if room_id else None
+        detail.venue_name_snapshot = db.query(Venue).filter(Venue.id == venue_id).first().name if venue_id else None
+        detail.location_type = location_type or ("onsite" if room_id else "external" if venue_id else "pending")
+        detail.discount_employee_amount = int(snapshot.get("discount_employee_amount", 0) or 0)
+        detail.discount_shop_amount = int(snapshot.get("discount_shop_amount", 0) or 0)
+        detail.surcharge_employee_amount = int(snapshot.get("surcharge_employee_amount", 0) or 0)
+        detail.surcharge_shop_amount = int(snapshot.get("surcharge_shop_amount", 0) or 0)
+        baseline = return_rule_for_appointment(db, appointment, detail)
+        for key, value in calculate_settlement_totals(total_amount=detail.total_amount, baseline_return=baseline.amount if baseline else 0, discount_employee_amount=detail.discount_employee_amount, discount_shop_amount=detail.discount_shop_amount, surcharge_employee_amount=detail.surcharge_employee_amount, surcharge_shop_amount=detail.surcharge_shop_amount).items():
+            setattr(detail, key, value)
+        appointment.status = status if status not in {"cancelled", "no_show"} else "confirmed"
+        if detail.notes:
+            detail.notes = f"{detail.notes.rstrip()}\n[系統] 取消單恢復：{reason.strip()}"
+        detail.cancellation_reason = None
+        detail.cancelled_at = None
+
     @app.get("/api/admin/appointments")
     def list_appointments(
         start: datetime | None = Query(default=None),
@@ -3306,6 +3396,17 @@ def register_admin_api(
         before = appointment_dict(db, appointment)
         changes = _model_dump_unset(payload)
         admin_override = bool(changes.pop("is_admin_override", False))
+        current_status = _appointment_status(appointment.status) or appointment.status
+        requested_status = _appointment_status(changes.get("status")) or current_status
+        if requested_status == "no_show":
+            requested_status = "cancelled"
+        archived_order = current_status in {"completed", "cancelled"}
+        restoring_cancelled = current_status == "cancelled" and requested_status != "cancelled"
+        reason = (payload.force_reason or "").strip()
+        if archived_order and actor.role not in {"admin", "manager"}:
+            raise HTTPException(status_code=403, detail="只有 Admin 或店長可以修改完成或取消訂單")
+        if (archived_order or requested_status in {"completed", "cancelled"}) and not reason:
+            raise HTTPException(status_code=422, detail="修改完成或取消訂單必須填寫原因")
         if admin_override and actor.role not in {"admin", "manager"}:
             raise HTTPException(status_code=403, detail="只有店長或 Admin 可以使用管理覆寫")
         monetary_fields = {
@@ -3373,8 +3474,6 @@ def register_admin_api(
         appointment.end_time = end_dt
         appointment.duration = duration
         appointment.staff_id = staff_id
-        if payload.status:
-            appointment.status = ZH_TO_STATUS.get(payload.status, payload.status)
         if not detail:
             detail = AppointmentDetail(appointment_id=appointment.id, base_price=0, total_amount=0)
             db.add(detail)
@@ -3440,6 +3539,23 @@ def register_admin_api(
                 if "staff_return_amount" in changes or "shop_recovery_amount" in changes:
                     detail.settlement_overridden_by_admin_id = actor.id
                     detail.settlement_override_at = now_taipei_naive()
+        if requested_status == "cancelled":
+            if current_status != "cancelled":
+                _cancel_appointment_state(db, appointment, detail, reason)
+            else:
+                detail.location_type = "cancelled"
+                detail.room_id = None
+                detail.venue_id = None
+                detail.room_name_snapshot = None
+                detail.venue_name_snapshot = None
+                for field in ("base_price", "discount_amount", "extra_amount", "total_amount", "commission_amount", "discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount"):
+                    if hasattr(detail, field):
+                        setattr(detail, field, 0)
+            appointment.status = "cancelled"
+        elif restoring_cancelled:
+            _restore_appointment_state(db, appointment, detail, status=requested_status, room_id=room_id, venue_id=payload.venue_id if "venue_id" in changes else None, location_type=payload.location_type, reason=reason)
+        else:
+            appointment.status = requested_status
         after = appointment_dict(db, appointment)
         time_changed = before.get("start_time") != after.get("start_time") or before.get("end_time") != after.get("end_time")
         amount_changed = any(before.get(field) != after.get(field) for field in ("base_price", "discount_amount", "extra_amount", "total_amount", "commission_amount", "discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount"))
@@ -3467,7 +3583,7 @@ def register_admin_api(
             raise HTTPException(status_code=404, detail="找不到預約")
         Batch = app.state.admin_models["LineNotificationBatch"]
         rows = db.query(Batch).filter(Batch.appointment_id == appointment_id).order_by(Batch.dispatch_sequence.asc()).all()
-        return [line_notification_batch_dict(row) for row in rows]
+        return [line_notification_batch_dict(row, db) for row in rows]
 
     @app.get("/api/admin/shifts")
     def list_shifts(start: datetime | None = None, end: datetime | None = None, db: Session = Depends(get_db), user=Depends(current_admin)):
@@ -4221,6 +4337,8 @@ def register_admin_api(
         appointment = db.query(Appointment).filter(Appointment.id == appointment_id).with_for_update().first()
         if not appointment:
             raise HTTPException(status_code=404, detail="找不到訂單")
+        if appointment.status in CANCELLED_APPOINTMENT_STATUSES:
+            raise HTTPException(status_code=409, detail="取消訂單不得付款或入帳，請先由 Admin 或店長恢復訂單")
         if db.query(Payment).filter(Payment.appointment_id == appointment_id, Payment.status == "paid").first():
             raise HTTPException(status_code=409, detail="訂單已付款")
         payment = Payment(
@@ -4245,6 +4363,9 @@ def register_admin_api(
         payment = db.query(Payment).filter(Payment.id == payment_id).with_for_update().first()
         if not payment:
             raise HTTPException(status_code=404, detail="找不到付款紀錄")
+        related_appointment = db.query(Appointment).filter(Appointment.id == payment.appointment_id).first()
+        if related_appointment and related_appointment.status in {"completed", "cancelled", "已完成", "已取消"} and actor.role not in {"admin", "manager"}:
+            raise HTTPException(status_code=403, detail="只有 Admin 或店長可以修改完成或取消訂單的付款狀態")
         if payment.method != "cash":
             raise HTTPException(status_code=422, detail="只有現金付款需要確認回帳")
         if payment.cash_return_status == "confirmed":

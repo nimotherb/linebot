@@ -29,6 +29,7 @@ export type LineNotificationBatch = {
   sent_count: number;
   failed_count: number;
   skipped_count: number;
+  failed_kinds: Array<{ kind: string; label: string; count: number }>;
   created_at: string | null;
 };
 
@@ -54,7 +55,7 @@ type RawAppointment = {
   venue_id?: number;
   venue_name?: string;
   venue_address?: string;
-  location_type: 'onsite' | 'external' | 'pending';
+  location_type: 'onsite' | 'external' | 'pending' | 'cancelled';
   total_amount: number;
   base_price?: number;
   discount_amount?: number;
@@ -283,10 +284,10 @@ export const mapAppointment = (item: RawAppointment): Appointment => {
     staffId: item.staff_id ? String(item.staff_id) : undefined,
     serviceId: item.service_plan_id ? String(item.service_plan_id) : '',
     service: item.service_name,
-    room: item.room_name || (item.venue_name ? `${item.venue_name}${item.venue_address ? `-${item.venue_address}` : ''}` : (item.location_type === 'external' ? '外出場地' : '待確認')),
+    room: item.status_label === '已取消' ? '已取消' : item.room_name || (item.venue_name ? `${item.venue_name}${item.venue_address ? `-${item.venue_address}` : ''}` : (item.location_type === 'external' ? '外出場地' : '待確認')),
     roomId: item.room_id,
     venueId: item.venue_id,
-    location: item.location_type === 'onsite' ? '店內' : item.location_type === 'external' ? '外出' : '待確認',
+    location: item.status_label === '已取消' ? '已取消' : item.location_type === 'onsite' ? '店內' : item.location_type === 'external' ? '外出' : '待確認',
     status: item.status_label,
     total: item.total_amount,
     basePrice: item.base_price ?? item.total_amount,
@@ -306,7 +307,7 @@ export const mapAppointment = (item: RawAppointment): Appointment => {
     promotionName: item.promotion_name,
     expectedReturn: item.expected_return_amount ?? 0,
     returnStatus: item.staff_return_status,
-    payment: item.payment_status === 'paid' || item.status_label === '已完成' ? '已付款' : '未付款',
+    payment: item.status_label === '已取消' ? '不入帳' : item.payment_status === 'paid' || item.status_label === '已完成' ? '已付款' : '未付款',
     note: item.notes,
   };
 };

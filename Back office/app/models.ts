@@ -28,7 +28,7 @@ export type Appointment = {
   room: string;
   roomId?: number;
   venueId?: number;
-  location: '店內' | '外出' | '待確認';
+  location: '店內' | '外出' | '待確認' | '已取消';
   status: AppointmentStatus;
   total: number;
   basePrice?: number;
@@ -48,7 +48,7 @@ export type Appointment = {
   commissionAmount?: number;
   expectedReturn?: number;
   returnStatus?: string;
-  payment: '未付款' | '已付款' | '部分付款';
+  payment: '未付款' | '已付款' | '部分付款' | '不入帳';
   note?: string;
 };
 

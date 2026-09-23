@@ -325,6 +325,48 @@ def test_appointment_end_and_staff_room_conflicts(client):
     assert admin_override.status_code == 201, admin_override.text
 
 
+def test_cancelled_order_is_zeroed_released_and_restorable(client):
+    headers = login(client)
+    service = client.get("/api/admin/bootstrap", headers=headers).json()["services"][0]
+    created = client.post(
+        "/api/admin/appointments",
+        headers=headers,
+        json={
+            "customer_name": "取消流程測試",
+            "phone": "0987654321",
+            "service_plan_id": service["id"],
+            "start_time": "2099-11-11T11:00:00",
+            "location_type": "pending",
+        },
+    )
+    assert created.status_code == 201, created.text
+    appointment_id = created.json()["id"]
+    original_total = created.json()["total_amount"]
+
+    cancelled = client.patch(
+        f"/api/admin/appointments/{appointment_id}",
+        headers=headers,
+        json={"status": "未到店", "force_reason": "客人未到店"},
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["total_amount"] == 0
+    assert cancelled.json()["location_type"] == "cancelled"
+    assert cancelled.json()["room_id"] is None
+
+    archived = next(item for item in client.get("/api/admin/bootstrap", headers=headers).json()["appointments"] if item["id"] == appointment_id)
+    assert archived["status_label"] == "已取消"
+
+    restored = client.patch(
+        f"/api/admin/appointments/{appointment_id}",
+        headers=headers,
+        json={"status": "已確認", "force_reason": "客人重新確認"},
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["status"] == "confirmed"
+    assert restored.json()["total_amount"] == original_total
+
+
 def test_manager_can_only_create_clerk_accounts(client):
     manager_headers = login(client, "jerry", "654321")
     denied_manager = client.post(
