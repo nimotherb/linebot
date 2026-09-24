@@ -96,6 +96,7 @@ button { font: inherit; }
 .metric-card > strong { display: block; margin: 12px 0 8px; font-family: Georgia, serif; font-size: 28px; font-weight: 500; letter-spacing: -.02em; }
 .metric-card > strong small { margin-right: 5px; color: var(--muted); font-family: inherit; font-size: 11px; }
 .metric-card span { color: #95a09e; font-size: 10px; }
+.metric-grid.finance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 14px; }
 .panel { border-radius: 17px; padding: 22px; }
 .panel-heading { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-bottom: 17px; }
 .panel-heading.compact { margin-bottom: 16px; }
@@ -208,7 +209,7 @@ button { font: inherit; }
   .public-shift-form { grid-template-columns: 1fr 1fr; }
   .public-shift-form label:first-child, .public-shift-form button { grid-column: 1 / -1; }
 }
-@media (max-width: 520px) { .metric-grid, .right-column { grid-template-columns: 1fr; }.topbar h1 { font-size: 25px; }.panel { padding: 18px; } }
+@media (max-width: 520px) { .metric-grid, .right-column, .metric-grid.finance-grid { grid-template-columns: 1fr; }.topbar h1 { font-size: 25px; }.panel { padding: 18px; } }
 
 /* Full prototype */
 .brand-mark { width: 100%; border: 0; background: transparent; color: white; text-align: left; cursor: pointer; }

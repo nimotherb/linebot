@@ -2553,6 +2553,8 @@ def on_startup():
         SystemSetting = admin_models.get("SystemSetting")
         if SystemSetting and not db.query(SystemSetting).filter(SystemSetting.setting_key == "customer_service_url").first():
             db.add(SystemSetting(setting_key="customer_service_url", setting_value=DEFAULT_CUSTOMER_SERVICE_URL))
+        if SystemSetting and not db.query(SystemSetting).filter(SystemSetting.setting_key == "service_finance_visible").first():
+            db.add(SystemSetting(setting_key="service_finance_visible", setting_value="true"))
         DeletedStaffIdentity = admin_models.get("DeletedStaffIdentity")
         deleted_staff_names = {
             item.normalized_name for item in db.query(DeletedStaffIdentity).all()

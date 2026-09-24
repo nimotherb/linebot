@@ -16,6 +16,12 @@ export type AdminIdentity = {
   can_override_time_rules?: boolean;
 };
 
+export type DashboardStats = {
+  service_finance_visible: boolean;
+  today_amount?: number;
+  today_shop_receivable?: number;
+};
+
 export type StaffIdentity = { id: number; name: string; role: 'staff' };
 
 export type LineNotificationBatch = {
@@ -152,7 +158,8 @@ export type AuditLogView = {
 
 export type BootstrapData = {
   mode?: 'staff';
-  settings?: { customer_service_url?: string };
+  settings?: { customer_service_url?: string; service_finance_visible?: boolean };
+  dashboard?: DashboardStats;
   user: AdminIdentity | null;
   staff_user?: StaffIdentity;
   appointments: RawAppointment[];
@@ -469,6 +476,12 @@ export class SpaApi {
   updateCustomerServiceUrl(url: string) {
     return this.request<{ customer_service_url: string }>('/api/admin/settings/customer-service', {
       method: 'PATCH', body: JSON.stringify({ url }),
+    });
+  }
+
+  updateServiceFinanceVisibility(enabled: boolean) {
+    return this.request<{ service_finance_visible: boolean; updated_at?: string }>('/api/admin/settings/service-finance', {
+      method: 'PATCH', body: JSON.stringify({ enabled }),
     });
   }
 

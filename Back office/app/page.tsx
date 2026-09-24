@@ -6,6 +6,7 @@ import {
   AdminIdentity,
   AuditLogView,
   BootstrapData,
+  DashboardStats,
   mapAdminUser,
   mapAppointment,
   mapAuditLog,
@@ -230,6 +231,8 @@ export default function Home() {
   const [promotions, setPromotions] = useState<PromotionView[]>([]);
   const [adminUsers, setAdminUsers] = useState<ReturnType<typeof mapAdminUser>[]>([]);
   const [supportUrl, setSupportUrl] = useState('https://line.me/R/ti/p/@684wdola');
+  const [dashboardStats, setDashboardStats] = useState<DashboardStats>({ service_finance_visible: false });
+  const [financePermissionBusy, setFinancePermissionBusy] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditLogView[]>([]);
   const [rooms, setRooms] = useState<{ id: number; name: string }[]>([]);
   const [venues, setVenues] = useState<NonNullable<BootstrapData['venues']>>([]);
@@ -295,6 +298,7 @@ export default function Home() {
     setCustomers((data.customers || []).map(mapCustomer));
     setAdminUsers((data.admin_users || []).map(mapAdminUser));
     setSupportUrl(data.settings?.customer_service_url || 'https://line.me/R/ti/p/@684wdola');
+    setDashboardStats(data.dashboard || { service_finance_visible: false });
     setReturnRuleSets(data.return_rule_sets || []);
     setAuditLogs((data.audit_logs || []).map(mapAuditLog));
     setConnectionError('');
@@ -492,6 +496,7 @@ export default function Home() {
       applyBootstrap(data, appMode === 'staff' ? 'staff' : 'live');
       notify('資料已從後端更新。');
     } catch (error) {
+      setDashboardStats({ service_finance_visible: false });
       notify(error instanceof Error ? error.message : '資料更新失敗，請稍後再試。');
     } finally {
       setRefreshing(false);
@@ -532,6 +537,7 @@ export default function Home() {
   const isViewer = appMode === 'unavailable';
   const isStaffUser = appMode === 'staff';
   const canManageAll = appMode === 'live' && (role === 'admin' || role === 'manager');
+  const canViewFinance = appMode === 'live' && (canManageAll || dashboardStats.service_finance_visible);
   const canManageShifts = appMode === 'live' && ['admin', 'manager', 'clerk'].includes(role);
   const canOverrideTimeRules = Boolean(identity?.can_override_time_rules);
   const canCreateUsers = appMode === 'live' && (role === 'admin' || role === 'manager');
@@ -1338,6 +1344,21 @@ export default function Home() {
     }
   };
 
+  const toggleServiceFinanceVisibility = async () => {
+    if (!canManageAll || financePermissionBusy) return;
+    const next = !dashboardStats.service_finance_visible;
+    setFinancePermissionBusy(true);
+    try {
+      const result = await api.updateServiceFinanceVisibility(next);
+      setDashboardStats((current) => ({ ...current, service_finance_visible: result.service_finance_visible }));
+      notify(next ? '客服財務統計權限已開啟。' : '客服財務統計權限已關閉。');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '客服財務統計權限更新失敗');
+    } finally {
+      setFinancePermissionBusy(false);
+    }
+  };
+
   const saveOwnAccount = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!identity) return;
@@ -1441,7 +1462,6 @@ export default function Home() {
       { label: '已確認', value: String(confirmedToday.length), note: `${confirmedToday.filter((item) => item.location === '店內').length} 筆店內服務` },
       { label: '今日完成', value: String(completedToday.length), note: '已完成訂單歷史' },
       { label: '今日取消', value: String(cancelledToday.length), note: '已完成但不入帳' },
-      { label: '場地待確認', value: String(pendingVenue.length), note: pendingVenue.length ? '請開啟預約管理處理' : '目前沒有待確認場地' },
     ];
     return (
       <div className="content-grid">
@@ -1449,6 +1469,10 @@ export default function Home() {
           <section className="metric-grid" aria-label="今日摘要">
             {metrics.map((metric) => <article className="metric-card" key={metric.label}><p>{metric.label}</p><strong>{metric.value}</strong><span>{metric.note}</span></article>)}
           </section>
+          {canViewFinance && <section className="metric-grid finance-grid" aria-label="今日財務">
+            <article className="metric-card"><p>本日金額</p><strong>{typeof dashboardStats.today_amount === 'number' ? formatCurrency(dashboardStats.today_amount) : '—'}</strong><span>{typeof dashboardStats.today_amount === 'number' ? '今日非取消訂單最終金額' : '財務統計暫時無法取得'}</span></article>
+            <article className="metric-card"><p>應收回帳</p><strong>{typeof dashboardStats.today_shop_receivable === 'number' ? formatCurrency(dashboardStats.today_shop_receivable) : '—'}</strong><span>{typeof dashboardStats.today_shop_receivable === 'number' ? '今日非取消訂單店家回收' : '財務統計暫時無法取得'}</span></article>
+          </section>}
           <section className="panel schedule-panel">
             <div className="panel-heading"><div><p className="eyebrow">TODAY’S FLOW</p><h2>今日預約進度</h2></div><button className="text-button" onClick={() => navigateTo('appointments')}>查看全部 →</button></div>
             <div className="appointment-list">
@@ -1644,6 +1668,7 @@ export default function Home() {
         </div>
       </section>
       {canManageAll && <section className="panel settings-panel"><div className="panel-heading"><div><p className="eyebrow">CUSTOMER SERVICE</p><h2>客服連結</h2><p className="panel-hint">LINE 主選單與預約卡片會即時使用此連結。</p></div></div><form className="modal-form" onSubmit={saveSupportUrl}><label>客服 LINE 連結<input name="supportUrl" value={supportUrl} onChange={(event) => setSupportUrl(event.target.value)} placeholder="@684wdola 或 https://..." required /></label><div className="form-note">可填 LINE 官方帳號 @ID（例如 @684wdola）或完整 https:// 網址。</div><button className="primary-button" type="submit">儲存客服連結</button></form></section>}
+      {canManageAll && <section className="panel settings-panel"><div className="panel-heading"><div><p className="eyebrow">SERVICE FINANCE</p><h2>客服財務統計權限</h2><p className="panel-hint">客服預設可查看本日金額與應收回帳；變更會保存稽核紀錄。</p></div></div><div className="form-note">{dashboardStats.service_finance_visible ? '目前：客服可查看財務統計。' : '目前：客服不可查看財務統計。'}</div><button className={dashboardStats.service_finance_visible ? 'danger-button' : 'primary-button'} type="button" disabled={financePermissionBusy} onClick={toggleServiceFinanceVisibility}>{financePermissionBusy ? '儲存中…' : dashboardStats.service_finance_visible ? '關閉客服查看權限' : '開啟客服查看權限'}</button></section>}
       <aside className="panel security-card"><p className="eyebrow">LOGIN SECURITY</p><h2>數字 PIN 安全設定</h2><ul><li>PIN 只保存 Argon2 雜湊</li><li>連續錯誤 5 次鎖定 15 分鐘</li><li>Bearer 工作階段 8 小時到期</li><li>永久刪除後立即撤銷既有登入</li></ul><div className="security-footnote">你可從左下角「登入資訊」自行修改帳號、名稱與 PIN。</div></aside>
       <section className="panel permission-panel"><div className="panel-heading"><div><p className="eyebrow">ROLE MATRIX</p><h2>權限對照</h2></div></div><div className="permission-grid"><strong>功能</strong><strong>Admin</strong><strong>店長</strong><strong>客服</strong>{['預約與結帳', '新增／撤銷排班', '略過時間與撞期限制', '新增／退役／永久刪除員工', '修改價格優惠', '新增帳號', '停用客服帳號', '系統與稽核'].flatMap((label, index) => [<span key={`${label}-label`}>{label}</span>, <b key={`${label}-admin`}>✓</b>, <b key={`${label}-manager`}>{index === 7 ? '查看' : index === 5 ? '限客服' : '✓'}</b>, <b className="limited" key={`${label}-clerk`}>{index === 2 ? '可個別開啟' : index < 2 ? '部分' : '—'}</b>])}</div></section>
     </div>

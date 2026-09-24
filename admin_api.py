@@ -96,6 +96,10 @@ class AdminUserPermissionIn(BaseModel):
     can_override_time_rules: bool
 
 
+class ServiceFinancePermissionIn(BaseModel):
+    enabled: bool
+
+
 class AdminSelfUpdateIn(BaseModel):
     current_pin: str = Field(min_length=4, max_length=32, pattern=r"^\d+$")
     username: str | None = Field(default=None, min_length=3, max_length=80, pattern=r"^[a-zA-Z0-9._-]+$")
@@ -899,6 +903,28 @@ def register_admin_api(
     def get_system_setting(key: str, db: Session, default: str | None = None) -> str | None:
         item = db.query(SystemSetting).filter(SystemSetting.setting_key == key).first()
         return item.setting_value if item else default
+
+    def service_finance_enabled(db: Session) -> bool:
+        return get_system_setting("service_finance_visible", db, "true") != "false"
+
+    def dashboard_finance(db: Session, user) -> dict[str, Any]:
+        can_view = user.role in {"admin", "manager"} or service_finance_enabled(db)
+        result: dict[str, Any] = {"service_finance_visible": can_view}
+        if not can_view:
+            return result
+        today = now_taipei_naive().date()
+        start = datetime.combine(today, datetime.min.time())
+        end = start + timedelta(days=1)
+        rows = (
+            db.query(Appointment, AppointmentDetail)
+            .join(AppointmentDetail, AppointmentDetail.appointment_id == Appointment.id)
+            .filter(Appointment.start_time >= start, Appointment.start_time < end)
+            .all()
+        )
+        active_rows = [(appointment, detail) for appointment, detail in rows if appointment.status not in CANCELLED_APPOINTMENT_STATUSES]
+        result["today_amount"] = max(0, sum(max(0, int(detail.total_amount or 0)) for _, detail in active_rows))
+        result["today_shop_receivable"] = max(0, sum(max(0, int(detail.shop_recovery_amount or 0)) for _, detail in active_rows))
+        return result
 
     def update_customer_service_url(actor_id: int, value: str, db: Session) -> str:
         actor = db.query(AdminUser).filter(AdminUser.id == actor_id, AdminUser.is_active.is_(True), AdminUser.role.in_(["admin", "manager"])).first()
@@ -2766,12 +2792,29 @@ def register_admin_api(
                 db,
                 os.getenv("CUSTOMER_SERVICE_URL", DEFAULT_CUSTOMER_SERVICE_URL),
             ),
+            "service_finance_visible": service_finance_enabled(db),
             "updated_by": user.display_name,
         }
 
     @app.patch("/api/admin/settings/customer-service")
     def update_customer_service_setting(payload: CustomerServiceSettingIn, db: Session = Depends(get_db), user=Depends(require_roles("admin", "manager"))):
         return {"customer_service_url": update_customer_service_url(user.id, payload.url, db)}
+
+    @app.patch("/api/admin/settings/service-finance")
+    def update_service_finance_setting(payload: ServiceFinancePermissionIn, db: Session = Depends(get_db), user=Depends(require_roles("admin", "manager"))):
+        item = db.query(SystemSetting).filter(SystemSetting.setting_key == "service_finance_visible").first()
+        before = {"service_finance_visible": service_finance_enabled(db)}
+        value = "true" if payload.enabled else "false"
+        if not item:
+            item = SystemSetting(setting_key="service_finance_visible", setting_value=value, updated_by_user_id=user.id)
+            db.add(item)
+        else:
+            item.setting_value = value
+            item.updated_by_user_id = user.id
+        db.flush()
+        audit(db, user, "update", "system_setting", "service_finance_visible", before=before, after={"service_finance_visible": payload.enabled})
+        db.commit()
+        return {"service_finance_visible": payload.enabled, "updated_at": _iso(item.updated_at)}
 
     @app.get("/api/admin/bootstrap")
     def bootstrap(db: Session = Depends(get_db), user=Depends(current_admin)):
@@ -2804,7 +2847,9 @@ def register_admin_api(
                     db,
                     os.getenv("CUSTOMER_SERVICE_URL", DEFAULT_CUSTOMER_SERVICE_URL),
                 ),
+                "service_finance_visible": service_finance_enabled(db),
             },
+            "dashboard": dashboard_finance(db, user),
             "audit_logs": [{
                 "id": item.id,
                 "actor_name": audit_actors[item.actor_user_id].display_name if item.actor_user_id in audit_actors else "系統／員工",

@@ -367,6 +367,83 @@ def test_cancelled_order_is_zeroed_released_and_restorable(client):
     assert restored.json()["total_amount"] == original_total
 
 
+def test_dashboard_finance_counts_today_non_cancelled_orders_only(client):
+    headers = login(client)
+    before = client.get("/api/admin/bootstrap", headers=headers)
+    assert before.status_code == 200, before.text
+    baseline = before.json()["dashboard"]
+    service = before.json()["services"][0]
+    now = now_taipei_naive()
+    start = now.replace(hour=1, minute=0, second=0, microsecond=0)
+    created = []
+    phone_seed = int(now.timestamp()) % 10**8
+    for offset, label in enumerate(("待確認", "已確認", "已完成", "已取消")):
+        response = client.post(
+            "/api/admin/appointments",
+            headers=headers,
+            json={
+                "customer_name": f"今日財務測試{label}",
+                "phone": f"09{(phone_seed + offset):08d}",
+                "service_plan_id": service["id"],
+                "start_time": start.isoformat(timespec="seconds"),
+                "location_type": "pending",
+                "is_admin_override": True,
+            },
+        )
+        assert response.status_code == 201, response.text
+        created.append(response.json())
+
+    pending = client.patch(f"/api/admin/appointments/{created[0]['id']}", headers=headers, json={"status": "待確認", "force_reason": "財務測試待確認"})
+    assert pending.status_code == 200, pending.text
+    completed = client.patch(f"/api/admin/appointments/{created[2]['id']}", headers=headers, json={"status": "已完成", "force_reason": "財務測試完成"})
+    assert completed.status_code == 200, completed.text
+    cancelled = client.patch(f"/api/admin/appointments/{created[3]['id']}", headers=headers, json={"status": "已取消", "force_reason": "財務測試取消"})
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["total_amount"] == 0
+
+    after = client.get("/api/admin/bootstrap", headers=headers)
+    assert after.status_code == 200, after.text
+    dashboard = after.json()["dashboard"]
+    expected_amount = sum(item["total_amount"] for item in created[:3])
+    expected_shop = sum(item["shop_recovery_amount"] for item in created[:3])
+    assert dashboard["today_amount"] - baseline.get("today_amount", 0) == expected_amount
+    assert dashboard["today_shop_receivable"] - baseline.get("today_shop_receivable", 0) == expected_shop
+
+
+def test_service_finance_permission_is_database_backed_and_role_scoped(client):
+    admin_headers = login(client)
+    created = client.post(
+        "/api/admin/users",
+        headers=admin_headers,
+        json={"username": "finance-clerk", "display_name": "財務客服", "pin": "223344", "role": "clerk"},
+    )
+    assert created.status_code == 201, created.text
+    clerk_headers = login(client, "finance-clerk", "223344")
+
+    enabled = client.get("/api/admin/bootstrap", headers=clerk_headers)
+    assert enabled.status_code == 200, enabled.text
+    assert enabled.json()["dashboard"]["service_finance_visible"] is True
+    assert "today_amount" in enabled.json()["dashboard"]
+
+    disabled = client.patch("/api/admin/settings/service-finance", headers=admin_headers, json={"enabled": False})
+    assert disabled.status_code == 200, disabled.text
+    clerk_hidden = client.get("/api/admin/bootstrap", headers=clerk_headers)
+    assert clerk_hidden.status_code == 200, clerk_hidden.text
+    assert clerk_hidden.json()["dashboard"] == {"service_finance_visible": False}
+
+    admin_still_visible = client.get("/api/admin/bootstrap", headers=admin_headers)
+    assert admin_still_visible.status_code == 200
+    assert "today_amount" in admin_still_visible.json()["dashboard"]
+
+    settings = client.get("/api/admin/settings", headers=admin_headers)
+    assert settings.status_code == 200
+    assert settings.json()["service_finance_visible"] is False
+    assert any(item["entity_type"] == "system_setting" and item["entity_id"] == "service_finance_visible" for item in admin_still_visible.json()["audit_logs"])
+
+    restored = client.patch("/api/admin/settings/service-finance", headers=admin_headers, json={"enabled": True})
+    assert restored.status_code == 200, restored.text
+
+
 def test_manager_can_only_create_clerk_accounts(client):
     manager_headers = login(client, "jerry", "654321")
     denied_manager = client.post(
