@@ -23,6 +23,7 @@ import {
   StaffIdentity,
   ReturnRuleSetView,
   type StaffScheduleReminderResponse,
+  type StaffScheduleReminderHistoryBatch,
 } from './api-client';
 import { useNavigationLoading } from './components/NavigationLoading';
 
@@ -53,6 +54,7 @@ type ModalState =
   | { type: 'bookingRequest'; id: number }
   | { type: 'user' }
   | { type: 'account' }
+  | { type: 'scheduleReminderHistory' }
   | null;
 
 type BulkEntity = 'appointments' | 'booking_requests' | 'shifts' | 'customers' | 'services' | 'promotions' | 'rooms' | 'venues' | 'users' | 'audit_logs';
@@ -249,7 +251,9 @@ export default function Home() {
   const [selectedIds, setSelectedIds] = useState<Partial<Record<BulkEntity, number[]>>>({});
   const [selectedScheduleStaffIds, setSelectedScheduleStaffIds] = useState<number[]>([]);
   const [scheduleReminderResult, setScheduleReminderResult] = useState<StaffScheduleReminderResponse | null>(null);
+  const [scheduleReminderHistory, setScheduleReminderHistory] = useState<StaffScheduleReminderHistoryBatch[]>([]);
   const [scheduleReminderBusy, setScheduleReminderBusy] = useState(false);
+  const [scheduleReminderHistoryLoading, setScheduleReminderHistoryLoading] = useState(false);
   const [week, setWeek] = useState<'current' | 'next'>('current');
   const [appMode, setAppMode] = useState<'checking' | 'unavailable' | 'login' | 'live' | 'staff' | 'staffLink'>('checking');
   const [connectionError, setConnectionError] = useState('');
@@ -593,17 +597,32 @@ export default function Home() {
     });
   };
 
-  const dispatchScheduleReminders = async () => {
-    if (scheduleReminderBusy || selectedScheduleStaffIds.length === 0) return;
+  const dispatchScheduleReminders = async (staffIds: number[] = selectedScheduleStaffIds) => {
+    if (scheduleReminderBusy || staffIds.length === 0) return;
+    if (!window.confirm('此操作會消耗 LINE 群發訊息額度，確定要派發嗎？')) return;
     setScheduleReminderBusy(true);
     try {
-      const result = await api.dispatchStaffScheduleReminders(selectedScheduleStaffIds);
+      const result = await api.dispatchStaffScheduleReminders(staffIds);
       setScheduleReminderResult(result);
       setSelectedScheduleStaffIds([]);
     } catch (error) {
-      notify(error instanceof Error ? error.message : '排班提醒派發失敗。');
+      const message = error instanceof Error ? error.message : '';
+      notify(message.includes('LINE 月額度已用完') ? 'LINE 月額度已用完' : 'LINE 推播未完成');
     } finally {
       setScheduleReminderBusy(false);
+    }
+  };
+
+  const loadScheduleReminderHistory = async () => {
+    if (scheduleReminderHistoryLoading) return;
+    setScheduleReminderHistoryLoading(true);
+    try {
+      setScheduleReminderHistory(await api.getStaffScheduleReminderHistory());
+      setModal({ type: 'scheduleReminderHistory' });
+    } catch {
+      notify('排班通知紀錄暫時無法取得。');
+    } finally {
+      setScheduleReminderHistoryLoading(false);
     }
   };
 
@@ -1555,7 +1574,7 @@ export default function Home() {
       <>
         <section className="rule-banner"><div><strong>90 分鐘鎖定規則</strong><span>師傅端距開始 90 分鐘內不可新增、修改或撤銷；店長與 Admin 可填寫原因強制處理。</span></div>{appMode === 'live' && <button onClick={() => navigateTo('staffPortal')}>預覽師傅畫面</button>}</section>
         <section className="panel roster-panel">
-          <div className="toolbar"><div className="segmented"><button className={week === 'current' ? 'active' : ''} onClick={() => setWeek('current')}>本週 {weekRangeLabel(currentWeekDays)}</button><button className={week === 'next' ? 'active' : ''} onClick={() => setWeek('next')}>下週 {weekRangeLabel(followingWeekDays)}</button></div><select value={scheduleCategoryFilter} onChange={(event) => setScheduleCategoryFilter(event.target.value as typeof scheduleCategoryFilter)}><option value="全部">全部師傅</option>{staffCategories.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}</select><div className="filter-note"><strong>{filteredScheduleStaff.length}</strong><span>位符合篩選</span></div><div className="toolbar-spacer" />{appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('shifts')}>⇩ 匯出班表</button>}{canManageShifts && <button className="secondary-button" disabled={selectedScheduleStaffIds.length === 0 || scheduleReminderBusy} onClick={dispatchScheduleReminders}>{scheduleReminderBusy ? '派發中…' : '排班提醒'}</button>}{(canManageShifts || isStaffUser) && <button className="primary-button" onClick={() => { setShiftMode('single'); setModal({ type: 'shift', origin: isStaffUser ? 'staff' : 'admin' }); }}>＋ 新增排班</button>}</div>
+          <div className="toolbar"><div className="segmented"><button className={week === 'current' ? 'active' : ''} onClick={() => setWeek('current')}>本週 {weekRangeLabel(currentWeekDays)}</button><button className={week === 'next' ? 'active' : ''} onClick={() => setWeek('next')}>下週 {weekRangeLabel(followingWeekDays)}</button></div><select value={scheduleCategoryFilter} onChange={(event) => setScheduleCategoryFilter(event.target.value as typeof scheduleCategoryFilter)}><option value="全部">全部師傅</option>{staffCategories.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}</select><div className="filter-note"><strong>{filteredScheduleStaff.length}</strong><span>位符合篩選</span></div><div className="toolbar-spacer" />{appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('shifts')}>⇩ 匯出班表</button>}{canManageShifts && <><button className="secondary-button" disabled={selectedScheduleStaffIds.length === 0 || scheduleReminderBusy} onClick={() => dispatchScheduleReminders()}>{scheduleReminderBusy ? '派發中…' : '排班通知'}</button><button className="secondary-button" disabled={scheduleReminderHistoryLoading} onClick={loadScheduleReminderHistory}>{scheduleReminderHistoryLoading ? '讀取中…' : '通知紀錄'}</button></>}{(canManageShifts || isStaffUser) && <button className="primary-button" onClick={() => { setShiftMode('single'); setModal({ type: 'shift', origin: isStaffUser ? 'staff' : 'admin' }); }}>＋ 新增排班</button>}</div>
           {canManageShifts && <div className="bulk-tools schedule-staff-tools"><label className="selection-check"><input type="checkbox" checked={allScheduleStaffSelected} onChange={(event) => setSelectedScheduleStaffIds(event.target.checked ? scheduleStaffIds : [])} /><span>全選員工</span></label><span>已選 {selectedScheduleStaffIds.length} 位</span></div>}
           <BulkTools entity="shifts" ids={visibleShiftIds} label="排班" />
           <div className="roster-grid" style={{ gridTemplateColumns: `120px repeat(${days.length}, minmax(112px, 1fr))` }}>
@@ -1770,7 +1789,8 @@ export default function Home() {
       {modal?.type === 'user' && canCreateUsers && <Modal title="新增後台使用者" subtitle={role === 'manager' ? '店長只能新增客服（管理）帳號。' : 'Admin 可新增 Admin、店長或客服帳號。'} onClose={() => setModal(null)}><form className="modal-form" onSubmit={addAdminUser}><label>顯示名稱<input name="displayName" required /></label><label>登入帳號<input name="username" required autoCapitalize="none" /></label>{role === 'manager' ? <label>角色<input name="role" value="客服" disabled /></label> : <label>角色<select name="role"><option>Admin</option><option>店長</option><option>客服</option></select></label>}<label>初始數字 PIN<input name="pin" required inputMode="numeric" pattern="[0-9]+" minLength={4} maxLength={12} type="password" placeholder="至少 4 位" /></label><label className="checkbox-row"><input name="canOverrideTimeRules" type="checkbox" />若角色為客服，允許略過預約、排班的時間與撞期限制</label><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">建立帳號</button></footer></form></Modal>}
       {modal?.type === 'customer' && selectedCustomer && <Modal title={`編輯 ${selectedCustomer.name}`} subtitle="客人識別由等級與主要手機後四碼組成，會顯示於客戶訂單與確認通知。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={saveCustomer}><label>客戶等級<select name="customerGrade" defaultValue={selectedCustomer.grade} disabled={!canManageAll}><option>SSR</option><option>SR</option><option>R</option><option>N</option></select>{!canManageAll && <input type="hidden" name="customerGrade" value={selectedCustomer.grade} />}</label><label>客人識別<input value={selectedCustomer.vipSerial} disabled /></label><label>客戶名稱<input name="displayName" defaultValue={selectedCustomer.name} required placeholder="可由後台建立或採用 LINE 顯示名稱" /></label><label>生日（選填）<input name="birthday" type="date" defaultValue={selectedCustomer.birthday || ''} /></label><label>手機 ID<textarea name="phones" rows={4} defaultValue={selectedCustomer.phones.join('\n')} required placeholder={"0912345678\n0987654321"} /></label><div className="form-note">每行一支手機；第一支是主要聯絡號碼。生日變更由客服送出後待店長或 Admin 確認。只有 Admin／店長可調整等級；SSR／SR 不會因官網再次預約而自動降級。</div>{selectedCustomer.birthdayPending && <div className="form-note">待確認生日：{selectedCustomer.birthdayPending}{canManageAll && <span className="inline-actions"><button type="button" className="secondary-button" onClick={() => resolveCustomerBirthday(true)}>確認</button><button type="button" className="danger-button" onClick={() => resolveCustomerBirthday(false)}>拒絕</button></span>}</div>}<footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存客戶資料</button></footer></form></Modal>}
       {modal?.type === 'settlement' && selectedAppointment && <Modal title={`回帳 ${selectedAppointment.id}`} subtitle="扣員工、扣店家、加員工、加店家；儲存後自動計算，可由管理層覆寫最終金額。" onClose={() => setModal(null)}><form className="modal-form" onSubmit={(event) => saveSettlement(event, selectedAppointment)}><div className="form-grid two"><label>扣員工<input name="discountEmployeeAmount" type="number" min="0" defaultValue={selectedAppointment.discountEmployeeAmount || 0} /></label><label>扣店家<input name="discountShopAmount" type="number" min="0" defaultValue={selectedAppointment.discountShopAmount || 0} /></label><label>加員工<input name="surchargeEmployeeAmount" type="number" min="0" defaultValue={selectedAppointment.surchargeEmployeeAmount || 0} /></label><label>加店家<input name="surchargeShopAmount" type="number" min="0" defaultValue={selectedAppointment.surchargeShopAmount || 0} /></label><label>夥伴抽成<input name="staffReturnAmount" type="number" min="0" defaultValue={selectedAppointment.staffReturnAmount || 0} /></label><label>店家回收<input name="shopRecoveryAmount" type="number" min="0" defaultValue={selectedAppointment.shopRecoveryAmount || 0} /></label></div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>取消</button><button className="primary-button">儲存回帳</button></footer></form></Modal>}
-      {scheduleReminderResult && <Modal title="排班提醒派發結果" subtitle={`批次 ${scheduleReminderResult.batch_id}・${scheduleReminderResult.week_starts.join('、')}`} onClose={() => setScheduleReminderResult(null)} wide><div className="detail-stack"><div className="form-note">成功 {scheduleReminderResult.sent}・跳過 {scheduleReminderResult.skipped}・失敗 {scheduleReminderResult.failed}</div><div className="reminder-result-list">{scheduleReminderResult.results.map((item) => { const statusLabel = item.status === 'sent' ? '已發送' : item.status === 'failed' ? '失敗' : item.reason || '已跳過'; return <article key={`${item.staff_id}-${item.status}-${item.reason || ''}`}><div><strong>{item.staff_name}</strong><small>{statusLabel}{item.line_uid_status ? `・${item.line_uid_status}` : ''}</small></div><small>{item.later_week_has_schedule ? '下週已有排班' : '下週尚無排班'}・{item.following_week_has_schedule ? '後週已有排班' : '後週尚無排班'}</small></article>; })}</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setScheduleReminderResult(null)}>關閉</button></footer></div></Modal>}
+      {scheduleReminderResult && <Modal title="排班通知派發結果" subtitle={`批次 ${scheduleReminderResult.batch_id}・${scheduleReminderResult.week_starts.join('、')}`} onClose={() => setScheduleReminderResult(null)} wide><div className="detail-stack"><div className="form-note">成功 {scheduleReminderResult.sent}・跳過 {scheduleReminderResult.skipped}・失敗 {scheduleReminderResult.failed}</div><div className="reminder-result-list">{scheduleReminderResult.results.map((item) => { const statusLabel = item.status === 'sent' ? '已發送' : item.status === 'failed' ? (item.reason === 'LINE 月額度已用完' ? 'LINE 月額度已用完' : 'LINE 推播未完成') : '已跳過'; return <article key={`${item.staff_id}-${item.status}-${item.reason || ''}`}><div><strong>{item.staff_name}</strong><small>{statusLabel}{item.line_uid_status ? `・${item.line_uid_status}` : ''}</small></div><small>{item.later_week_has_schedule ? '下週已有排班' : '下週尚無排班'}・{item.following_week_has_schedule ? '後週已有排班' : '後週尚無排班'}</small></article>; })}</div><footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setScheduleReminderResult(null)}>關閉</button><button type="button" className="primary-button" disabled={scheduleReminderBusy} onClick={() => dispatchScheduleReminders(scheduleReminderResult.results.map((item) => item.staff_id))}>{scheduleReminderBusy ? '派發中…' : '重新派發'}</button></footer></div></Modal>}
+      {modal?.type === 'scheduleReminderHistory' && <Modal title="排班通知紀錄" subtitle="每次派發皆保留稽核紀錄；歷史紀錄不會限制後續重新派發。" onClose={() => setModal(null)} wide><div className="detail-stack">{scheduleReminderHistory.length === 0 ? <div className="empty-state">目前沒有排班通知紀錄。</div> : <div className="reminder-result-list">{scheduleReminderHistory.map((batch) => <article key={batch.batch_id}><div><strong>{batch.batch_id}・{batch.actor_name}</strong><small>{batch.created_at ? new Date(batch.created_at).toLocaleString('zh-TW') : '—'}・成功 {batch.sent}・跳過 {batch.skipped}・失敗 {batch.failed}</small></div><small>{batch.week_starts.join('、')}</small>{batch.results.length > 0 && <div className="form-note">{batch.results.map((item) => <span key={`${batch.batch_id}-${item.staff_id}`} className="inline-actions"><strong>{item.staff_name}</strong><span>{item.status === 'sent' ? '已發送' : item.status === 'failed' ? (item.reason === 'LINE 月額度已用完' ? 'LINE 月額度已用完' : 'LINE 推播未完成') : '已跳過'}</span></span>)}</div>}</article>)}</div>}<footer className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(null)}>關閉</button></footer></div></Modal>}
     </main>
   );
 }

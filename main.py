@@ -1234,7 +1234,7 @@ def build_customer_service_setting_menu(db: Session):
 
 def build_staff_schedule_reminder_flex(week_starts: list[str], schedule_url: str):
     """Build the manual two-week availability request without exposing shifts."""
-    day_names = ["禮拜一", "禮拜二", "禮拜三", "禮拜四", "禮拜五", "禮拜六", "禮拜日"]
+    day_names = ["一", "二", "三", "四", "五", "六", "日"]
     date_lines = []
     for raw_start in week_starts[:2]:
         start = date.fromisoformat(raw_start)

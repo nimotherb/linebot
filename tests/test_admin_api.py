@@ -50,6 +50,8 @@ def test_staff_schedule_reminder_flex_contains_only_two_dates_and_one_link():
     contents = message.contents
     body_text = " ".join(item.text for item in contents.body.contents if getattr(item, "text", None))
     assert "09/21" in body_text and "09/28" in body_text
+    assert "（一）" in body_text
+    assert "禮拜" not in body_text
     assert len(contents.footer.contents) == 1
     assert contents.footer.contents[0].action.type == "uri"
     assert contents.footer.contents[0].action.uri.endswith("staff_token=test")
@@ -60,7 +62,7 @@ def test_staff_schedule_reminder_endpoint_requires_admin_auth(client):
     assert response.status_code == 401
 
 
-def test_staff_schedule_reminder_records_unconnected_and_deduplicates(client):
+def test_staff_schedule_reminder_records_unconnected_without_history_gate(client):
     headers = login(client)
     with SessionLocal() as db:
         staff_id = db.query(Staff).filter(Staff.employment_status == "active").order_by(Staff.id).first().id
@@ -70,13 +72,18 @@ def test_staff_schedule_reminder_records_unconnected_and_deduplicates(client):
     assert first.json()["results"][0]["reason"] == "無串接(Line)"
     second = client.post("/api/admin/staff-schedules/reminders/dispatch", headers=headers, json={"staff_ids": [staff_id]})
     assert second.status_code == 200, second.text
-    assert second.json()["results"][0]["reason"] == "已派發過，已跳過"
+    assert second.json()["results"][0]["reason"] == "無串接(Line)"
+    assert second.json()["batch_id"] != first.json()["batch_id"]
+    history = client.get("/api/admin/staff-schedules/reminders/history", headers=headers)
+    assert history.status_code == 200, history.text
+    assert len(history.json()) >= 2
 
 
-def test_staff_schedule_reminder_force_is_admin_only(client):
+def test_staff_schedule_reminder_force_flag_does_not_limit_manager(client):
     manager_headers = login(client, "jerry", "654321")
     response = client.post("/api/admin/staff-schedules/reminders/dispatch", headers=manager_headers, json={"staff_ids": [1], "force": True})
-    assert response.status_code == 403
+    assert response.status_code == 200, response.text
+    assert "強制重新派發" not in response.text
 
 
 def test_line_root_staff_binding_menu_is_text_only_and_paginated(client):

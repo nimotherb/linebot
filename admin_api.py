@@ -3644,14 +3644,60 @@ def register_admin_api(
             result.append(shift_dict(item) | {"staff_name": staff_obj.name if staff_obj else "未知", "modified_by_admin_name": admin.display_name if admin else None})
         return result
 
+    def _safe_schedule_reminder_reason(reason: str | None, status_value: str) -> str | None:
+        """Keep LINE/provider details out of the API while preserving useful status."""
+        if reason in {"monthly_limit_reached", "LINE 月額度已用完"}:
+            return "LINE 月額度已用完"
+        if status_value == "failed":
+            return "LINE 推播未完成"
+        if reason in {"無串接(Line)", "找不到員工"}:
+            return reason
+        return "已跳過" if status_value == "skipped" and reason else None
+
+    @app.get("/api/admin/staff-schedules/reminders/history")
+    def staff_schedule_reminder_history(
+        db: Session = Depends(get_db),
+        actor=Depends(require_roles("admin", "manager", "clerk")),
+    ):
+        """Return immutable dispatch history for audit viewing, never as a send gate."""
+        rows = db.query(StaffScheduleReminderBatch).order_by(StaffScheduleReminderBatch.created_at.desc()).limit(100).all()
+        history: list[dict[str, Any]] = []
+        for batch in rows:
+            dispatches = db.query(StaffScheduleReminderDispatch).filter(
+                StaffScheduleReminderDispatch.batch_id == batch.id,
+            ).order_by(StaffScheduleReminderDispatch.id.asc()).all()
+            results = []
+            for item in dispatches:
+                status_value = item.status if item.status in {"sent", "failed", "skipped"} else "failed"
+                results.append({
+                    "staff_id": item.staff_id,
+                    "staff_name": item.staff_name_snapshot,
+                    "status": status_value,
+                    "reason": _safe_schedule_reminder_reason(item.failure_reason, status_value),
+                    "line_uid_status": "connected" if item.line_uid_snapshot and LINE_USER_ID_PATTERN.fullmatch(item.line_uid_snapshot) else "unconnected",
+                    "later_week_has_schedule": bool(item.later_week_has_schedule),
+                    "following_week_has_schedule": bool(item.following_week_has_schedule),
+                })
+            operator = db.query(AdminUser).filter(AdminUser.id == batch.actor_user_id).first() if batch.actor_user_id else None
+            history.append({
+                "batch_id": batch.batch_id,
+                "week_starts": [batch.later_week_start, batch.following_week_start],
+                "actor_name": operator.display_name if operator else "未知操作者",
+                "created_at": _iso(batch.created_at),
+                "sent_at": _iso(batch.sent_at),
+                "sent": sum(item["status"] == "sent" for item in results),
+                "failed": sum(item["status"] == "failed" for item in results),
+                "skipped": sum(item["status"] == "skipped" for item in results),
+                "results": results,
+            })
+        return history
+
     @app.post("/api/admin/staff-schedules/reminders/dispatch")
     def dispatch_staff_schedule_reminders(
         payload: StaffScheduleReminderDispatchIn,
         db: Session = Depends(get_db),
         actor=Depends(require_roles("admin", "manager", "clerk")),
     ):
-        if payload.force and actor.role != "admin":
-            raise HTTPException(status_code=403, detail="只有 Admin 可以強制重新派發排班提醒")
         if not staff_schedule_reminder_builder or not staff_schedule_reminder_dispatcher:
             raise HTTPException(status_code=503, detail="排班提醒 LINE 功能尚未設定")
 
@@ -3701,48 +3747,12 @@ def register_admin_api(
             line_uid = (getattr(staff_obj, "line_user_id", None) or "").strip()
             connected = bool(LINE_USER_ID_PATTERN.fullmatch(line_uid)) and not line_uid.startswith(("pending:", "seeded:"))
 
-            existing = db.query(StaffScheduleReminderDispatch).filter(
-                StaffScheduleReminderDispatch.staff_id == staff_id,
-                StaffScheduleReminderDispatch.later_week_start == later_key,
-                StaffScheduleReminderDispatch.following_week_start == following_key,
-                StaffScheduleReminderDispatch.request_type == "staff_schedule_request",
-            ).first()
-            if existing and not payload.force:
-                result = {
-                    "staff_id": staff_id,
-                    "staff_name": staff_obj.name,
-                    "status": "skipped",
-                    "reason": "已派發過，已跳過",
-                    "line_uid_status": "connected" if connected else "unconnected",
-                    "later_week_has_schedule": later_has_schedule,
-                    "following_week_has_schedule": following_has_schedule,
-                }
-                results.append(result)
-                db.add(StaffScheduleReminderDispatch(
-                    batch_id=batch.id,
-                    dedupe_key=f"{staff_id}:{later_key}:{following_key}:staff_schedule_request:{batch_id}",
-                    staff_id=staff_id,
-                    staff_name_snapshot=staff_obj.name,
-                    line_uid_snapshot=getattr(staff_obj, "line_user_id", None),
-                    later_week_start=later_key,
-                    following_week_start=following_key,
-                    card_snapshot=None,
-                    later_week_has_schedule=later_has_schedule,
-                    following_week_has_schedule=following_has_schedule,
-                    status="skipped",
-                    failure_reason="已派發過，已跳過",
-                    force=False,
-                ))
-                continue
-
             card_snapshot = None
             status_value = "skipped"
             failure_reason = None
             sent_at = None
             if not connected:
                 failure_reason = "無串接(Line)"
-            elif later_has_schedule and following_has_schedule:
-                failure_reason = "兩週皆已有排班"
             else:
                 try:
                     raw_token = issue_staff_schedule_link(staff_obj, db)
@@ -3755,15 +3765,17 @@ def register_admin_api(
                     sent_at = now_taipei_naive()
                 except Exception as exc:
                     logger.exception("排班提醒派發失敗 staff_id=%s", staff_id)
-                    failure_reason = str(exc)[:500] or "LINE API error"
+                    status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+                    response = getattr(exc, "response", None)
+                    response_status = getattr(response, "status_code", None) if response is not None else None
+                    failure_reason = "LINE 月額度已用完" if status_code == 429 or response_status == 429 else "LINE 推播未完成"
                     status_value = "failed"
 
             detail = StaffScheduleReminderDispatch(
                 batch_id=batch.id,
-                dedupe_key=(
-                    f"{staff_id}:{later_key}:{following_key}:staff_schedule_request:{batch_id}"
-                    if payload.force else f"{staff_id}:{later_key}:{following_key}:staff_schedule_request"
-                ),
+                # Every dispatch belongs to its own batch.  History is audit-only;
+                # it must never make a future send collide or become a skip gate.
+                dedupe_key=f"{staff_id}:{later_key}:{following_key}:staff_schedule_request:{batch_id}",
                 staff_id=staff_id,
                 staff_name_snapshot=staff_obj.name,
                 line_uid_snapshot=line_uid or None,

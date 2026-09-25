@@ -235,6 +235,12 @@ export type StaffScheduleReminderResponse = {
   results: StaffScheduleReminderResult[];
 };
 
+export type StaffScheduleReminderHistoryBatch = StaffScheduleReminderResponse & {
+  actor_name: string;
+  created_at: string | null;
+  sent_at: string | null;
+};
+
 export type PublicBookingIdentity = { name?: string; phone?: string; birthday?: string | null };
 
 export type RawBookingRequest = {
@@ -718,6 +724,10 @@ export class SpaApi {
       method: 'POST',
       body: JSON.stringify({ staff_ids: staffIds, force }),
     });
+  }
+
+  getStaffScheduleReminderHistory() {
+    return this.request<StaffScheduleReminderHistoryBatch[]>('/api/admin/staff-schedules/reminders/history');
   }
 
   createUser(payload: Record<string, unknown>) {
