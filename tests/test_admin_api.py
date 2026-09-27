@@ -1,3 +1,4 @@
+import csv
 import os
 import tempfile
 from datetime import date, datetime, timedelta
@@ -86,6 +87,114 @@ def test_order_totals_have_no_legacy_discount_caps():
     )
     assert result["discount_amount"] == 1600
     assert result["total_amount"] == 0
+
+
+def test_settlement_manual_values_recalculate_and_clear_per_field(client):
+    headers = login(client)
+    service = client.get("/api/admin/bootstrap", headers=headers).json()["services"][0]
+    created = client.post(
+        "/api/admin/appointments",
+        headers=headers,
+        json={
+            "customer_name": "金額即時計算測試",
+            "phone": "0988123456",
+            "service_plan_id": service["id"],
+            "start_time": "2099-11-01T12:00:00",
+            "location_type": "pending",
+            "is_admin_override": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    appointment_id = created.json()["id"]
+    assert created.json()["auto_total_amount"] == created.json()["total_amount"]
+    adjusted = client.patch(
+        f"/api/admin/appointments/{appointment_id}",
+        headers=headers,
+        json={
+            "base_price": 3000,
+            "extra_amount": 500,
+            "discount_amount": 200,
+            "discount_employee_amount": 100,
+            "discount_shop_amount": 50,
+            "surcharge_employee_amount": 20,
+            "surcharge_shop_amount": 30,
+            "manual_total_amount": 4000,
+            "manual_staff_return_amount": 777,
+            "manual_shop_recovery_amount": 888,
+            "is_admin_override": True,
+        },
+    )
+    assert adjusted.status_code == 200, adjusted.text
+    row = adjusted.json()
+    assert row["auto_total_amount"] == 3300
+    assert row["total_amount"] == 4000
+    assert row["total_amount_overridden"] is True
+    assert row["staff_return_amount"] == 777
+    assert row["shop_recovery_amount"] == 888
+    assert row["auto_staff_return_amount"] == 620
+    assert row["auto_shop_recovery_amount"] == 2660
+
+    cleared = client.patch(
+        f"/api/admin/appointments/{appointment_id}",
+        headers=headers,
+        json={"manual_total_amount": None, "manual_staff_return_amount": None, "manual_shop_recovery_amount": None, "is_admin_override": True},
+    )
+    assert cleared.status_code == 200, cleared.text
+    restored = cleared.json()
+    assert restored["total_amount"] == restored["auto_total_amount"] == 3300
+    assert restored["staff_return_amount"] == restored["auto_staff_return_amount"] == 620
+    assert restored["shop_recovery_amount"] == restored["auto_shop_recovery_amount"] == 2660
+
+    negative = client.patch(
+        f"/api/admin/appointments/{appointment_id}",
+        headers=headers,
+        json={"manual_total_amount": -10, "is_admin_override": True},
+    )
+    assert negative.status_code == 200, negative.text
+    assert negative.json()["total_amount"] == -10
+
+
+def test_appointment_csv_exports_final_settlement_columns_in_order(client):
+    headers = login(client)
+    service = client.get("/api/admin/bootstrap", headers=headers).json()["services"][0]
+    created = client.post(
+        "/api/admin/appointments",
+        headers=headers,
+        json={
+            "customer_name": "CSV 金額欄位測試",
+            "phone": "0988234567",
+            "service_plan_id": service["id"],
+            "start_time": "2099-11-02T12:00:00",
+            "location_type": "pending",
+            "is_admin_override": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    appointment_id = created.json()["id"]
+    updated = client.patch(
+        f"/api/admin/appointments/{appointment_id}",
+        headers=headers,
+        json={
+            "base_price": 2000,
+            "extra_amount": 300,
+            "discount_amount": 100,
+            "discount_employee_amount": 10,
+            "discount_shop_amount": 20,
+            "surcharge_employee_amount": 30,
+            "surcharge_shop_amount": 40,
+            "manual_total_amount": 2500,
+            "manual_staff_return_amount": 900,
+            "manual_shop_recovery_amount": 1500,
+            "is_admin_override": True,
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    response = client.get("/api/admin/export/appointments", headers=headers)
+    assert response.status_code == 200, response.text
+    rows = list(csv.reader(response.content.decode("utf-8-sig").splitlines()))
+    assert rows[0] == ["訂單編號", "日期", "開始", "結束", "客戶", "電話", "師傅", "方案", "場地", "狀態", "加價", "折扣", "總金額", "扣員工", "扣店家", "加員工", "加店家", "夥伴抽成", "店家回收"]
+    exported = next(row for row in rows[1:] if row[0].endswith(f"-{appointment_id:03d}"))
+    assert exported[10:] == ["300", "100", "2500", "10", "20", "30", "40", "900", "1500"]
 
 
 def test_staff_schedule_reminder_flex_contains_only_two_dates_and_one_link():
@@ -1185,13 +1294,17 @@ def test_site_content_draft_publish_permissions_and_versions(client):
         "booking": {"url": "https://example.com/booking"},
         "services": [{"code": "A", "summary": "適合第一次到店的舒壓安排"}],
     }
+    canonical_content = {
+        **first_content,
+        "services": [{"code": "A", "quick_info": "適合第一次到店的舒壓安排"}],
+    }
     saved = client.put(
         "/api/admin/site-content/draft",
         headers=manager_headers,
         json={"content": first_content, "expected_version": 0},
     )
     assert saved.status_code == 200, saved.text
-    assert saved.json()["draft"] == first_content
+    assert saved.json()["draft"] == canonical_content
     assert saved.json()["draft_version"] == 1
     assert saved.json()["published"] == {}
 
@@ -1222,13 +1335,13 @@ def test_site_content_draft_publish_permissions_and_versions(client):
         json={"expected_version": 1},
     )
     assert published.status_code == 200, published.text
-    assert published.json()["published"] == first_content
+    assert published.json()["published"] == canonical_content
     assert published.json()["published_version"] == 1
     assert published.json()["published_at"] is not None
 
     public_after = client.get("/api/public/site-content")
     assert public_after.status_code == 200
-    assert public_after.json()["content"] == first_content
+    assert public_after.json()["content"] == canonical_content
     assert public_after.json()["version"] == 1
 
     second_content = {**first_content, "home": {**first_content["home"], "subtitle": "新的草稿，尚未發布。"}}
@@ -1239,7 +1352,7 @@ def test_site_content_draft_publish_permissions_and_versions(client):
     )
     assert second_saved.status_code == 200, second_saved.text
     assert second_saved.json()["draft_version"] == 2
-    assert client.get("/api/public/site-content").json()["content"] == first_content
+    assert client.get("/api/public/site-content").json()["content"] == canonical_content
 
     logs = client.get("/api/admin/audit-logs", headers=admin_headers).json()
     site_actions = {item["action"] for item in logs if item["entity_type"] == "site_content"}

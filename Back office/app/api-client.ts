@@ -66,6 +66,9 @@ type RawAppointment = {
   venue_address?: string;
   location_type: 'onsite' | 'external' | 'pending' | 'cancelled';
   total_amount: number;
+  auto_total_amount?: number;
+  manual_total_amount?: number | null;
+  total_amount_overridden?: boolean;
   base_price?: number;
   discount_amount?: number;
   extra_amount?: number;
@@ -81,7 +84,13 @@ type RawAppointment = {
   surcharge_employee_amount?: number;
   surcharge_shop_amount?: number;
   staff_return_amount?: number;
+  auto_staff_return_amount?: number;
+  manual_staff_return_amount?: number | null;
+  staff_return_amount_overridden?: boolean;
   shop_recovery_amount?: number;
+  auto_shop_recovery_amount?: number;
+  manual_shop_recovery_amount?: number | null;
+  shop_recovery_amount_overridden?: boolean;
   settlement_overridden_by_admin_id?: number;
   settlement_override_at?: string;
   commission_amount?: number;
@@ -325,6 +334,9 @@ export const mapAppointment = (item: RawAppointment): Appointment => {
     onsiteOvertimeUnits: item.onsite_overtime_units ?? 0,
     onsiteOvertimeAmount: item.onsite_overtime_amount ?? 0,
     otherExtraAmount: item.other_extra_amount ?? 0,
+    autoTotalAmount: item.auto_total_amount ?? item.total_amount,
+    manualTotalAmount: item.manual_total_amount ?? null,
+    totalAmountOverridden: item.total_amount_overridden ?? (item.manual_total_amount != null),
     gender: item.gender || undefined,
     genderOther: item.gender_other || undefined,
     discountEmployeeAmount: item.discount_employee_amount ?? 0,
@@ -332,7 +344,13 @@ export const mapAppointment = (item: RawAppointment): Appointment => {
     surchargeEmployeeAmount: item.surcharge_employee_amount ?? 0,
     surchargeShopAmount: item.surcharge_shop_amount ?? 0,
     staffReturnAmount: item.staff_return_amount ?? item.expected_return_amount ?? 0,
+    autoStaffReturnAmount: item.auto_staff_return_amount ?? item.staff_return_amount ?? item.expected_return_amount ?? 0,
+    manualStaffReturnAmount: item.manual_staff_return_amount ?? null,
+    staffReturnAmountOverridden: item.staff_return_amount_overridden ?? (item.manual_staff_return_amount != null),
     shopRecoveryAmount: item.shop_recovery_amount ?? 0,
+    autoShopRecoveryAmount: item.auto_shop_recovery_amount ?? item.shop_recovery_amount ?? 0,
+    manualShopRecoveryAmount: item.manual_shop_recovery_amount ?? null,
+    shopRecoveryAmountOverridden: item.shop_recovery_amount_overridden ?? (item.manual_shop_recovery_amount != null),
     settlementOverriddenByAdminId: item.settlement_overridden_by_admin_id,
     settlementOverrideAt: item.settlement_override_at,
     commissionAmount: item.commission_amount ?? 0,

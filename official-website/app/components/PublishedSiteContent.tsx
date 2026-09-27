@@ -4,11 +4,31 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com').replace(/\/$/, '');
 
-export type PublishedService = { id?: number; code: string; name: string; summary: string; duration: string; price: string; visible: boolean };
+export type PublishedService = {
+  id?: number;
+  code: string;
+  name: string;
+  /** Canonical single-line service copy rendered on the public service page. */
+  quick_info: string;
+  /** Legacy drafts may still contain summary; it is read only during migration. */
+  summary?: string;
+  duration: string;
+  price: string;
+  visible: boolean;
+};
 export type PublishedOffer = { id?: number; name: string; summary: string; status: '顯示中' | '草稿' };
 export type PublishedNavigationItem = { id: string; slug: string; label: string; english: string; desktopVisible?: boolean; mobileVisible?: boolean };
 export type PublishedPageCard = { number?: string; label?: string; title?: string; body?: string };
-export type PublishedPage = { english?: string; title?: string; intro?: string; body?: string; cards?: PublishedPageCard[]; cardGridEnabled?: boolean; desktopVisible?: boolean; mobileVisible?: boolean };
+export type PublishedPageBlock = {
+  id: string;
+  block_type: string;
+  sort_order: number;
+  enabled: boolean;
+  content: Record<string, unknown>;
+  style?: Record<string, unknown>;
+  responsive?: Record<string, unknown>;
+};
+export type PublishedPage = { english?: string; title?: string; intro?: string; body?: string; cards?: PublishedPageCard[]; blocks?: PublishedPageBlock[]; cardGridEnabled?: boolean; desktopVisible?: boolean; mobileVisible?: boolean };
 export type PublishedSiteDraft = {
   navigation?: PublishedNavigationItem[];
   pages?: Record<string, PublishedPage>;
@@ -95,11 +115,27 @@ type ServicePlanView = {
   english: string;
   duration: string;
   price: string;
-  summary: string;
+  quick_info: string;
   tags: readonly string[];
-  lead: string;
-  paragraphs: readonly string[];
 };
+
+type PublishedBlockRenderer = (block: PublishedPageBlock, context: { bookingUrl: string }) => ReactNode;
+
+const publishedBlockRegistry: Record<string, PublishedBlockRenderer> = {
+  service_plan: (block, { bookingUrl }) => {
+    const plan = block.content as unknown as ServicePlanView;
+    return <article key={block.id} className="service-journey">
+      <header><span className="service-index">{String(block.sort_order + 1).padStart(2, '0')}</span><i>{plan.code}</i><div><small>{plan.english}</small><h2>{plan.name}</h2></div><div className="service-quick-info"><small>{plan.quick_info}</small><p>{plan.duration}</p></div><strong>{plan.price}</strong></header>
+      <div className="service-journey-body">{plan.tags.length > 0 && <ul>{plan.tags.map((tag) => <li key={tag}>{tag}</li>)}</ul>}{bookingUrl && <a href={bookingUrl} target="_blank" rel="noreferrer">SELECT THIS PLAN ↗</a>}</div>
+    </article>;
+  },
+};
+
+function renderPublishedBlock(block: PublishedPageBlock, context: { bookingUrl: string }) {
+  if (!block.enabled) return null;
+  const renderer = publishedBlockRegistry[block.block_type];
+  return renderer ? renderer(block, context) : <div className="updating-card" data-block-type={block.block_type}><span>MODULE</span><p>此模組目前無法顯示。</p></div>;
+}
 
 export function PublishedServices({ fallbackPlans, fallbackBookingUrl }: { fallbackPlans: readonly ServicePlanView[]; fallbackBookingUrl: string }) {
   const content = usePublishedSiteDraft();
@@ -115,10 +151,8 @@ export function PublishedServices({ fallbackPlans, fallbackBookingUrl }: { fallb
         english: item.code,
         duration: item.duration,
         price: item.price,
-        summary: item.summary,
+        quick_info: item.quick_info ?? item.summary ?? '',
         tags: [] as string[],
-        lead: item.summary,
-        paragraphs: item.summary ? [item.summary] : [],
       };
     });
   }, [content]);
@@ -127,10 +161,7 @@ export function PublishedServices({ fallbackPlans, fallbackBookingUrl }: { fallb
 
   return <>
     <div className="service-overview"><small>{plans.length} PUBLISHED SERVICES</small></div>
-    <div className="service-journeys">{plans.map((plan, index) => <article key={plan.code} className="service-journey">
-      <header><span className="service-index">{String(index + 1).padStart(2, '0')}</span><i>{plan.code}</i><div><small>{plan.english}</small><h2>{plan.name}</h2></div><div className="service-quick-info"><small>{plan.summary}</small><p>{plan.duration}</p></div><strong>{plan.price}</strong></header>
-      <div className="service-journey-body"><h3>{plan.lead || '方案內容請洽客服確認。'}</h3><div className="service-prose">{plan.paragraphs.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div>{plan.tags.length > 0 && <ul>{plan.tags.map((tag) => <li key={tag}>{tag}</li>)}</ul>}{bookingUrl && <a href={bookingUrl} target="_blank" rel="noreferrer">SELECT THIS PLAN ↗</a>}</div>
-    </article>)}</div>
+    <div className="service-journeys">{plans.map((plan, index) => renderPublishedBlock({ id: plan.code, block_type: 'service_plan', sort_order: index, enabled: true, content: plan }, { bookingUrl }))}</div>
     {plans.length === 0 && <div className="updating-card"><span>SERVICES</span><h2>內容更新中</h2><p>方案正在整理，請先透過 LINE 客服詢問。</p></div>}
   </>;
 }

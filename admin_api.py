@@ -130,21 +130,24 @@ class AppointmentCreateIn(BaseModel):
     promotion_ids: list[int] = Field(default_factory=list, max_length=10)
     location_type: Literal["onsite", "external", "pending"] = "onsite"
     notes: str | None = Field(default=None, max_length=2000)
-    base_price: int | None = Field(default=None, ge=0)
-    discount_amount: int | None = Field(default=None, ge=0)
-    extra_amount: int | None = Field(default=None, ge=0)
-    other_extra_amount: int | None = Field(default=None, ge=0)
-    booking_overtime_unit_price: int | None = Field(default=None, ge=0)
-    onsite_overtime_unit_price: int | None = Field(default=None, ge=0)
-    actual_service_minutes: int | None = Field(default=None, ge=0)
-    total_amount: int | None = Field(default=None, ge=0)
-    commission_amount: int | None = Field(default=None, ge=0)
-    discount_employee_amount: int | None = Field(default=None, ge=0)
-    discount_shop_amount: int | None = Field(default=None, ge=0)
-    surcharge_employee_amount: int | None = Field(default=None, ge=0)
-    surcharge_shop_amount: int | None = Field(default=None, ge=0)
-    staff_return_amount: int | None = Field(default=None, ge=0)
-    shop_recovery_amount: int | None = Field(default=None, ge=0)
+    base_price: int | None = None
+    discount_amount: int | None = None
+    extra_amount: int | None = None
+    other_extra_amount: int | None = None
+    booking_overtime_unit_price: int | None = None
+    onsite_overtime_unit_price: int | None = None
+    actual_service_minutes: int | None = None
+    total_amount: int | None = None
+    commission_amount: int | None = None
+    discount_employee_amount: int | None = None
+    discount_shop_amount: int | None = None
+    surcharge_employee_amount: int | None = None
+    surcharge_shop_amount: int | None = None
+    staff_return_amount: int | None = None
+    shop_recovery_amount: int | None = None
+    manual_total_amount: int | None = None
+    manual_staff_return_amount: int | None = None
+    manual_shop_recovery_amount: int | None = None
     is_admin_override: bool = False
 
 
@@ -164,21 +167,24 @@ class AppointmentPatchIn(BaseModel):
     promotion_id: int | None = None
     promotion_ids: list[int] | None = Field(default=None, max_length=10)
     location_type: Literal["onsite", "external", "pending"] | None = None
-    base_price: int | None = Field(default=None, ge=0)
-    discount_amount: int | None = Field(default=None, ge=0)
-    extra_amount: int | None = Field(default=None, ge=0)
-    other_extra_amount: int | None = Field(default=None, ge=0)
-    booking_overtime_unit_price: int | None = Field(default=None, ge=0)
-    onsite_overtime_unit_price: int | None = Field(default=None, ge=0)
-    actual_service_minutes: int | None = Field(default=None, ge=0)
-    total_amount: int | None = Field(default=None, ge=0)
-    commission_amount: int | None = Field(default=None, ge=0)
-    discount_employee_amount: int | None = Field(default=None, ge=0)
-    discount_shop_amount: int | None = Field(default=None, ge=0)
-    surcharge_employee_amount: int | None = Field(default=None, ge=0)
-    surcharge_shop_amount: int | None = Field(default=None, ge=0)
-    staff_return_amount: int | None = Field(default=None, ge=0)
-    shop_recovery_amount: int | None = Field(default=None, ge=0)
+    base_price: int | None = None
+    discount_amount: int | None = None
+    extra_amount: int | None = None
+    other_extra_amount: int | None = None
+    booking_overtime_unit_price: int | None = None
+    onsite_overtime_unit_price: int | None = None
+    actual_service_minutes: int | None = None
+    total_amount: int | None = None
+    commission_amount: int | None = None
+    discount_employee_amount: int | None = None
+    discount_shop_amount: int | None = None
+    surcharge_employee_amount: int | None = None
+    surcharge_shop_amount: int | None = None
+    staff_return_amount: int | None = None
+    shop_recovery_amount: int | None = None
+    manual_total_amount: int | None = None
+    manual_staff_return_amount: int | None = None
+    manual_shop_recovery_amount: int | None = None
     notes: str | None = Field(default=None, max_length=2000)
     force_reason: str | None = Field(default=None, max_length=500)
     is_admin_override: bool = False
@@ -641,6 +647,9 @@ def register_admin_api(
         actual_service_minutes = Column(Integer, nullable=True)
         other_extra_amount = Column(Integer, nullable=False, default=0)
         total_amount = Column(Integer, nullable=False, default=0)
+        auto_total_amount = Column(Integer, nullable=False, default=0)
+        manual_total_amount = Column(Integer, nullable=True)
+        total_amount_overridden = Column(Boolean, nullable=False, default=False)
         commission_amount = Column(Integer, nullable=True)
         discount_employee_amount = Column(Integer, nullable=False, default=0)
         discount_shop_amount = Column(Integer, nullable=False, default=0)
@@ -648,6 +657,12 @@ def register_admin_api(
         surcharge_shop_amount = Column(Integer, nullable=False, default=0)
         staff_return_amount = Column(Integer, nullable=False, default=0)
         shop_recovery_amount = Column(Integer, nullable=False, default=0)
+        auto_staff_return_amount = Column(Integer, nullable=False, default=0)
+        manual_staff_return_amount = Column(Integer, nullable=True)
+        staff_return_amount_overridden = Column(Boolean, nullable=False, default=False)
+        auto_shop_recovery_amount = Column(Integer, nullable=False, default=0)
+        manual_shop_recovery_amount = Column(Integer, nullable=True)
+        shop_recovery_amount_overridden = Column(Boolean, nullable=False, default=False)
         settlement_overridden_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
         settlement_override_at = Column(DateTime, nullable=True)
         location_type = Column(String(30), nullable=False, default="onsite")
@@ -1508,6 +1523,27 @@ def register_admin_api(
             return {}
         return decoded if isinstance(decoded, dict) else {}
 
+    def normalize_site_content(content: dict[str, Any]) -> dict[str, Any]:
+        """Normalize legacy service copy into the single public quick_info field.
+
+        Existing drafts may still use ``summary`` or the catalog ``description``
+        field.  Keep those records readable while ensuring every saved/published
+        site-content payload has one canonical service copy field.
+        """
+        normalized = json.loads(_json(content))
+        services = normalized.get("services")
+        if isinstance(services, list):
+            for service in services:
+                if not isinstance(service, dict):
+                    continue
+                quick_info = service.get("quick_info")
+                if quick_info is None:
+                    quick_info = service.get("summary") or service.get("description") or ""
+                service["quick_info"] = str(quick_info)
+                service.pop("summary", None)
+                service.pop("description", None)
+        return normalized
+
     def encode_site_content(content: dict[str, Any]) -> str:
         encoded = _json(content)
         if len(encoded.encode("utf-8")) > 512 * 1024:
@@ -1517,8 +1553,8 @@ def register_admin_api(
     def site_content_payload(item) -> dict[str, Any]:
         return {
             "content_key": item.content_key,
-            "draft": decode_site_content(item.draft_json),
-            "published": decode_site_content(item.published_json),
+            "draft": normalize_site_content(decode_site_content(item.draft_json)),
+            "published": normalize_site_content(decode_site_content(item.published_json)),
             "draft_version": item.draft_version,
             "published_version": item.published_version,
             "updated_at": _iso(item.updated_at),
@@ -1773,9 +1809,9 @@ def register_admin_api(
         if item.ends_at and item.ends_at < now:
             return 0
         if item.calculation_type == "fixed_discount":
-            return min(base_price, item.value)
+            return max(0, int(round(item.value or 0)))
         if item.calculation_type == "percent_discount":
-            return min(base_price, round(base_price * item.value / 100))
+            return max(0, int(round(base_price * (item.value or 0) / 100)))
         return 0
 
     def calculate_order_totals(*, base_price: int, duration_minutes: int,
@@ -1845,23 +1881,44 @@ def register_admin_api(
                                     discount_employee_amount: int = 0,
                                     discount_shop_amount: int = 0,
                                     surcharge_employee_amount: int = 0,
-                                    surcharge_shop_amount: int = 0) -> dict[str, int]:
-        """Calculate flexible A/B/C/D settlement adjustments with integer math."""
-        total = max(0, int(round(total_amount or 0)))
+                                    surcharge_shop_amount: int = 0,
+                                    manual_total_amount: int | None = None,
+                                    manual_staff_return_amount: int | None = None,
+                                    manual_shop_recovery_amount: int | None = None) -> dict[str, int | None]:
+        """Calculate automatic and final settlement values with per-field overrides.
+
+        ``total_amount`` is the automatic customer total. Manual values are
+        intentionally not clamped: management may save an exceptional value,
+        while automatic calculations always remain non-negative integers.
+        """
+        auto_total = max(0, int(round(total_amount or 0)))
         baseline = max(0, int(round(baseline_return or 0)))
         a = max(0, int(round(discount_employee_amount or 0)))
         b = max(0, int(round(discount_shop_amount or 0)))
         c = max(0, int(round(surcharge_employee_amount or 0)))
         d = max(0, int(round(surcharge_shop_amount or 0)))
-        staff_return = max(0, baseline - a + c)
-        shop_recovery = max(0, total - staff_return - b + d)
+        auto_staff_return = max(0, baseline - a + c)
+        final_total = int(round(manual_total_amount)) if manual_total_amount is not None else auto_total
+        final_staff_return = int(round(manual_staff_return_amount)) if manual_staff_return_amount is not None else auto_staff_return
+        auto_shop_recovery = max(0, auto_total - auto_staff_return - b + d)
+        final_shop_recovery = int(round(manual_shop_recovery_amount)) if manual_shop_recovery_amount is not None else max(0, final_total - final_staff_return - b + d)
         return {
+            "auto_total_amount": auto_total,
+            "manual_total_amount": manual_total_amount,
+            "total_amount_overridden": bool(manual_total_amount is not None),
+            "total_amount": final_total,
             "discount_employee_amount": a,
             "discount_shop_amount": b,
             "surcharge_employee_amount": c,
             "surcharge_shop_amount": d,
-            "staff_return_amount": int(round(staff_return)),
-            "shop_recovery_amount": int(round(shop_recovery)),
+            "auto_staff_return_amount": auto_staff_return,
+            "manual_staff_return_amount": manual_staff_return_amount,
+            "staff_return_amount_overridden": bool(manual_staff_return_amount is not None),
+            "staff_return_amount": final_staff_return,
+            "auto_shop_recovery_amount": auto_shop_recovery,
+            "manual_shop_recovery_amount": manual_shop_recovery_amount,
+            "shop_recovery_amount_overridden": bool(manual_shop_recovery_amount is not None),
+            "shop_recovery_amount": final_shop_recovery,
         }
 
     app.state.calculate_order_totals = calculate_order_totals
@@ -1904,9 +1961,7 @@ def register_admin_api(
         return eligible
 
     def return_rule_for_appointment(db: Session, appointment, detail=None):
-        if not appointment.staff_id:
-            return None
-        staff_obj = db.query(Staff).filter(Staff.id == appointment.staff_id).first()
+        staff_obj = db.query(Staff).filter(Staff.id == appointment.staff_id).first() if appointment.staff_id else None
         rule_set_id = getattr(staff_obj, "return_rule_set_id", None) if staff_obj else None
         if not rule_set_id:
             first_set = db.query(ReturnRuleSet).filter(ReturnRuleSet.active.is_(True)).order_by(ReturnRuleSet.id).first()
@@ -2003,20 +2058,45 @@ def register_admin_api(
         service_code = plan.code if plan else (item.plan_name or "").split("-", 1)[0]
         return_rule = cache["rules"].get((rule_set_id, "E" if service_code == "OUT" else service_code)) if rule_set_id else None
         baseline_return = staff_return.amount if staff_return else (return_rule.amount if return_rule else 0)
+        formula_total = max(0, int(round((getattr(detail, "base_price", 0) if detail else appointment_price_from_legacy(item)) + (getattr(detail, "extra_amount", 0) if detail else 0) - (getattr(detail, "discount_amount", 0) if detail else 0))))
+        stored_auto_total = int(getattr(detail, "auto_total_amount", 0) or 0) if detail and hasattr(detail, "auto_total_amount") else 0
+        auto_total_amount = stored_auto_total if stored_auto_total or formula_total == 0 else formula_total
         settlement = calculate_settlement_totals(
-            total_amount=detail.total_amount if detail else appointment_price_from_legacy(item),
+            total_amount=auto_total_amount,
             baseline_return=baseline_return,
             discount_employee_amount=getattr(detail, "discount_employee_amount", 0) if detail else 0,
             discount_shop_amount=getattr(detail, "discount_shop_amount", 0) if detail else 0,
             surcharge_employee_amount=getattr(detail, "surcharge_employee_amount", 0) if detail else 0,
             surcharge_shop_amount=getattr(detail, "surcharge_shop_amount", 0) if detail else 0,
+            manual_total_amount=getattr(detail, "manual_total_amount", None) if detail else None,
+            manual_staff_return_amount=getattr(detail, "manual_staff_return_amount", None) if detail else None,
+            manual_shop_recovery_amount=getattr(detail, "manual_shop_recovery_amount", None) if detail else None,
         )
         if detail is not None:
-            # New settlement columns are the authoritative order snapshot;
-            # zero is a valid explicit override and must not fall back to the
-            # legacy StaffReturn row.
-            settlement["staff_return_amount"] = int(getattr(detail, "staff_return_amount", 0) or 0)
-            settlement["shop_recovery_amount"] = int(getattr(detail, "shop_recovery_amount", 0) or 0)
+            # Keep the current final snapshot authoritative for legacy rows;
+            # new rows are resolved from automatic plus nullable manual values.
+            if not hasattr(detail, "manual_total_amount"):
+                settlement["total_amount"] = int(getattr(detail, "total_amount", 0) or 0)
+            if not hasattr(detail, "manual_staff_return_amount"):
+                settlement["staff_return_amount"] = int(getattr(detail, "staff_return_amount", 0) or 0)
+            if not hasattr(detail, "manual_shop_recovery_amount"):
+                settlement["shop_recovery_amount"] = int(getattr(detail, "shop_recovery_amount", 0) or 0)
+            # Automatic snapshots are persisted with each order. Prefer them
+            # over a live return-rule lookup so later rule edits never rewrite
+            # historical calculations in API responses.
+            if hasattr(detail, "auto_staff_return_amount"):
+                stored_auto_staff = int(getattr(detail, "auto_staff_return_amount", 0) or 0)
+                settlement["auto_staff_return_amount"] = stored_auto_staff
+                if getattr(detail, "manual_staff_return_amount", None) is None:
+                    settlement["staff_return_amount"] = stored_auto_staff
+            if hasattr(detail, "auto_shop_recovery_amount"):
+                settlement["auto_shop_recovery_amount"] = int(getattr(detail, "auto_shop_recovery_amount", 0) or 0)
+                if getattr(detail, "manual_shop_recovery_amount", None) is None:
+                    final_total = int(settlement.get("total_amount", 0) or 0)
+                    final_staff = int(settlement.get("staff_return_amount", 0) or 0)
+                    discount_shop = int(getattr(detail, "discount_shop_amount", 0) or 0)
+                    surcharge_shop = int(getattr(detail, "surcharge_shop_amount", 0) or 0)
+                    settlement["shop_recovery_amount"] = max(0, final_total - final_staff - discount_shop + surcharge_shop)
         phone = (detail.contact_phone if detail and detail.contact_phone else getattr(user, "phone", None)) or getattr(item, "customer_phone_snapshot", None)
         grade = getattr(user, "customer_grade", "N") if user else "N"
         canonical_status = (
@@ -2576,7 +2656,7 @@ def register_admin_api(
         if not item:
             return {"content": {}, "version": 0, "published_at": None}
         return {
-            "content": decode_site_content(item.published_json),
+            "content": normalize_site_content(decode_site_content(item.published_json)),
             "version": item.published_version,
             "published_at": _iso(item.published_at),
         }
@@ -3110,9 +3190,15 @@ def register_admin_api(
             "discount_amount": int(getattr(detail, "discount_amount", 0) or 0),
             "extra_amount": int(getattr(detail, "extra_amount", 0) or 0),
             "total_amount": int(getattr(detail, "total_amount", 0) or 0),
+            "auto_total_amount": int(getattr(detail, "auto_total_amount", getattr(detail, "total_amount", 0)) or 0),
+            "manual_total_amount": getattr(detail, "manual_total_amount", None),
             "commission_amount": int(getattr(detail, "commission_amount", 0) or 0),
             "staff_return_amount": int(getattr(detail, "staff_return_amount", 0) or 0),
+            "auto_staff_return_amount": int(getattr(detail, "auto_staff_return_amount", getattr(detail, "staff_return_amount", 0)) or 0),
+            "manual_staff_return_amount": getattr(detail, "manual_staff_return_amount", None),
             "shop_recovery_amount": int(getattr(detail, "shop_recovery_amount", 0) or 0),
+            "auto_shop_recovery_amount": int(getattr(detail, "auto_shop_recovery_amount", getattr(detail, "shop_recovery_amount", 0)) or 0),
+            "manual_shop_recovery_amount": getattr(detail, "manual_shop_recovery_amount", None),
         }
         detail.cancellation_snapshot_json = _json(snapshot)
         detail.cancellation_reason = (reason or "未提供原因").strip()
@@ -3159,8 +3245,11 @@ def register_admin_api(
         detail.discount_shop_amount = int(snapshot.get("discount_shop_amount", 0) or 0)
         detail.surcharge_employee_amount = int(snapshot.get("surcharge_employee_amount", 0) or 0)
         detail.surcharge_shop_amount = int(snapshot.get("surcharge_shop_amount", 0) or 0)
+        detail.manual_total_amount = snapshot.get("manual_total_amount")
+        detail.manual_staff_return_amount = snapshot.get("manual_staff_return_amount")
+        detail.manual_shop_recovery_amount = snapshot.get("manual_shop_recovery_amount")
         baseline = return_rule_for_appointment(db, appointment, detail)
-        for key, value in calculate_settlement_totals(total_amount=detail.total_amount, baseline_return=baseline.amount if baseline else 0, discount_employee_amount=detail.discount_employee_amount, discount_shop_amount=detail.discount_shop_amount, surcharge_employee_amount=detail.surcharge_employee_amount, surcharge_shop_amount=detail.surcharge_shop_amount).items():
+        for key, value in calculate_settlement_totals(total_amount=max(0, int(round(detail.base_price + detail.extra_amount - detail.discount_amount))), baseline_return=baseline.amount if baseline else 0, discount_employee_amount=detail.discount_employee_amount, discount_shop_amount=detail.discount_shop_amount, surcharge_employee_amount=detail.surcharge_employee_amount, surcharge_shop_amount=detail.surcharge_shop_amount, manual_total_amount=detail.manual_total_amount, manual_staff_return_amount=detail.manual_staff_return_amount, manual_shop_recovery_amount=detail.manual_shop_recovery_amount).items():
             setattr(detail, key, value)
         appointment.status = status if status not in {"cancelled", "no_show"} else "confirmed"
         if detail.notes:
@@ -3344,16 +3433,27 @@ def register_admin_api(
         db.flush()
         totals = calculate_order_totals(base_price=plan.price, duration_minutes=duration_minutes, included_minutes=plan.duration_minutes, promotions=promotions, extra_amount=payload.extra_amount or 0, other_extra_amount=payload.other_extra_amount or 0, booking_overtime_unit_price=payload.booking_overtime_unit_price or 0, onsite_overtime_unit_price=payload.onsite_overtime_unit_price or 0, actual_service_minutes=payload.actual_service_minutes, admin_override=payload.is_admin_override)
         if payload.is_admin_override and actor.role in {"admin", "manager"}:
-            for key in ("base_price", "discount_amount", "extra_amount", "total_amount", "commission_amount"):
+            for key in ("base_price", "discount_amount", "extra_amount", "commission_amount"):
                 if hasattr(payload, key) and getattr(payload, key) is not None:
                     totals[key] = int(getattr(payload, key))
+        auto_total_amount = max(0, int(round(totals["base_price"] + totals["extra_amount"] - totals["discount_amount"])))
+        manual_total_amount = None
+        manual_staff_return_amount = None
+        manual_shop_recovery_amount = None
+        if payload.is_admin_override and actor.role in {"admin", "manager"}:
+            manual_total_amount = payload.manual_total_amount if payload.manual_total_amount is not None else payload.total_amount
+            manual_staff_return_amount = payload.manual_staff_return_amount if payload.manual_staff_return_amount is not None else payload.staff_return_amount
+            manual_shop_recovery_amount = payload.manual_shop_recovery_amount if payload.manual_shop_recovery_amount is not None else payload.shop_recovery_amount
         settlement = calculate_settlement_totals(
-            total_amount=totals["total_amount"],
+            total_amount=auto_total_amount,
             baseline_return=0,
             discount_employee_amount=payload.discount_employee_amount or 0,
             discount_shop_amount=payload.discount_shop_amount or 0,
             surcharge_employee_amount=payload.surcharge_employee_amount or 0,
             surcharge_shop_amount=payload.surcharge_shop_amount or 0,
+            manual_total_amount=manual_total_amount,
+            manual_staff_return_amount=manual_staff_return_amount,
+            manual_shop_recovery_amount=manual_shop_recovery_amount,
         )
         detail = AppointmentDetail(
             appointment_id=appointment.id,
@@ -3378,7 +3478,10 @@ def register_admin_api(
             onsite_overtime_amount=totals["onsite_overtime_amount"],
             actual_service_minutes=totals["actual_service_minutes"],
             other_extra_amount=totals["other_extra_amount"],
-            total_amount=totals["total_amount"],
+            total_amount=settlement["total_amount"],
+            auto_total_amount=settlement["auto_total_amount"],
+            manual_total_amount=settlement["manual_total_amount"],
+            total_amount_overridden=settlement["total_amount_overridden"],
             commission_amount=totals["commission_amount"],
             discount_employee_amount=settlement["discount_employee_amount"],
             discount_shop_amount=settlement["discount_shop_amount"],
@@ -3386,6 +3489,12 @@ def register_admin_api(
             surcharge_shop_amount=settlement["surcharge_shop_amount"],
             staff_return_amount=settlement["staff_return_amount"],
             shop_recovery_amount=settlement["shop_recovery_amount"],
+            auto_staff_return_amount=settlement["auto_staff_return_amount"],
+            manual_staff_return_amount=settlement["manual_staff_return_amount"],
+            staff_return_amount_overridden=settlement["staff_return_amount_overridden"],
+            auto_shop_recovery_amount=settlement["auto_shop_recovery_amount"],
+            manual_shop_recovery_amount=settlement["manual_shop_recovery_amount"],
+            shop_recovery_amount_overridden=settlement["shop_recovery_amount_overridden"],
             location_type=effective_location_type,
             notes=append_creation_timestamp(
                 f"{payload.notes or ''}\n場地狀態：待客服安排" if rooms_full else payload.notes
@@ -3398,12 +3507,15 @@ def register_admin_api(
         baseline_return = return_rule_for_appointment(db, appointment, detail)
         baseline_return = baseline_return.amount if baseline_return else 0
         settlement = calculate_settlement_totals(
-            total_amount=detail.total_amount,
+            total_amount=auto_total_amount,
             baseline_return=baseline_return,
             discount_employee_amount=detail.discount_employee_amount,
             discount_shop_amount=detail.discount_shop_amount,
             surcharge_employee_amount=detail.surcharge_employee_amount,
             surcharge_shop_amount=detail.surcharge_shop_amount,
+            manual_total_amount=detail.manual_total_amount,
+            manual_staff_return_amount=detail.manual_staff_return_amount,
+            manual_shop_recovery_amount=detail.manual_shop_recovery_amount,
         )
         for key, value in settlement.items():
             setattr(detail, key, value)
@@ -3614,6 +3726,7 @@ def register_admin_api(
             "discount_employee_amount", "discount_shop_amount",
             "surcharge_employee_amount", "surcharge_shop_amount",
             "staff_return_amount", "shop_recovery_amount", "commission_amount",
+            "manual_total_amount", "manual_staff_return_amount", "manual_shop_recovery_amount",
         }
         if actor.role == "clerk" and monetary_fields.intersection(changes):
             raise HTTPException(status_code=403, detail="客服不能直接覆寫金額，請由店長或 Admin 處理")
@@ -3705,12 +3818,15 @@ def register_admin_api(
                 if hasattr(detail, key):
                     setattr(detail, key, totals.get(key))
             settlement = calculate_settlement_totals(
-                total_amount=detail.total_amount,
+                total_amount=max(0, int(round(detail.base_price + detail.extra_amount - detail.discount_amount))),
                 baseline_return=(return_rule_for_appointment(db, appointment, detail).amount if return_rule_for_appointment(db, appointment, detail) else 0),
                 discount_employee_amount=getattr(detail, "discount_employee_amount", 0),
                 discount_shop_amount=getattr(detail, "discount_shop_amount", 0),
                 surcharge_employee_amount=getattr(detail, "surcharge_employee_amount", 0),
                 surcharge_shop_amount=getattr(detail, "surcharge_shop_amount", 0),
+                manual_total_amount=getattr(detail, "manual_total_amount", None),
+                manual_staff_return_amount=getattr(detail, "manual_staff_return_amount", None),
+                manual_shop_recovery_amount=getattr(detail, "manual_shop_recovery_amount", None),
             )
             for key, value in settlement.items():
                 setattr(detail, key, value)
@@ -3725,28 +3841,49 @@ def register_admin_api(
         if payload.notes is not None:
             detail.notes = payload.notes
         if actor.role in {"admin", "manager"}:
-            for field in monetary_fields:
+            adjustment_fields = {
+                "base_price", "discount_amount", "extra_amount", "commission_amount",
+                "discount_employee_amount", "discount_shop_amount",
+                "surcharge_employee_amount", "surcharge_shop_amount",
+            }
+            for field in adjustment_fields:
                 if field in changes:
-                    setattr(detail, field, changes[field])
-            if monetary_fields.intersection(changes) and "total_amount" not in changes:
-                detail.total_amount = max(0, detail.base_price - detail.discount_amount + detail.extra_amount)
-            # Any A/B/C/D edit automatically updates both settlement totals;
-            # explicit final values from management remain authoritative.
-            if monetary_fields.intersection(changes):
-                auto_settlement = calculate_settlement_totals(
-                    total_amount=detail.total_amount,
-                    baseline_return=(return_rule_for_appointment(db, appointment, detail).amount if return_rule_for_appointment(db, appointment, detail) else 0),
-                    discount_employee_amount=getattr(detail, "discount_employee_amount", 0),
-                    discount_shop_amount=getattr(detail, "discount_shop_amount", 0),
-                    surcharge_employee_amount=getattr(detail, "surcharge_employee_amount", 0),
-                    surcharge_shop_amount=getattr(detail, "surcharge_shop_amount", 0),
-                )
-                for key, value in auto_settlement.items():
-                    if key not in changes:
-                        setattr(detail, key, value)
-                if "staff_return_amount" in changes or "shop_recovery_amount" in changes:
-                    detail.settlement_overridden_by_admin_id = actor.id
-                    detail.settlement_override_at = now_taipei_naive()
+                    setattr(detail, field, int(changes[field] or 0))
+
+            # New nullable fields are the source of truth for manual final
+            # values. Legacy final field names remain accepted as aliases.
+            manual_aliases = {
+                "total_amount": "manual_total_amount",
+                "staff_return_amount": "manual_staff_return_amount",
+                "shop_recovery_amount": "manual_shop_recovery_amount",
+            }
+            manual_changed = False
+            for source, target in ((key, key) for key in ("manual_total_amount", "manual_staff_return_amount", "manual_shop_recovery_amount")):
+                if source in changes:
+                    setattr(detail, target, None if changes[source] is None else int(changes[source]))
+                    manual_changed = True
+            for source, target in manual_aliases.items():
+                if source in changes and target not in changes:
+                    setattr(detail, target, None if changes[source] is None else int(changes[source]))
+                    manual_changed = True
+
+            auto_total_amount = max(0, int(round(detail.base_price + detail.extra_amount - detail.discount_amount)))
+            auto_settlement = calculate_settlement_totals(
+                total_amount=auto_total_amount,
+                baseline_return=(return_rule_for_appointment(db, appointment, detail).amount if return_rule_for_appointment(db, appointment, detail) else 0),
+                discount_employee_amount=getattr(detail, "discount_employee_amount", 0),
+                discount_shop_amount=getattr(detail, "discount_shop_amount", 0),
+                surcharge_employee_amount=getattr(detail, "surcharge_employee_amount", 0),
+                surcharge_shop_amount=getattr(detail, "surcharge_shop_amount", 0),
+                manual_total_amount=getattr(detail, "manual_total_amount", None),
+                manual_staff_return_amount=getattr(detail, "manual_staff_return_amount", None),
+                manual_shop_recovery_amount=getattr(detail, "manual_shop_recovery_amount", None),
+            )
+            for key, value in auto_settlement.items():
+                setattr(detail, key, value)
+            if manual_changed:
+                detail.settlement_overridden_by_admin_id = actor.id if any(getattr(detail, key, None) is not None for key in ("manual_total_amount", "manual_staff_return_amount", "manual_shop_recovery_amount")) else None
+                detail.settlement_override_at = now_taipei_naive() if detail.settlement_overridden_by_admin_id else None
         if requested_status == "cancelled":
             if current_status != "cancelled":
                 _cancel_appointment_state(db, appointment, detail, reason)
@@ -4145,7 +4282,7 @@ def register_admin_api(
         if payload.expected_version is not None and payload.expected_version != item.draft_version:
             raise HTTPException(status_code=409, detail="官網內容已被其他人更新，請重新讀取後再儲存")
         previous_version = item.draft_version
-        item.draft_json = encode_site_content(payload.content)
+        item.draft_json = encode_site_content(normalize_site_content(payload.content))
         item.draft_version += 1
         item.updated_by_user_id = actor.id
         item.updated_at = now_taipei_naive()
@@ -4170,7 +4307,7 @@ def register_admin_api(
         if payload.expected_version is not None and payload.expected_version != item.draft_version:
             raise HTTPException(status_code=409, detail="草稿版本已更新，請重新讀取後再發布")
         previous_version = item.published_version
-        item.published_json = item.draft_json
+        item.published_json = encode_site_content(normalize_site_content(decode_site_content(item.draft_json)))
         item.published_version = item.draft_version
         item.published_by_user_id = actor.id
         item.published_at = now_taipei_naive()
@@ -4789,10 +4926,18 @@ def register_admin_api(
                 query = query.filter(Appointment.start_time >= parse_local_datetime(start))
             if end:
                 query = query.filter(Appointment.start_time < parse_local_datetime(end))
-            writer.writerow(["訂單編號", "日期", "開始", "結束", "客戶", "電話", "師傅", "方案", "場地", "狀態", "金額"])
+            writer.writerow(["訂單編號", "日期", "開始", "結束", "客戶", "電話", "師傅", "方案", "場地", "狀態", "加價", "折扣", "總金額", "扣員工", "扣店家", "加員工", "加店家", "夥伴抽成", "店家回收"])
             items = query.order_by(Appointment.start_time).all()
             for item, row in zip(items, appointment_dicts(db, items)):
-                writer.writerow([row["order_id"], item.start_time.date(), item.start_time.strftime("%H:%M"), item.end_time.strftime("%H:%M"), row["customer_name"], row["phone"], row["staff_name"], row["service_name"], row["room_name"] or row["venue_name"] or row["location_type"], row["status_label"], row["total_amount"]])
+                writer.writerow([
+                    row["order_id"], item.start_time.date(), item.start_time.strftime("%H:%M"), item.end_time.strftime("%H:%M"),
+                    row["customer_name"], row["phone"], row["staff_name"], row["service_name"],
+                    row["room_name"] or row["venue_name"] or row["location_type"], row["status_label"],
+                    int(row.get("extra_amount") or 0), int(row.get("discount_amount") or 0), int(row.get("total_amount") or 0),
+                    int(row.get("discount_employee_amount") or 0), int(row.get("discount_shop_amount") or 0),
+                    int(row.get("surcharge_employee_amount") or 0), int(row.get("surcharge_shop_amount") or 0),
+                    int(row.get("staff_return_amount") or 0), int(row.get("shop_recovery_amount") or 0),
+                ])
         elif dataset == "shifts":
             writer.writerow(["排班編號", "師傅", "日期", "開始", "結束", "來源", "狀態"])
             query = db.query(Shift)

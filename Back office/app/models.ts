@@ -31,6 +31,9 @@ export type Appointment = {
   location: '店內' | '外出' | '待確認' | '已取消';
   status: AppointmentStatus;
   total: number;
+  autoTotalAmount?: number;
+  manualTotalAmount?: number | null;
+  totalAmountOverridden?: boolean;
   basePrice?: number;
   discountAmount?: number;
   extraAmount?: number;
@@ -48,7 +51,13 @@ export type Appointment = {
   surchargeEmployeeAmount?: number;
   surchargeShopAmount?: number;
   staffReturnAmount?: number;
+  autoStaffReturnAmount?: number;
+  manualStaffReturnAmount?: number | null;
+  staffReturnAmountOverridden?: boolean;
   shopRecoveryAmount?: number;
+  autoShopRecoveryAmount?: number;
+  manualShopRecoveryAmount?: number | null;
+  shopRecoveryAmountOverridden?: boolean;
   settlementOverriddenByAdminId?: number;
   settlementOverrideAt?: string;
   promotionId?: string | number;

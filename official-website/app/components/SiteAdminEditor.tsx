@@ -5,11 +5,12 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 type Section = 'navigation' | 'home' | 'about' | 'services' | 'therapists' | 'offers' | 'location' | 'recruit' | 'groups' | 'loyalty';
 type CalculationType = 'fixed_discount' | 'percent_discount' | 'fixed_fee' | 'per_30_minutes' | 'per_km';
 type PageSlug = Exclude<Section, 'navigation'>;
-type ServiceDraft = { id?: number; code: string; name: string; summary: string; duration: string; price: string; visible: boolean };
+type ServiceDraft = { id?: number; code: string; name: string; quick_info: string; duration: string; price: string; visible: boolean };
 type OfferDraft = { id?: number; name: string; summary: string; status: '顯示中' | '草稿'; calculationType?: CalculationType; value?: number };
 export type SiteNavigationItem = { id: string; slug: PageSlug; label: string; english: string; desktopVisible: boolean; mobileVisible: boolean };
 export type SitePageCard = { number: string; label: string; title: string; body: string };
-export type SitePageDraft = { english: string; title: string; intro: string; body: string; cards: SitePageCard[]; cardGridEnabled: boolean; desktopVisible: boolean; mobileVisible: boolean };
+export type SiteBlockDraft = { id: string; block_type: string; sort_order: number; enabled: boolean; content: Record<string, unknown>; style?: Record<string, unknown>; responsive?: Record<string, unknown> };
+export type SitePageDraft = { english: string; title: string; intro: string; body: string; cards: SitePageCard[]; blocks?: SiteBlockDraft[]; cardGridEnabled: boolean; desktopVisible: boolean; mobileVisible: boolean };
 export type ServiceRecord = { id: number; code: string; name: string; duration_minutes: number; price: number; description?: string | null; active: boolean };
 export type PromotionRecord = { id: number; name: string; calculation_type: CalculationType; value: number; description?: string | null; active: boolean };
 export type SiteDraft = {
@@ -51,11 +52,21 @@ export type SiteAdminApi = {
 };
 
 
+const normalizeServiceDraft = (item: Partial<ServiceDraft> & { summary?: string }): ServiceDraft => ({
+  id: item.id,
+  code: item.code || '',
+  name: item.name || '',
+  quick_info: typeof item.quick_info === 'string' ? item.quick_info : (item.summary || ''),
+  duration: item.duration || '',
+  price: item.price || '',
+  visible: item.visible ?? true,
+});
+
 const serviceDraftFromRecord = (record: ServiceRecord, current?: ServiceDraft): ServiceDraft => ({
   id: record.id,
   code: record.code,
   name: record.name,
-  summary: current?.summary || record.description || '',
+  quick_info: current?.quick_info ?? record.description ?? '',
   duration: `${record.duration_minutes} MIN`,
   price: `NT$ ${record.price.toLocaleString('en-US')}`,
   visible: current?.visible ?? record.active,
@@ -108,10 +119,10 @@ const initialDraft: SiteDraft = {
     url: 'https://admin.equalspa.tw/booking',
   },
   services: [
-    { code: 'A', name: '舒壓方案', summary: '指壓或油壓擇一，簡單整理日常疲勞', duration: '60 MIN', price: 'NT$ 1,500', visible: true },
-    { code: 'B', name: '愉悅方案', summary: '可指定師傅，加入體推與機能保養', duration: '60 MIN', price: 'NT$ 2,000', visible: true },
-    { code: 'C', name: '享受方案', summary: '指壓與油壓完整銜接，節奏更從容', duration: '90 MIN', price: 'NT$ 2,500', visible: true },
-    { code: 'D', name: '極緻方案', summary: '兩小時完整照顧，充分整理全身', duration: '120 MIN', price: 'NT$ 3,000', visible: true },
+    { code: 'A', name: '舒壓方案', quick_info: '指壓或油壓擇一，簡單整理日常疲勞', duration: '60 MIN', price: 'NT$ 1,500', visible: true },
+    { code: 'B', name: '愉悅方案', quick_info: '可指定師傅，加入體推與機能保養', duration: '60 MIN', price: 'NT$ 2,000', visible: true },
+    { code: 'C', name: '享受方案', quick_info: '指壓與油壓完整銜接，節奏更從容', duration: '90 MIN', price: 'NT$ 2,500', visible: true },
+    { code: 'D', name: '極緻方案', quick_info: '兩小時完整照顧，充分整理全身', duration: '120 MIN', price: 'NT$ 3,000', visible: true },
   ],
   therapists: {
     intro: '先從偏好的互動氣質開始，再於預約時確認當週班表。',
@@ -200,7 +211,7 @@ export default function SiteAdminEditor({ api, notify }: { api: SiteAdminApi; no
           booking: { ...initialDraft.booking, ...(saved.booking || {}) },
           therapists: { ...initialDraft.therapists, ...(saved.therapists || {}) },
           store: { ...initialDraft.store, ...(saved.store || {}) },
-          services: Array.isArray(saved.services) ? saved.services : initialDraft.services,
+          services: Array.isArray(saved.services) ? saved.services.map((item) => normalizeServiceDraft(item as ServiceDraft & { summary?: string })) : initialDraft.services,
           offers: Array.isArray(saved.offers) ? saved.offers : initialDraft.offers,
         };
         setDraft({
@@ -266,7 +277,7 @@ export default function SiteAdminEditor({ api, notify }: { api: SiteAdminApi; no
     await Promise.all([
       ...draft.services.filter((item) => item.id).map((item) => api.updateService(item.id!, {
         name: item.name.trim(),
-        description: item.summary.trim() || null,
+        description: item.quick_info.trim() || null,
         duration_minutes: numberFromLabel(item.duration, 60),
         price: numberFromLabel(item.price, 0),
         active: item.visible,
@@ -327,16 +338,16 @@ export default function SiteAdminEditor({ api, notify }: { api: SiteAdminApi; no
     const form = event.currentTarget;
     const data = new FormData(form);
     try {
-      const summary = String(data.get('summary') || '').trim();
+      const quick_info = String(data.get('quick_info') || '').trim();
       const created = await api.createService({
         code: String(data.get('code')).trim().toUpperCase(),
         name: String(data.get('name')).trim(),
         duration_minutes: Number(data.get('duration')),
         price: Number(data.get('price')),
-        description: summary || null,
+        description: quick_info || null,
         can_choose_staff: data.get('canChooseStaff') === 'on',
       });
-      markChanged({ ...draft, services: [...draft.services, serviceDraftFromRecord(created, { code: created.code, name: created.name, summary, duration: '', price: '', visible: true })] });
+      markChanged({ ...draft, services: [...draft.services, serviceDraftFromRecord(created, { code: created.code, name: created.name, quick_info, duration: '', price: '', visible: true })] });
       form.reset();
       setShowNewService(false);
       notify(`${created.name} 已新增；儲存／發布後會同步官網內容。`);
@@ -447,13 +458,13 @@ export default function SiteAdminEditor({ api, notify }: { api: SiteAdminApi; no
             <label><span>方案名稱</span><input name="name" required /></label>
             <label><span>分鐘數</span><input name="duration" type="number" min="30" max="480" step="10" defaultValue="60" required /></label>
             <label><span>價格</span><input name="price" type="number" min="0" step="100" required /></label>
-            <label className="wide"><span>列表小字簡介</span><input name="summary" maxLength={500} /></label>
+            <label className="wide"><span>快速資訊</span><input name="quick_info" maxLength={500} /></label>
             <label className="studio-inline-check"><input name="canChooseStaff" type="checkbox" defaultChecked />可指定師傅</label>
             <button type="submit" disabled={catalogBusy}>建立方案</button>
           </form>}
           <div className="studio-service-editor">{draft.services.map((service, index) => <article key={service.id || service.code}>
             <header><i>{service.code}</i><div><small>SERVICE {String(index + 1).padStart(2, '0')}</small><h3>{service.name}</h3></div><div className="studio-catalog-actions"><label className="studio-switch"><input type="checkbox" checked={service.visible} onChange={(event) => updateService(index, { visible: event.target.checked })} /><span />{service.visible ? '顯示中' : '已隱藏'}</label><button className="danger" type="button" disabled={catalogBusy} onClick={() => deleteService(service)}>刪除方案</button></div></header>
-            <div><Field label="方案名稱（可換行）" value={service.name} onChange={(name) => updateService(index, { name })} multiline /><Field label="列表小字簡介（可換行）" value={service.summary} onChange={(summary) => updateService(index, { summary })} multiline /><Field label="分鐘數" value={service.duration} onChange={(duration) => updateService(index, { duration })} /><Field label="價格" value={service.price} onChange={(price) => updateService(index, { price })} /></div>
+            <div><Field label="方案名稱（可換行）" value={service.name} onChange={(name) => updateService(index, { name })} multiline /><Field label="快速資訊（可換行）" value={service.quick_info} onChange={(quick_info) => updateService(index, { quick_info })} multiline /><Field label="分鐘數" value={service.duration} onChange={(duration) => updateService(index, { duration })} /><Field label="價格" value={service.price} onChange={(price) => updateService(index, { price })} /></div>
           </article>)}</div>
         </div>}
 

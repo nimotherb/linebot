@@ -673,9 +673,6 @@ button { font: inherit; }
 .service-journey > header h2 { margin: 8px 0 0; font-size: clamp(23px, 2.3vw, 36px); font-weight: 300; }
 .service-journey > header p, .service-journey > header strong { margin: 0; font-size: 11px; font-weight: 500; letter-spacing: .08em; }
 .service-journey-body { display: grid; grid-template-columns: .8fr 1.2fr; gap: 5vw; padding: 55px 0 82px 128px; }
-.service-journey-body h3 { margin: 0; font-size: clamp(25px, 2.6vw, 42px); font-weight: 250; line-height: 1.55; letter-spacing: .025em; }
-.service-prose { columns: 2; column-gap: 34px; }
-.service-prose p { break-inside: avoid; margin: 0 0 20px; font-size: 13px; line-height: 2.05; letter-spacing: .035em; }
 .service-journey-body ul { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 0; padding: 0; list-style: none; }
 .service-journey-body li { padding: 8px 12px; border: 1px solid rgba(7,50,43,.2); border-radius: 999px; font-size: 9px; letter-spacing: .08em; }
 .service-journey-body > a { grid-column: 2; justify-self: end; margin-top: 22px; padding: 13px 0 8px; border-bottom: 1px solid; font-size: 10px; font-weight: 700; letter-spacing: .15em; }
@@ -742,7 +739,7 @@ button { font: inherit; }
   .service-journey > header > strong { grid-column: 4; }
   .service-journey > header > p { display: none; }
   .service-journey-body { grid-template-columns: 1fr; padding-left: 102px; }
-  .service-prose, .service-journey-body ul, .service-journey-body > a { grid-column: 1; }
+  .service-journey-body ul, .service-journey-body > a { grid-column: 1; }
   .therapist-product-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
@@ -758,8 +755,6 @@ button { font: inherit; }
   .service-journey > header > strong { grid-column: 3; justify-self: start; padding-bottom: 14px; }
   .service-journey > header h2 { font-size: 20px; }
   .service-journey-body { gap: 28px; padding: 38px 0 62px; }
-  .service-journey-body h3 { font-size: 24px; }
-  .service-prose { columns: 1; }
   .service-journey-body > a { justify-self: start; }
   .therapist-selector { gap: 48px; margin-bottom: 62px; }
   .catalog-intro h2, .therapist-catalog > header h2 { font-size: 48px; }

@@ -2550,6 +2550,15 @@ def on_startup():
             "ALTER TABLE appointment_details ADD COLUMN onsite_overtime_amount INTEGER NOT NULL DEFAULT 0;",
             "ALTER TABLE appointment_details ADD COLUMN actual_service_minutes INTEGER NULL;",
             "ALTER TABLE appointment_details ADD COLUMN other_extra_amount INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN auto_total_amount INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN manual_total_amount INTEGER NULL;",
+            "ALTER TABLE appointment_details ADD COLUMN total_amount_overridden BOOLEAN NOT NULL DEFAULT FALSE;",
+            "ALTER TABLE appointment_details ADD COLUMN auto_staff_return_amount INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN manual_staff_return_amount INTEGER NULL;",
+            "ALTER TABLE appointment_details ADD COLUMN staff_return_amount_overridden BOOLEAN NOT NULL DEFAULT FALSE;",
+            "ALTER TABLE appointment_details ADD COLUMN auto_shop_recovery_amount INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN manual_shop_recovery_amount INTEGER NULL;",
+            "ALTER TABLE appointment_details ADD COLUMN shop_recovery_amount_overridden BOOLEAN NOT NULL DEFAULT FALSE;",
             "ALTER TABLE line_notification_dispatches ADD COLUMN recipient_entity_type VARCHAR(80) NULL;",
             "ALTER TABLE line_notification_dispatches ADD COLUMN recipient_entity_id INTEGER NULL;",
             "ALTER TABLE booking_requests MODIFY contact_phone VARCHAR(20) NULL;",
@@ -2565,6 +2574,21 @@ def on_startup():
             except Exception:
                 # These compatibility ALTERs are intentionally idempotent. A
                 # duplicate-column error simply means the migration ran before.
+                pass
+        # Backfill automatic snapshots for rows created before the explicit
+        # manual override columns existed. Existing management overrides are
+        # preserved as manual final values rather than being recalculated.
+        for q in (
+            "UPDATE appointment_details SET auto_total_amount = total_amount WHERE auto_total_amount = 0 AND total_amount <> 0",
+            "UPDATE appointment_details SET auto_staff_return_amount = staff_return_amount WHERE auto_staff_return_amount = 0 AND staff_return_amount <> 0",
+            "UPDATE appointment_details SET auto_shop_recovery_amount = shop_recovery_amount WHERE auto_shop_recovery_amount = 0 AND shop_recovery_amount <> 0",
+            "UPDATE appointment_details SET manual_total_amount = total_amount, total_amount_overridden = TRUE WHERE settlement_overridden_by_admin_id IS NOT NULL AND manual_total_amount IS NULL",
+            "UPDATE appointment_details SET manual_staff_return_amount = staff_return_amount, staff_return_amount_overridden = TRUE WHERE settlement_overridden_by_admin_id IS NOT NULL AND manual_staff_return_amount IS NULL",
+            "UPDATE appointment_details SET manual_shop_recovery_amount = shop_recovery_amount, shop_recovery_amount_overridden = TRUE WHERE settlement_overridden_by_admin_id IS NOT NULL AND manual_shop_recovery_amount IS NULL",
+        ):
+            try:
+                conn.execute(text(q))
+            except Exception:
                 pass
         if engine.dialect.name == "mysql":
             conn.execute(text(

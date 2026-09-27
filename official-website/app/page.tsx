@@ -7,7 +7,7 @@ function MobileSequence({ content }: { content: ReturnType<typeof usePublishedSi
   const bookingUrl = content?.booking?.url || '';
   const homePage = content?.pages?.home;
   const services = content && Array.isArray(content.services)
-    ? content.services.filter((item) => item.visible).map((item) => [item.code, item.name, item.summary, item.duration, item.price] as const)
+    ? content.services.filter((item) => item.visible).map((item) => [item.code, item.name, item.quick_info ?? item.summary ?? '', item.duration, item.price] as const)
     : [];
   const currentOffer = content && Array.isArray(content.offers)
     ? content.offers.find((item) => item.status === '顯示中')
