@@ -36,6 +36,7 @@ export type LineNotificationBatch = {
   failed_count: number;
   skipped_count: number;
   failed_kinds: Array<{ kind: string; label: string; count: number }>;
+  binding_issues?: Array<{ dispatch_id: number; kind: string; recipient_label?: string; recipient_entity_type?: string; recipient_entity_id?: number; uid: string; uid_status: string; reason: string; created_at?: string | null }>;
   created_at: string | null;
 };
 
@@ -45,6 +46,8 @@ type RawAppointment = {
   customer_serial?: string;
   customer_grade?: 'SSR' | 'SR' | 'R' | 'N';
   customer_name: string;
+  gender?: 'male' | 'female' | 'other' | null;
+  gender_other?: string | null;
   phone?: string;
   staff_id?: number;
   staff_name: string;
@@ -66,6 +69,13 @@ type RawAppointment = {
   base_price?: number;
   discount_amount?: number;
   extra_amount?: number;
+  booking_overtime_minutes?: number;
+  booking_overtime_units?: number;
+  booking_overtime_amount?: number;
+  onsite_overtime_minutes?: number;
+  onsite_overtime_units?: number;
+  onsite_overtime_amount?: number;
+  other_extra_amount?: number;
   discount_employee_amount?: number;
   discount_shop_amount?: number;
   surcharge_employee_amount?: number;
@@ -171,7 +181,7 @@ export type BootstrapData = {
   promotions: Array<{ id: number; name: string; calculation_type: string; value: number; active: boolean; starts_at?: string; ends_at?: string }>;
   rooms: Array<{ id: number; name: string; active: boolean }>;
   venues?: Array<{ id: number; name: string; address?: string; room_name?: string; rental_cost: number; notes?: string; active: boolean }>;
-  customers?: Array<{ id: number; customer_grade: 'SSR' | 'SR' | 'R' | 'N'; vip_serial: string; display_name?: string; birthday?: string; birthday_pending?: string; primary_phone?: string; phones: string[]; visits: number; spent: number; last_visit?: string }>;
+  customers?: Array<{ id: number; customer_grade: 'SSR' | 'SR' | 'R' | 'N'; vip_serial: string; display_name?: string; birthday?: string; birthday_pending?: string; gender?: 'male' | 'female' | 'other'; gender_other?: string; primary_phone?: string; phones: string[]; visits: number; spent: number; last_visit?: string }>;
   admin_users?: AdminIdentity[];
   return_rule_sets?: ReturnRuleSetView[];
   audit_logs?: Array<{
@@ -241,13 +251,15 @@ export type StaffScheduleReminderHistoryBatch = StaffScheduleReminderResponse & 
   sent_at: string | null;
 };
 
-export type PublicBookingIdentity = { name?: string; phone?: string; birthday?: string | null };
+export type PublicBookingIdentity = { name?: string; phone?: string; birthday?: string | null; gender?: 'male' | 'female' | 'other' | null; gender_other?: string | null };
 
 export type RawBookingRequest = {
   id: number;
   request_id: string;
   customer_serial?: string;
   customer_name: string;
+  gender?: 'male' | 'female' | 'other' | null;
+  gender_other?: string | null;
   phone: string;
   staff_id?: number;
   staff_name: string;
@@ -306,6 +318,15 @@ export const mapAppointment = (item: RawAppointment): Appointment => {
     basePrice: item.base_price ?? item.total_amount,
     discountAmount: item.discount_amount ?? 0,
     extraAmount: item.extra_amount ?? 0,
+    bookingOvertimeMinutes: item.booking_overtime_minutes ?? 0,
+    bookingOvertimeUnits: item.booking_overtime_units ?? 0,
+    bookingOvertimeAmount: item.booking_overtime_amount ?? 0,
+    onsiteOvertimeMinutes: item.onsite_overtime_minutes ?? 0,
+    onsiteOvertimeUnits: item.onsite_overtime_units ?? 0,
+    onsiteOvertimeAmount: item.onsite_overtime_amount ?? 0,
+    otherExtraAmount: item.other_extra_amount ?? 0,
+    gender: item.gender || undefined,
+    genderOther: item.gender_other || undefined,
     discountEmployeeAmount: item.discount_employee_amount ?? 0,
     discountShopAmount: item.discount_shop_amount ?? 0,
     surchargeEmployeeAmount: item.surcharge_employee_amount ?? 0,
@@ -403,6 +424,8 @@ export const mapCustomer = (item: NonNullable<BootstrapData['customers']>[number
   grade: item.customer_grade,
   name: item.display_name || '未命名客戶',
   birthday: (item as typeof item & { birthday?: string }).birthday,
+  gender: item.gender,
+  genderOther: item.gender_other,
   birthdayPending: (item as typeof item & { birthday_pending?: string }).birthday_pending,
   lineName: item.display_name || '未取得',
   phone: item.primary_phone || item.phones[0] || '未提供',
@@ -568,6 +591,12 @@ export class SpaApi {
 
   getLineNotificationHistory(id: number) {
     return this.request<LineNotificationBatch[]>(`/api/admin/appointments/${id}/line-notification-history`);
+  }
+
+  rebindLineNotification(dispatchId: number, lineUserId: string) {
+    return this.request<{ ok: boolean; kind: string; recipient_label?: string; uid: string }>(`/api/admin/line-notification-dispatches/${dispatchId}/rebind`, {
+      method: 'POST', body: JSON.stringify({ line_user_id: lineUserId }),
+    });
   }
 
   updateShift(id: number, payload: Record<string, unknown>) {

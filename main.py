@@ -112,6 +112,8 @@ class User(Base):
     customer_grade = Column(String(10), default="N", nullable=False)
     birthday = Column(String(10), nullable=True)
     birthday_pending = Column(String(10), nullable=True)
+    gender = Column(String(20), nullable=True)
+    gender_other = Column(String(120), nullable=True)
     utm_source = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     appointments = relationship("Appointment", back_populates="user", cascade="all, delete-orphan")
@@ -164,6 +166,8 @@ class Appointment(Base):
     customer_name_snapshot = Column(String(255), nullable=True)
     customer_phone_snapshot = Column(String(20), nullable=True)
     customer_birthday_snapshot = Column(String(10), nullable=True)
+    customer_gender_snapshot = Column(String(20), nullable=True)
+    customer_gender_other_snapshot = Column(String(120), nullable=True)
     staff_name_snapshot = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     user = relationship("User", back_populates="appointments")
@@ -912,6 +916,7 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "方案", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": plan_name, "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "separator", "margin": "xxl"},
                         {"type": "box", "layout": "horizontal", "margin": "xxl", "contents": [{"type": "text", "text": "方案定價", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {price}", "size": "sm", "color": "#111111", "align": "end"}]},
+                        {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "加價合計", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"+NT$ {extra_amount}", "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "優惠", "size": "sm", "color": "#555555", "flex": 2, "wrap": True}, {"type": "text", "text": f"-NT$ {discount}", "size": "sm", "color": "#111111", "align": "end"}]},
                         {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "總計", "size": "sm", "color": "#555555"}, {"type": "text", "text": f"NT$ {total}", "size": "sm", "color": "#111111", "align": "end"}]},
                     ]
@@ -2248,8 +2253,24 @@ def _process_webhook(body: bytes, signature: str, bot_api, handler):
         pass
 
 
-LINE_KINDS = {"customer", "staff", "service", "management"}
+LINE_KINDS = {"staff", "service", "client"}
+LEGACY_LINE_KIND_MAP = {"customer": "client", "management": "service", "kind_staff": "staff"}
 LINE_UID_PATTERN = re.compile(r"^U[0-9a-fA-F]{32}$")
+
+
+def normalize_line_kind(kind: str | None) -> str:
+    """Return the canonical three-value kind without rewriting old audit rows."""
+    value = str(kind or "service").strip().lower()
+    return LEGACY_LINE_KIND_MAP.get(value, value if value in LINE_KINDS else "service")
+
+
+def mask_line_uid(uid: str | None) -> str:
+    value = (uid or "").strip()
+    if not value:
+        return "未綁定"
+    if len(value) <= 8:
+        return "••••"
+    return f"{value[:4]}…{value[-4:]}"
 
 
 def _line_bot_for_instance(bot_instance: str):
@@ -2304,19 +2325,15 @@ def dispatch_appointment_notifications(
     recipients: list[dict] = []
     user = getattr(appointment, "user", None)
     customer_uid = getattr(user, "line_user_id", None)
-    recipients.append({"uid": customer_uid, "kind": "customer", "label": "預約客人", "bot_instance": "customer_bot", "entity": user})
+    recipients.append({"uid": customer_uid, "kind": "client", "label": getattr(user, "display_name", None) or "預約客人", "bot_instance": "customer_bot", "entity": user, "entity_type": "customer", "entity_id": getattr(user, "id", None)})
     staff_obj = getattr(appointment, "staff", None)
     if staff_obj:
-        recipients.append({"uid": getattr(staff_obj, "line_user_id", None), "kind": "staff", "label": "指定師傅", "bot_instance": "staff_bot", "entity": staff_obj, "forced_reason": "rooms_full_no_staff" if rooms_full else None})
+        recipients.append({"uid": getattr(staff_obj, "line_user_id", None), "kind": "staff", "label": getattr(staff_obj, "name", None) or "指定師傅", "bot_instance": "staff_bot", "entity": staff_obj, "entity_type": "staff", "entity_id": getattr(staff_obj, "id", None), "forced_reason": "rooms_full_no_staff" if rooms_full else None})
     if notify_management and AdminUser:
         for account in db.query(AdminUser).filter(AdminUser.role.in_(["admin", "manager", "clerk"])).all():
-            if account.role == "clerk":
-                kind = "service"
-            elif account.role in {"admin", "manager"}:
-                kind = "management"
-            else:
+            if account.role not in {"admin", "manager", "clerk"}:
                 continue
-            recipients.append({"uid": account.line_user_id, "kind": kind, "label": account.display_name or account.username, "bot_instance": "staff_bot", "entity": account})
+            recipients.append({"uid": account.line_user_id, "kind": "service", "label": account.display_name or account.username, "bot_instance": "staff_bot", "entity": account, "entity_type": "admin_user", "entity_id": getattr(account, "id", None)})
 
     results: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -2324,53 +2341,55 @@ def dispatch_appointment_notifications(
         uid = item.get("uid")
         uid = uid.strip() if isinstance(uid, str) else uid
         bot_instance = item["bot_instance"]
-        result = {"uid": uid, "kind": item["kind"], "label": item["label"], "bot_instance": bot_instance}
-        reason = item.get("forced_reason")
+        kind = normalize_line_kind(item["kind"])
+        result = {"uid": mask_line_uid(uid), "kind": kind, "label": item["label"], "bot_instance": bot_instance, "recipient_entity_type": item.get("entity_type"), "recipient_entity_id": item.get("entity_id")}
+        forced_reason = item.get("forced_reason")
+        reason = None
         status = "skipped"
         http_status = None
         request_id = None
-        if reason:
-            pass
-        elif not uid:
+        if not uid:
             reason = "missing_uid"
         elif not LINE_UID_PATTERN.fullmatch(uid):
             reason = "invalid_uid"
-        elif (bot_instance, uid) in seen:
-            reason = "duplicate"
         elif RevokedStaffLine and db.query(RevokedStaffLine).filter(RevokedStaffLine.line_user_id == uid).first():
             reason = "revoked_uid"
         else:
-            seen.add((bot_instance, uid))
             entity = item.get("entity")
-            if item["kind"] == "staff" and (not entity or getattr(entity, "employment_status", "active") != "active"):
-                reason = "inactive_recipient"
-            elif item["kind"] in {"service", "management"} and (not entity or not getattr(entity, "is_active", False)):
-                reason = "inactive_recipient"
-            elif item["kind"] == "customer" and (not entity or getattr(entity, "line_user_id", None) != uid):
+            if kind == "staff" and (not entity or getattr(entity, "employment_status", "active") != "active"):
+                reason = "recipient_inactive"
+            elif kind == "service" and (not entity or not getattr(entity, "is_active", False)):
+                reason = "recipient_inactive"
+            elif kind == "client" and (not entity or getattr(entity, "line_user_id", None) != uid):
                 reason = "recipient_not_found"
-            elif item["kind"] == "staff" and (not entity or getattr(entity, "line_user_id", None) != uid):
+            elif kind == "staff" and (not entity or getattr(entity, "line_user_id", None) != uid):
                 reason = "recipient_not_found"
-            elif item["kind"] in {"service", "management"} and (not entity or getattr(entity, "line_user_id", None) != uid):
+            elif kind == "service" and (not entity or getattr(entity, "line_user_id", None) != uid):
                 reason = "recipient_not_found"
+            elif forced_reason:
+                reason = forced_reason
+            elif (bot_instance, uid) in seen:
+                reason = "duplicate"
             else:
+                seen.add((bot_instance, uid))
                 api = _line_bot_for_instance(bot_instance)
                 if not api:
                     status = "failed"
                     reason = "line_token_unconfigured"
                 else:
                     try:
-                        alt_text = "伊果 SPA 預約已成立" if item["kind"] == "customer" and trigger_type == "appointment_created" else ("預約資料已更新" if trigger_type == "appointment_updated" else f"{origin}・預約通知")
-                        message = build_order_flex(appointment, alt_text=alt_text, is_staff_notify=item["kind"] == "staff", db=db, show_return=False)
+                        alt_text = "伊果 SPA 預約已成立" if kind == "client" and trigger_type == "appointment_created" else ("預約資料已更新" if trigger_type == "appointment_updated" else f"{origin}・預約通知")
+                        message = build_order_flex(appointment, alt_text=alt_text, is_staff_notify=kind == "staff", db=db, show_return=False)
                         api.push_message(uid, message)
                         status = "sent"
                         reason = None
                     except Exception as exc:
                         status = "failed"
                         http_status, request_id, reason = _line_error(exc)
-                        logging.warning("LINE push failed appointment=%s kind=%s status=%s reason=%s", appointment.id, item["kind"], http_status, reason)
+                        logging.warning("LINE push failed appointment=%s kind=%s status=%s reason=%s", appointment.id, kind, http_status, reason)
         result.update(status=status, reason=reason, http_status=http_status, line_request_id=request_id)
         results.append(result)
-        db.add(Dispatch(batch_id=batch.id, appointment_id=appointment.id, dispatch_sequence=sequence, kind=item["kind"], recipient_label=item["label"], uid=uid, bot_instance=bot_instance, status=status, reason=reason, http_status=http_status, line_request_id=request_id, error_message=_line_status_label(reason) if reason in {"monthly_limit_reached", "line_token_unconfigured"} else None, actor_user_id=actor_user_id, trigger_type=trigger_type))
+        db.add(Dispatch(batch_id=batch.id, appointment_id=appointment.id, dispatch_sequence=sequence, kind=kind, recipient_label=item["label"], recipient_entity_type=item.get("entity_type"), recipient_entity_id=item.get("entity_id"), uid=uid, bot_instance=bot_instance, status=status, reason=reason, http_status=http_status, line_request_id=request_id, error_message=_line_status_label(reason) if reason in {"monthly_limit_reached", "line_token_unconfigured"} else None, actor_user_id=actor_user_id, trigger_type=trigger_type))
 
     sent = sum(item["status"] == "sent" for item in results)
     failed = sum(item["status"] == "failed" for item in results)
@@ -2482,6 +2501,8 @@ def on_startup():
             "ALTER TABLE users ADD COLUMN customer_grade VARCHAR(10) NOT NULL DEFAULT 'N';",
             "ALTER TABLE users ADD COLUMN birthday VARCHAR(10) NULL;",
             "ALTER TABLE users ADD COLUMN birthday_pending VARCHAR(10) NULL;",
+            "ALTER TABLE users ADD COLUMN gender VARCHAR(20) NULL;",
+            "ALTER TABLE users ADD COLUMN gender_other VARCHAR(120) NULL;",
             "ALTER TABLE users MODIFY COLUMN line_user_id VARCHAR(255) NULL;",
             "ALTER TABLE appointments MODIFY COLUMN user_id INTEGER NULL;",
             "ALTER TABLE staffs ADD COLUMN phone VARCHAR(50);",
@@ -2512,6 +2533,8 @@ def on_startup():
             "ALTER TABLE appointments ADD COLUMN customer_name_snapshot VARCHAR(255);",
             "ALTER TABLE appointments ADD COLUMN customer_phone_snapshot VARCHAR(20);",
             "ALTER TABLE appointments ADD COLUMN customer_birthday_snapshot VARCHAR(10);",
+            "ALTER TABLE appointments ADD COLUMN customer_gender_snapshot VARCHAR(20);",
+            "ALTER TABLE appointments ADD COLUMN customer_gender_other_snapshot VARCHAR(120);",
             "ALTER TABLE appointments ADD COLUMN staff_name_snapshot VARCHAR(255);",
             "ALTER TABLE shifts ADD COLUMN is_next_day BOOLEAN NOT NULL DEFAULT FALSE;",
             "ALTER TABLE shifts ADD COLUMN modified_by_admin_id INTEGER NULL;",
@@ -2528,9 +2551,21 @@ def on_startup():
             "ALTER TABLE appointment_details ADD COLUMN cancellation_snapshot_json TEXT NULL;",
             "ALTER TABLE appointment_details ADD COLUMN cancellation_reason VARCHAR(500) NULL;",
             "ALTER TABLE appointment_details ADD COLUMN cancelled_at DATETIME NULL;",
+            "ALTER TABLE appointment_details ADD COLUMN booking_overtime_minutes INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN booking_overtime_units INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN booking_overtime_amount INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN onsite_overtime_minutes INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN onsite_overtime_units INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN onsite_overtime_amount INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE appointment_details ADD COLUMN actual_service_minutes INTEGER NULL;",
+            "ALTER TABLE appointment_details ADD COLUMN other_extra_amount INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE line_notification_dispatches ADD COLUMN recipient_entity_type VARCHAR(80) NULL;",
+            "ALTER TABLE line_notification_dispatches ADD COLUMN recipient_entity_id INTEGER NULL;",
             "ALTER TABLE booking_requests MODIFY contact_phone VARCHAR(20) NULL;",
             "ALTER TABLE booking_requests ADD COLUMN customer_name_snapshot VARCHAR(120) NULL;",
             "ALTER TABLE booking_requests ADD COLUMN customer_birthday_snapshot VARCHAR(10) NULL;",
+            "ALTER TABLE booking_requests ADD COLUMN customer_gender_snapshot VARCHAR(20) NULL;",
+            "ALTER TABLE booking_requests ADD COLUMN customer_gender_other_snapshot VARCHAR(120) NULL;",
             "ALTER TABLE staff_categories ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;",
         ]
         for q in queries:

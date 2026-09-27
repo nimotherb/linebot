@@ -80,6 +80,8 @@ export default function BookingPage() {
   const [lineUserId, setLineUserId] = useState('');
   const [phone, setPhone] = useState('');
   const [birthday, setBirthday] = useState('');
+  const [gender, setGender] = useState<'male' | 'female' | 'other' | ''>('');
+  const [genderOther, setGenderOther] = useState('');
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
@@ -145,6 +147,8 @@ export default function BookingPage() {
           setName((current) => current || savedIdentity.name || decoded?.name || '');
           setPhone((current) => current || savedIdentity.phone || '');
           setBirthday((current) => current || savedIdentity.birthday || '');
+          setGender((current) => current || savedIdentity.gender || '');
+          setGenderOther((current) => current || savedIdentity.gender_other || '');
         } catch {}
         setInsideLine(liff.isInClient());
         setIdentityMode('line');
@@ -196,12 +200,7 @@ export default function BookingPage() {
       <b>{selected ? '已選擇' : '選擇這位'}</b>
     </button>;
   };
-  const discount = !promotion || !service || service.duration_minutes < 90 ? 0 : promotion.calculation_type === 'fixed_discount'
-    ? Math.min(service.price, promotion.value)
-    : promotion.calculation_type === 'percent_discount'
-      ? Math.min(service.price, Math.round(service.price * promotion.value / 100))
-      : 0;
-  const total = Math.max(0, (service?.price || 0) - discount);
+  const total = Math.max(0, service?.price || 0);
 
   const review = (event: FormEvent) => {
     event.preventDefault();
@@ -210,6 +209,8 @@ export default function BookingPage() {
     if (!service || !availability) return setError('請先選擇可預約的方案與時段');
     if (phone && !/^09\d{8}$/.test(phone)) return setError('手機號碼必須是 09 開頭的 10 碼數字');
     if (!name.trim()) return setError('請填寫您的稱呼');
+    if (!gender) return setError('請選擇生理性別');
+    if (gender === 'other' && !genderOther.trim()) return setError('請填寫其他生理性別說明');
     setIdempotencyKey(globalThis.crypto?.randomUUID?.() || `web-${Date.now()}-${Math.random().toString(16).slice(2)}`);
     setStage('review');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -221,7 +222,7 @@ export default function BookingPage() {
     setError('');
     try {
       const payload = {
-        customer_name: name.trim(), phone: phone || null, birthday: birthday || null, service_plan_id: service.id, start_time: startTime,
+        customer_name: name.trim(), phone: phone || null, birthday: birthday || null, gender, gender_other: gender === 'other' ? genderOther.trim() : null, service_plan_id: service.id, start_time: startTime,
         staff_id: staff ? staff.id : null,
         notes: notes.trim() || null, idempotency_key: idempotencyKey, website: '',
         id_token: idToken || null, line_user_id: lineUserId || null, line_display_name: name.trim() || null,
@@ -315,6 +316,8 @@ export default function BookingPage() {
           </div>
           <label className={styles.field}>備註（選填）<textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} maxLength={1000} placeholder="特殊需求或方便聯絡的方式" /></label>
           <label className={styles.field}>生日（選填）<input type="date" value={birthday} onChange={(event) => setBirthday(event.target.value)} /></label>
+          <label className={styles.field}>生理性別（必填）<select value={gender} onChange={(event) => setGender(event.target.value as typeof gender)} required><option value="">請選擇</option><option value="male">男</option><option value="female">女</option><option value="other">其他</option></select></label>
+          {gender === 'other' && <label className={styles.field}>其他生理性別說明<input value={genderOther} onChange={(event) => setGenderOther(event.target.value)} maxLength={120} required /></label>}
           {availability?.rooms_full && <div className={styles.roomNotice} role="status">此時段兩間房皆已使用；場地將由客服後續安排。</div>}
           <input className={styles.honeypot} name="website" tabIndex={-1} autoComplete="off" aria-hidden="true" />
         </section>

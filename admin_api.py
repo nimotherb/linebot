@@ -60,6 +60,13 @@ PUBLIC_BOOKING_MAX_ATTEMPTS = 8
 _PUBLIC_BOOKING_ATTEMPTS: dict[str, list[datetime]] = {}
 _PUBLIC_BOOKING_LOCK = threading.Lock()
 LINE_USER_ID_PATTERN = re.compile(r"^U[0-9a-fA-F]{32}$")
+
+
+def _masked_line_uid(uid: str | None) -> str:
+    value = (uid or "").strip()
+    if not value:
+        return "未綁定"
+    return f"{value[:4]}…{value[-4:]}" if len(value) > 8 else "••••"
 DEFAULT_CUSTOMER_SERVICE_URL = "https://line.me/R/ti/p/@684wdola"
 
 STATUS_TO_ZH = {
@@ -111,6 +118,8 @@ class AppointmentCreateIn(BaseModel):
     customer_name: str = Field(min_length=1, max_length=120)
     phone: str = Field(min_length=8, max_length=30)
     birthday: str | None = Field(default=None, max_length=10)
+    gender: Literal["male", "female", "other"] | None = None
+    gender_other: str | None = Field(default=None, max_length=120)
     service_plan_id: int
     start_time: datetime | str
     end_time: datetime | str | None = None
@@ -124,6 +133,10 @@ class AppointmentCreateIn(BaseModel):
     base_price: int | None = Field(default=None, ge=0)
     discount_amount: int | None = Field(default=None, ge=0)
     extra_amount: int | None = Field(default=None, ge=0)
+    other_extra_amount: int | None = Field(default=None, ge=0)
+    booking_overtime_unit_price: int | None = Field(default=None, ge=0)
+    onsite_overtime_unit_price: int | None = Field(default=None, ge=0)
+    actual_service_minutes: int | None = Field(default=None, ge=0)
     total_amount: int | None = Field(default=None, ge=0)
     commission_amount: int | None = Field(default=None, ge=0)
     discount_employee_amount: int | None = Field(default=None, ge=0)
@@ -139,6 +152,8 @@ class AppointmentPatchIn(BaseModel):
     customer_name: str | None = Field(default=None, min_length=1, max_length=120)
     phone: str | None = Field(default=None, min_length=8, max_length=30)
     birthday: str | None = Field(default=None, max_length=10)
+    gender: Literal["male", "female", "other"] | None = None
+    gender_other: str | None = Field(default=None, max_length=120)
     status: Literal["pending", "confirmed", "completed", "cancelled", "no_show", "待確認", "已確認", "已完成", "已取消", "未到店"] | None = None
     staff_id: int | None = None
     room_id: int | None = None
@@ -152,6 +167,10 @@ class AppointmentPatchIn(BaseModel):
     base_price: int | None = Field(default=None, ge=0)
     discount_amount: int | None = Field(default=None, ge=0)
     extra_amount: int | None = Field(default=None, ge=0)
+    other_extra_amount: int | None = Field(default=None, ge=0)
+    booking_overtime_unit_price: int | None = Field(default=None, ge=0)
+    onsite_overtime_unit_price: int | None = Field(default=None, ge=0)
+    actual_service_minutes: int | None = Field(default=None, ge=0)
     total_amount: int | None = Field(default=None, ge=0)
     commission_amount: int | None = Field(default=None, ge=0)
     discount_employee_amount: int | None = Field(default=None, ge=0)
@@ -284,6 +303,10 @@ class PublicBookingCreateIn(BaseModel):
     customer_name: str = Field(min_length=1, max_length=120)
     phone: str | None = Field(default=None, min_length=8, max_length=30)
     birthday: str | None = Field(default=None, max_length=10)
+    # Keep old API clients backwards-compatible while the public form always
+    # requires a selection. New callers should send this explicitly.
+    gender: Literal["male", "female", "other"] = "male"
+    gender_other: str | None = Field(default=None, max_length=120)
     service_plan_id: int
     start_time: datetime
     staff_id: int | None = None
@@ -376,6 +399,10 @@ class StaffPhoneChangeIn(BaseModel):
 
 
 class StaffLineLinkIn(BaseModel):
+    line_user_id: str = Field(min_length=33, max_length=33)
+
+
+class LineNotificationRebindIn(BaseModel):
     line_user_id: str = Field(min_length=33, max_length=33)
 
 
@@ -605,6 +632,14 @@ def register_admin_api(
         base_price = Column(Integer, nullable=False, default=0)
         discount_amount = Column(Integer, nullable=False, default=0)
         extra_amount = Column(Integer, nullable=False, default=0)
+        booking_overtime_minutes = Column(Integer, nullable=False, default=0)
+        booking_overtime_units = Column(Integer, nullable=False, default=0)
+        booking_overtime_amount = Column(Integer, nullable=False, default=0)
+        onsite_overtime_minutes = Column(Integer, nullable=False, default=0)
+        onsite_overtime_units = Column(Integer, nullable=False, default=0)
+        onsite_overtime_amount = Column(Integer, nullable=False, default=0)
+        actual_service_minutes = Column(Integer, nullable=True)
+        other_extra_amount = Column(Integer, nullable=False, default=0)
         total_amount = Column(Integer, nullable=False, default=0)
         commission_amount = Column(Integer, nullable=True)
         discount_employee_amount = Column(Integer, nullable=False, default=0)
@@ -669,6 +704,8 @@ def register_admin_api(
         dispatch_sequence = Column(Integer, nullable=False)
         kind = Column(String(20), nullable=False)
         recipient_label = Column(String(160), nullable=True)
+        recipient_entity_type = Column(String(80), nullable=True)
+        recipient_entity_id = Column(Integer, nullable=True)
         uid = Column(String(255), nullable=True)
         bot_instance = Column(String(30), nullable=False)
         status = Column(String(20), nullable=False)
@@ -821,6 +858,8 @@ def register_admin_api(
         contact_phone = Column(String(20), nullable=True)
         customer_name_snapshot = Column(String(120), nullable=True)
         customer_birthday_snapshot = Column(String(10), nullable=True)
+        customer_gender_snapshot = Column(String(20), nullable=True)
+        customer_gender_other_snapshot = Column(String(120), nullable=True)
         notes = Column(Text, nullable=True)
         source = Column(String(30), nullable=False, default="booking_web")
         status = Column(String(30), nullable=False, default="pending", index=True)
@@ -1039,6 +1078,10 @@ def register_admin_api(
         return normalized
 
     def resolve_public_customer(db: Session, payload: PublicBookingCreateIn):
+        if payload.gender == "other" and not (payload.gender_other or "").strip():
+            raise HTTPException(status_code=422, detail="選擇其他生理性別時請填寫說明")
+        if payload.gender != "other" and (payload.gender_other or "").strip():
+            raise HTTPException(status_code=422, detail="只有選擇其他生理性別時才能填寫說明")
         phone_customer, contact_phone = (customer_for_phone(db, payload.phone) if payload.phone else (None, None))
         line_identity = _verify_line_id_token(payload.id_token) if payload.id_token else None
         supplied_line_user_id = (payload.line_user_id or "").strip()
@@ -1069,6 +1112,8 @@ def register_admin_api(
                 customer.display_name = line_identity.get("name") or payload.customer_name.strip()
             if getattr(customer, "customer_grade", "N") not in {"SSR", "SR"}:
                 customer.customer_grade = "R"
+            customer.gender = payload.gender
+            customer.gender_other = payload.gender_other.strip() if payload.gender == "other" and payload.gender_other else None
             return customer, contact_phone, "liff"
 
         if supplied_line_user_id:
@@ -1095,6 +1140,8 @@ def register_admin_api(
                 customer.display_name = (payload.line_display_name or payload.customer_name).strip()
             if getattr(customer, "customer_grade", "N") not in {"SSR", "SR"}:
                 customer.customer_grade = "R"
+            customer.gender = payload.gender
+            customer.gender_other = payload.gender_other.strip() if payload.gender == "other" and payload.gender_other else None
             return customer, contact_phone, "line"
 
         customer = phone_customer
@@ -1115,6 +1162,9 @@ def register_admin_api(
             customer.display_name = payload.customer_name.strip()
         if getattr(customer, "customer_grade", "N") not in {"SSR", "SR"}:
             customer.customer_grade = "R"
+        if customer is not None:
+            customer.gender = payload.gender
+            customer.gender_other = payload.gender_other.strip() if payload.gender == "other" and payload.gender_other else None
         return customer, contact_phone, "web"
 
     def available_staff(db: Session, start_dt: datetime, end_dt: datetime) -> list:
@@ -1724,33 +1774,68 @@ def register_admin_api(
             return min(base_price, round(base_price * item.value / 100))
         return 0
 
-    def calculate_order_totals(*, base_price: int, duration_minutes: int, promotions: list[Any] | None = None, extra_amount: int = 0, admin_override: bool = False) -> dict[str, int]:
-        """Apply fees first, then stacked discounts with integer-safe caps."""
-        base = max(0, int(round(base_price)))
-        fees = max(0, int(round(extra_amount)))
+    def calculate_order_totals(*, base_price: int, duration_minutes: int,
+                               promotions: list[Any] | None = None,
+                               extra_amount: int = 0,
+                               admin_override: bool = False,
+                               included_minutes: int | None = None,
+                               booking_overtime_unit_price: int = 0,
+                               actual_service_minutes: int | None = None,
+                               onsite_overtime_unit_price: int = 0,
+                               other_extra_amount: int = 0) -> dict[str, int]:
+        """Calculate the customer total with explicit, stackable rules.
+
+        No legacy duration gates or global discount caps are applied.  The
+        caller supplies the plan's included minutes and, when known, the
+        actual service duration for onsite overtime.
+        """
+        base = max(0, int(round(base_price or 0)))
+        duration = max(0, int(round(duration_minutes or 0)))
+        included = max(0, int(round(included_minutes if included_minutes is not None else duration)))
+        booking_minutes = max(0, duration - included)
+        booking_units = (booking_minutes + 29) // 30
+        booking_fee = booking_units * max(0, int(round(booking_overtime_unit_price or 0)))
+        onsite_minutes = 0
+        if actual_service_minutes is not None:
+            onsite_minutes = max(0, int(round(actual_service_minutes or 0)) - max(duration, included))
+        onsite_units = (onsite_minutes + 29) // 30
+        onsite_fee = onsite_units * max(0, int(round(onsite_overtime_unit_price or 0)))
+        explicit_extra = max(0, int(round(extra_amount or 0))) + max(0, int(round(other_extra_amount or 0)))
+        promo_fees = 0
         discounts = 0
-        early_return_birthday = 0
         for item in promotions or []:
             if not item or not item.active:
                 continue
-            value = int(round(item.value or 0))
-            if item.calculation_type == "fixed_fee":
-                fees += value
-            elif item.calculation_type == "per_30_minutes":
-                fees += max(1, int(duration_minutes) // 30) * value
-            elif item.calculation_type == "fixed_discount" and (duration_minutes >= 90 or admin_override):
-                amount = min(base, value)
-                discounts += amount
-            elif item.calculation_type == "percent_discount" and (duration_minutes >= 90 or admin_override):
-                discounts += min(base, int(round(base * value / 100)))
-            if any(keyword in (item.name or "") for keyword in ("早鳥", "回訪", "壽星")):
-                early_return_birthday += value if item.calculation_type == "fixed_discount" else min(base, int(round(base * value / 100)))
-        if not admin_override:
-            if early_return_birthday > 200:
-                discounts = max(0, discounts - (early_return_birthday - 200))
-            discounts = min(500, discounts)
-        total = max(0, base + fees - discounts)
-        return {"base_price": base, "extra_amount": fees, "discount_amount": discounts, "total_amount": int(round(total)), "commission_amount": 0}
+            value = max(0, int(round(item.value or 0)))
+            calculation_type = getattr(item, "calculation_type", "")
+            if calculation_type == "fixed_fee":
+                promo_fees += value
+            elif calculation_type == "per_30_minutes":
+                # This legacy promotion type now means an explicit booking
+                # overtime unit price, never a second duration charge.
+                if booking_overtime_unit_price <= 0:
+                    promo_fees += booking_units * value
+            elif calculation_type == "fixed_discount":
+                discounts += value
+            elif calculation_type == "percent_discount":
+                discounts += int(round(base * value / 100))
+        surcharge_total = explicit_extra + booking_fee + onsite_fee + promo_fees
+        total = max(0, int(round(base + surcharge_total - discounts)))
+        return {
+            "base_price": base,
+            "extra_amount": surcharge_total,
+            "discount_amount": max(0, int(round(discounts))),
+            "total_amount": total,
+            "commission_amount": 0,
+            "booking_overtime_minutes": booking_minutes,
+            "booking_overtime_units": booking_units,
+            "booking_overtime_amount": booking_fee,
+            "onsite_overtime_minutes": onsite_minutes,
+            "onsite_overtime_units": onsite_units,
+            "onsite_overtime_amount": onsite_fee,
+            "actual_service_minutes": max(0, int(round(actual_service_minutes))) if actual_service_minutes is not None else None,
+            "other_extra_amount": max(0, int(round(other_extra_amount or 0))),
+        }
 
     def calculate_settlement_totals(*, total_amount: int, baseline_return: int = 0,
                                     discount_employee_amount: int = 0,
@@ -1774,6 +1859,8 @@ def register_admin_api(
             "staff_return_amount": int(round(staff_return)),
             "shop_recovery_amount": int(round(shop_recovery)),
         }
+
+    app.state.calculate_order_totals = calculate_order_totals
 
     def staff_category_dict(item) -> dict[str, Any]:
         return {"id": item.id, "key": item.key, "name": item.name, "sort_order": int(item.sort_order or 0), "active": bool(item.active)}
@@ -1944,6 +2031,8 @@ def register_admin_api(
             "customer_id": item.user_id,
             "customer_serial": customer_serial(item.user_id, phone, grade),
             "customer_grade": grade,
+            "gender": getattr(item, "customer_gender_snapshot", None) or getattr(user, "gender", None),
+            "gender_other": getattr(item, "customer_gender_other_snapshot", None) or getattr(user, "gender_other", None),
             "customer_name": (getattr(item, "customer_name_snapshot", None) if getattr(user, "line_user_id", "") == "guest:anonymous" else None) or getattr(user, "display_name", None) or getattr(item, "customer_name_snapshot", None) or "未命名客戶",
             "phone": phone,
             "staff_id": item.staff_id,
@@ -1967,6 +2056,13 @@ def register_admin_api(
             "base_price": 0 if cancelled else (detail.base_price if detail else appointment_price_from_legacy(item)),
             "discount_amount": 0 if cancelled else (detail.discount_amount if detail else 0),
             "extra_amount": 0 if cancelled else (detail.extra_amount if detail else 0),
+            "booking_overtime_minutes": 0 if cancelled else (getattr(detail, "booking_overtime_minutes", 0) if detail else 0),
+            "booking_overtime_units": 0 if cancelled else (getattr(detail, "booking_overtime_units", 0) if detail else 0),
+            "booking_overtime_amount": 0 if cancelled else (getattr(detail, "booking_overtime_amount", 0) if detail else 0),
+            "onsite_overtime_minutes": 0 if cancelled else (getattr(detail, "onsite_overtime_minutes", 0) if detail else 0),
+            "onsite_overtime_units": 0 if cancelled else (getattr(detail, "onsite_overtime_units", 0) if detail else 0),
+            "onsite_overtime_amount": 0 if cancelled else (getattr(detail, "onsite_overtime_amount", 0) if detail else 0),
+            "other_extra_amount": 0 if cancelled else (getattr(detail, "other_extra_amount", 0) if detail else 0),
             "total_amount": 0 if cancelled else (detail.total_amount if detail else appointment_price_from_legacy(item)),
             "notes": detail.notes if detail else None,
             "payment_status": payment_status,
@@ -1998,13 +2094,28 @@ def register_admin_api(
             "monthly_limit_reached": "LINE 月額度已用完",
         }
         failed_kinds: list[dict[str, Any]] = []
+        binding_issues: list[dict[str, Any]] = []
         if db is not None:
             Dispatch = app.state.admin_models.get("LineNotificationDispatch")
             if Dispatch:
-                labels = {"customer": "客戶", "staff": "員工", "service": "客服", "management": "管理層"}
+                labels = {"client": "客戶", "customer": "客戶", "staff": "員工", "service": "客服／管理層", "management": "客服／管理層"}
                 grouped: dict[str, int] = {}
                 for dispatch in db.query(Dispatch).filter(Dispatch.batch_id == item.id, Dispatch.status == "failed").all():
-                    grouped[dispatch.kind] = grouped.get(dispatch.kind, 0) + 1
+                    kind = {"customer": "client", "management": "service"}.get(dispatch.kind, dispatch.kind)
+                    grouped[kind] = grouped.get(kind, 0) + 1
+                for dispatch in db.query(Dispatch).filter(Dispatch.batch_id == item.id, Dispatch.reason.in_(["missing_uid", "invalid_uid"])).all():
+                    kind = {"customer": "client", "management": "service"}.get(dispatch.kind, dispatch.kind)
+                    binding_issues.append({
+                        "dispatch_id": dispatch.id,
+                        "kind": kind,
+                        "recipient_label": dispatch.recipient_label,
+                        "recipient_entity_type": dispatch.recipient_entity_type,
+                        "recipient_entity_id": dispatch.recipient_entity_id,
+                        "uid": "未綁定" if dispatch.reason == "missing_uid" else _masked_line_uid(dispatch.uid),
+                        "uid_status": dispatch.reason,
+                        "reason": dispatch.reason,
+                        "created_at": _iso(dispatch.created_at),
+                    })
                 failed_kinds = [{"kind": kind, "label": labels.get(kind, kind), "count": count} for kind, count in sorted(grouped.items())]
         return {
             "id": item.id,
@@ -2018,12 +2129,13 @@ def register_admin_api(
             "failed_count": item.failed_count,
             "skipped_count": item.skipped_count,
             "failed_kinds": failed_kinds,
+            "binding_issues": binding_issues,
             "created_at": _iso(item.created_at),
         }
 
     def public_appointment_dict(db: Session, item, cache: dict[str, Any] | None = None) -> dict[str, Any]:
         row = appointment_dict(db, item, cache)
-        for key in ("customer_id", "customer_serial", "customer_name", "phone", "base_price", "discount_amount", "extra_amount", "total_amount", "notes", "payment_method", "cash_return_status", "expected_return_amount", "staff_return_status", "commission_amount", "discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount", "promotion_id", "promotion_ids", "promotion_name"):
+        for key in ("customer_id", "customer_serial", "customer_name", "phone", "gender", "gender_other", "base_price", "discount_amount", "extra_amount", "total_amount", "notes", "payment_method", "cash_return_status", "expected_return_amount", "staff_return_status", "commission_amount", "discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount", "promotion_id", "promotion_ids", "promotion_name"):
             row.pop(key, None)
         row["customer_name"] = "已隱藏"
         row["phone"] = None
@@ -2068,6 +2180,8 @@ def register_admin_api(
             "display_name": getattr(item, "display_name", None),
             "birthday": getattr(item, "birthday", None),
             "birthday_pending": getattr(item, "birthday_pending", None),
+            "gender": getattr(item, "gender", None),
+            "gender_other": getattr(item, "gender_other", None),
             "primary_phone": phones[0] if phones else item.phone,
             "phones": phones or ([item.phone] if item.phone else []),
             "visits": len(visits),
@@ -2167,6 +2281,8 @@ def register_admin_api(
         contact_phone: str,
         customer_name: str | None = None,
         birthday: str | None = None,
+        gender: str | None = None,
+        gender_other: str | None = None,
         service_plan_id: int,
         start_time: datetime,
         staff_id: int | None,
@@ -2184,7 +2300,7 @@ def register_admin_api(
         promotion = None
         if promotion_id:
             promotion = db.query(Promotion).filter(Promotion.id == promotion_id, Promotion.active.is_(True), Promotion.deleted_at.is_(None)).first()
-            if not promotion or plan.duration_minutes < 90 or promotion_discount(promotion, plan.price) <= 0:
+            if not promotion or promotion_discount(promotion, plan.price) <= 0:
                 raise HTTPException(status_code=404, detail="這個優惠目前無法使用")
         staff_obj = None
         if staff_id:
@@ -2207,6 +2323,8 @@ def register_admin_api(
             contact_phone=contact_phone,
             customer_name_snapshot=(customer_name or getattr(customer, "display_name", None) or "未命名客戶").strip()[:120],
             customer_birthday_snapshot=(birthday or getattr(customer, "birthday", None) or "").strip()[:10] or None,
+            customer_gender_snapshot=gender or getattr(customer, "gender", None),
+            customer_gender_other_snapshot=(gender_other or getattr(customer, "gender_other", None) or "").strip()[:120] or None,
             notes=append_creation_timestamp(notes),
             source=source,
             status="pending",
@@ -2261,7 +2379,7 @@ def register_admin_api(
         if customer_conflict:
             raise HTTPException(status_code=409, detail=f"客戶同時段已有訂單 AP-{customer_conflict.id}")
         promotion = db.query(Promotion).filter(Promotion.id == item.promotion_id).first() if item.promotion_id else None
-        discount = 0 if plan.duration_minutes < 90 else promotion_discount(promotion, plan.price)
+        discount = promotion_discount(promotion, plan.price)
         appointment = Appointment(
             user_id=item.user_id,
             staff_id=item.requested_staff_id,
@@ -2276,6 +2394,8 @@ def register_admin_api(
             ),
             customer_phone_snapshot=item.contact_phone,
             customer_birthday_snapshot=getattr(item, "customer_birthday_snapshot", None),
+            customer_gender_snapshot=getattr(item, "customer_gender_snapshot", None),
+            customer_gender_other_snapshot=getattr(item, "customer_gender_other_snapshot", None),
             staff_name_snapshot=staff_obj.name if item.requested_staff_id else None,
         )
         db.add(appointment)
@@ -2582,6 +2702,9 @@ def register_admin_api(
         }
         if getattr(customer, "birthday", None):
             result["birthday"] = customer.birthday
+        if getattr(customer, "gender", None):
+            result["gender"] = customer.gender
+            result["gender_other"] = customer.gender_other
         return result
 
     @app.post("/api/public/booking/requests", status_code=201)
@@ -2595,6 +2718,8 @@ def register_admin_api(
             contact_phone=contact_phone,
             customer_name=payload.customer_name,
             birthday=payload.birthday,
+            gender=payload.gender,
+            gender_other=payload.gender_other,
             service_plan_id=payload.service_plan_id,
             start_time=payload.start_time,
             staff_id=payload.staff_id,
@@ -3107,6 +3232,8 @@ def register_admin_api(
 
     @app.post("/api/admin/appointments", status_code=201)
     def create_appointment(payload: AppointmentCreateIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
+        if payload.gender == "other" and not (payload.gender_other or "").strip():
+            raise HTTPException(status_code=422, detail="選擇其他生理性別時請填寫說明")
         plan = db.query(ServicePlan).filter(ServicePlan.id == payload.service_plan_id, ServicePlan.active.is_(True), ServicePlan.deleted_at.is_(None)).first()
         if not plan:
             raise HTTPException(status_code=404, detail="找不到啟用中的服務方案")
@@ -3201,11 +3328,13 @@ def register_admin_api(
             customer_name_snapshot=payload.customer_name.strip(),
             customer_phone_snapshot=contact_phone,
             customer_birthday_snapshot=payload.birthday.strip() if payload.birthday else getattr(customer, "birthday", None),
+            customer_gender_snapshot=payload.gender or getattr(customer, "gender", None),
+            customer_gender_other_snapshot=(payload.gender_other.strip() if payload.gender == "other" and payload.gender_other else getattr(customer, "gender_other", None)),
             staff_name_snapshot=staff_obj.name if payload.staff_id else None,
         )
         db.add(appointment)
         db.flush()
-        totals = calculate_order_totals(base_price=plan.price, duration_minutes=duration_minutes, promotions=promotions, admin_override=payload.is_admin_override)
+        totals = calculate_order_totals(base_price=plan.price, duration_minutes=duration_minutes, included_minutes=plan.duration_minutes, promotions=promotions, extra_amount=payload.extra_amount or 0, other_extra_amount=payload.other_extra_amount or 0, booking_overtime_unit_price=payload.booking_overtime_unit_price or 0, onsite_overtime_unit_price=payload.onsite_overtime_unit_price or 0, actual_service_minutes=payload.actual_service_minutes, admin_override=payload.is_admin_override)
         if payload.is_admin_override and actor.role in {"admin", "manager"}:
             for key in ("base_price", "discount_amount", "extra_amount", "total_amount", "commission_amount"):
                 if hasattr(payload, key) and getattr(payload, key) is not None:
@@ -3233,6 +3362,14 @@ def register_admin_api(
             base_price=totals["base_price"],
             discount_amount=totals["discount_amount"],
             extra_amount=totals["extra_amount"],
+            booking_overtime_minutes=totals["booking_overtime_minutes"],
+            booking_overtime_units=totals["booking_overtime_units"],
+            booking_overtime_amount=totals["booking_overtime_amount"],
+            onsite_overtime_minutes=totals["onsite_overtime_minutes"],
+            onsite_overtime_units=totals["onsite_overtime_units"],
+            onsite_overtime_amount=totals["onsite_overtime_amount"],
+            actual_service_minutes=totals["actual_service_minutes"],
+            other_extra_amount=totals["other_extra_amount"],
             total_amount=totals["total_amount"],
             commission_amount=totals["commission_amount"],
             discount_employee_amount=settlement["discount_employee_amount"],
@@ -3362,11 +3499,13 @@ def register_admin_api(
             customer_name_snapshot=payload.customer_name.strip(),
             customer_phone_snapshot=contact_phone,
             customer_birthday_snapshot=payload.birthday.strip() if payload.birthday else getattr(customer, "birthday", None),
+            customer_gender_snapshot=payload.gender,
+            customer_gender_other_snapshot=payload.gender_other.strip() if payload.gender == "other" and payload.gender_other else None,
             staff_name_snapshot=(db.query(Staff).filter(Staff.id == assigned_staff_id).first().name if assigned_staff_id else None),
         )
         db.add(appointment)
         db.flush()
-        totals = calculate_order_totals(base_price=plan.price, duration_minutes=plan.duration_minutes, promotions=eligible_promotions)
+        totals = calculate_order_totals(base_price=plan.price, duration_minutes=plan.duration_minutes, included_minutes=plan.duration_minutes, promotions=eligible_promotions)
         source_label = "LINE 連結網頁預約" if source in {"liff", "line"} else "網頁預約"
         notes = f"來源：{source_label}"
         if rooms_full:
@@ -3384,6 +3523,14 @@ def register_admin_api(
             base_price=totals["base_price"],
             discount_amount=totals["discount_amount"],
             extra_amount=totals["extra_amount"],
+            booking_overtime_minutes=totals["booking_overtime_minutes"],
+            booking_overtime_units=totals["booking_overtime_units"],
+            booking_overtime_amount=totals["booking_overtime_amount"],
+            onsite_overtime_minutes=totals["onsite_overtime_minutes"],
+            onsite_overtime_units=totals["onsite_overtime_units"],
+            onsite_overtime_amount=totals["onsite_overtime_amount"],
+            actual_service_minutes=totals["actual_service_minutes"],
+            other_extra_amount=totals["other_extra_amount"],
             total_amount=totals["total_amount"],
             location_type="external" if plan.location_type == "external" else "pending",
             notes=append_creation_timestamp(notes),
@@ -3526,6 +3673,11 @@ def register_admin_api(
             detail.contact_phone = normalize_phone(payload.phone)
         if payload.birthday is not None:
             appointment.customer_birthday_snapshot = payload.birthday.strip() or None
+        if payload.gender is not None:
+            if payload.gender == "other" and not (payload.gender_other or "").strip():
+                raise HTTPException(status_code=422, detail="選擇其他生理性別時請填寫說明")
+            appointment.customer_gender_snapshot = payload.gender
+            appointment.customer_gender_other_snapshot = payload.gender_other.strip() if payload.gender == "other" and payload.gender_other else None
         if plan:
             detail.service_plan_id = plan.id
             detail.base_price = plan.price
@@ -3537,10 +3689,13 @@ def register_admin_api(
         if plan or promotion_changed:
             current_ids = promotion_ids if promotion_changed else ([detail.promotion_id] if detail.promotion_id else [])
             current_promotions = promotion_rows(db, current_ids)
-            totals = calculate_order_totals(base_price=detail.base_price, duration_minutes=duration, promotions=current_promotions, extra_amount=detail.extra_amount, admin_override=admin_override)
+            totals = calculate_order_totals(base_price=detail.base_price, duration_minutes=duration, included_minutes=plan.duration_minutes if plan else duration, promotions=current_promotions, extra_amount=0, other_extra_amount=payload.other_extra_amount if payload.other_extra_amount is not None else getattr(detail, "other_extra_amount", 0), booking_overtime_unit_price=payload.booking_overtime_unit_price or 0, onsite_overtime_unit_price=payload.onsite_overtime_unit_price or 0, actual_service_minutes=payload.actual_service_minutes if payload.actual_service_minutes is not None else getattr(detail, "actual_service_minutes", None), admin_override=admin_override)
             detail.discount_amount = totals["discount_amount"]
             detail.extra_amount = totals["extra_amount"]
             detail.total_amount = totals["total_amount"]
+            for key in ("booking_overtime_minutes", "booking_overtime_units", "booking_overtime_amount", "onsite_overtime_minutes", "onsite_overtime_units", "onsite_overtime_amount", "actual_service_minutes", "other_extra_amount"):
+                if hasattr(detail, key):
+                    setattr(detail, key, totals.get(key))
             settlement = calculate_settlement_totals(
                 total_amount=detail.total_amount,
                 baseline_return=(return_rule_for_appointment(db, appointment, detail).amount if return_rule_for_appointment(db, appointment, detail) else 0),
@@ -3629,6 +3784,32 @@ def register_admin_api(
         Batch = app.state.admin_models["LineNotificationBatch"]
         rows = db.query(Batch).filter(Batch.appointment_id == appointment_id).order_by(Batch.dispatch_sequence.asc()).all()
         return [line_notification_batch_dict(row, db) for row in rows]
+
+    @app.post("/api/admin/line-notification-dispatches/{dispatch_id}/rebind")
+    def rebind_line_notification_recipient(dispatch_id: int, payload: LineNotificationRebindIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
+        normalized = (payload.line_user_id or "").strip()
+        if not LINE_USER_ID_PATTERN.fullmatch(normalized):
+            raise HTTPException(status_code=422, detail="LINE User ID 格式不正確")
+        Dispatch = app.state.admin_models["LineNotificationDispatch"]
+        dispatch = db.query(Dispatch).filter(Dispatch.id == dispatch_id).first()
+        if not dispatch:
+            raise HTTPException(status_code=404, detail="找不到通知收件人紀錄")
+        entity_type = dispatch.recipient_entity_type
+        entity_id = dispatch.recipient_entity_id
+        model = {"customer": User, "staff": Staff, "admin_user": app.state.admin_models["AdminUser"]}.get(entity_type)
+        if not model or not entity_id:
+            raise HTTPException(status_code=422, detail="此通知紀錄缺少可重新綁定的來源資料")
+        entity = db.query(model).filter(model.id == entity_id).with_for_update().first()
+        if not entity:
+            raise HTTPException(status_code=404, detail="找不到收件人來源資料")
+        duplicate = db.query(model).filter(model.line_user_id == normalized, model.id != entity_id).first()
+        if duplicate:
+            raise HTTPException(status_code=409, detail="這個 LINE UID 已綁定其他帳號")
+        before_uid = getattr(entity, "line_user_id", None)
+        setattr(entity, "line_user_id", normalized)
+        audit(db, actor, "line_rebind", entity_type, entity_id, reason="通知歷程重新綁定", before={"line_user_id": before_uid}, after={"line_user_id": normalized})
+        db.commit()
+        return {"ok": True, "kind": {"customer": "client", "staff": "staff", "admin_user": "service"}[entity_type], "recipient_label": dispatch.recipient_label, "uid": _masked_line_uid(normalized)}
 
     @app.get("/api/admin/shifts")
     def list_shifts(start: datetime | None = None, end: datetime | None = None, db: Session = Depends(get_db), user=Depends(current_admin)):

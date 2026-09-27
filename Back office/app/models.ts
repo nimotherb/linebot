@@ -34,6 +34,15 @@ export type Appointment = {
   basePrice?: number;
   discountAmount?: number;
   extraAmount?: number;
+  bookingOvertimeMinutes?: number;
+  bookingOvertimeUnits?: number;
+  bookingOvertimeAmount?: number;
+  onsiteOvertimeMinutes?: number;
+  onsiteOvertimeUnits?: number;
+  onsiteOvertimeAmount?: number;
+  otherExtraAmount?: number;
+  gender?: 'male' | 'female' | 'other';
+  genderOther?: string;
   discountEmployeeAmount?: number;
   discountShopAmount?: number;
   surchargeEmployeeAmount?: number;
@@ -98,6 +107,8 @@ export type Customer = {
   name: string;
   birthday?: string;
   birthdayPending?: string;
+  gender?: 'male' | 'female' | 'other';
+  genderOther?: string;
   lineName: string;
   phone: string;
   phones: string[];

@@ -44,6 +44,50 @@ def test_line_booking_uses_one_small_web_entry_without_postbacks():
     assert "booking" in actions[0].uri
 
 
+def test_order_totals_stack_discounts_and_charge_booking_overtime_once():
+    calculate = app.state.calculate_order_totals
+
+    exact = calculate(base_price=3000, duration_minutes=120, included_minutes=120, booking_overtime_unit_price=500)
+    assert exact["booking_overtime_units"] == 0
+    assert exact["extra_amount"] == 0
+    assert exact["total_amount"] == 3000
+
+    overtime = calculate(base_price=3000, duration_minutes=151, included_minutes=120, booking_overtime_unit_price=500)
+    assert overtime["booking_overtime_minutes"] == 31
+    assert overtime["booking_overtime_units"] == 2
+    assert overtime["booking_overtime_amount"] == 1000
+    assert overtime["total_amount"] == 4000
+
+    no_double_charge = calculate(
+        base_price=3000,
+        duration_minutes=151,
+        included_minutes=120,
+        booking_overtime_unit_price=500,
+        actual_service_minutes=151,
+        onsite_overtime_unit_price=700,
+    )
+    assert no_double_charge["onsite_overtime_units"] == 0
+    assert no_double_charge["extra_amount"] == 1000
+
+
+def test_order_totals_have_no_legacy_discount_caps():
+    class Promotion:
+        def __init__(self, calculation_type, value):
+            self.active = True
+            self.calculation_type = calculation_type
+            self.value = value
+
+    calculate = app.state.calculate_order_totals
+    result = calculate(
+        base_price=1000,
+        duration_minutes=120,
+        included_minutes=120,
+        promotions=[Promotion("fixed_discount", 800), Promotion("fixed_discount", 800)],
+    )
+    assert result["discount_amount"] == 1600
+    assert result["total_amount"] == 0
+
+
 def test_staff_schedule_reminder_flex_contains_only_two_dates_and_one_link():
     message = build_staff_schedule_reminder_flex(["2026-09-21", "2026-09-28"], "https://admin.equalspa.tw/?staff_token=test")
     assert message.alt_text == "下／後週排班提醒"
