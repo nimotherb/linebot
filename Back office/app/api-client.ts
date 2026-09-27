@@ -36,7 +36,7 @@ export type LineNotificationBatch = {
   failed_count: number;
   skipped_count: number;
   failed_kinds: Array<{ kind: string; label: string; count: number }>;
-  binding_issues?: Array<{ dispatch_id: number; kind: string; recipient_label?: string; recipient_entity_type?: string; recipient_entity_id?: number; uid: string; uid_status: string; reason: string; created_at?: string | null }>;
+  binding_issues?: Array<{ dispatch_id: number; kind: string; recipient_label?: string; recipient_entity_type?: string; recipient_entity_id?: number; uid: string; uid_status: string; reason: string; created_at?: string | null; last_created_at?: string | null; occurrence_count?: number }>;
   created_at: string | null;
 };
 

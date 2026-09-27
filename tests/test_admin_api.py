@@ -418,6 +418,35 @@ def test_cancelled_order_is_zeroed_released_and_restorable(client):
     assert restored.json()["total_amount"] == original_total
 
 
+def test_line_failures_stay_in_history_and_cancel_pending_location_is_allowed(client):
+    headers = login(client)
+    service = client.get("/api/admin/bootstrap", headers=headers).json()["services"][0]
+    created = client.post(
+        "/api/admin/appointments",
+        headers=headers,
+        json={
+            "customer_name": "LINE 歷程重試測試",
+            "phone": "0977001122",
+            "service_plan_id": service["id"],
+            "start_time": "2099-12-12T12:00:00",
+            "location_type": "pending",
+        },
+    )
+    assert created.status_code == 201, created.text
+    appointment_id = created.json()["id"]
+    assert "LINE 推播未完成" not in (created.json().get("notes") or "")
+
+    for _ in range(2):
+        retry = client.post(f"/api/admin/appointments/{appointment_id}/notify-line", headers=headers)
+        assert retry.status_code == 200, retry.text
+    history = client.get(f"/api/admin/appointments/{appointment_id}/line-notification-history", headers=headers)
+    assert history.status_code == 200, history.text
+    batches = history.json()
+    issues = [issue for batch in batches for issue in batch.get("binding_issues", [])]
+    assert len(issues) == len({(issue["kind"], issue.get("recipient_entity_type"), issue.get("recipient_entity_id"), issue["reason"]) for issue in issues})
+    assert any(issue.get("occurrence_count", 0) >= 2 for issue in issues)
+
+
 def test_dashboard_finance_counts_today_non_cancelled_orders_only(client):
     headers = login(client)
     before = client.get("/api/admin/bootstrap", headers=headers)

@@ -2406,15 +2406,6 @@ def dispatch_appointment_notifications(
         batch_status = "sent"
     batch.status = batch_status
     batch.sent_count, batch.failed_count, batch.skipped_count = sent, failed, skipped
-    detail_model = models.get("AppointmentDetail")
-    detail = db.query(detail_model).filter(detail_model.appointment_id == appointment.id).first() if detail_model else None
-    note_reasons = [item.get("reason") for item in results if item.get("status") != "sent" and item.get("reason") not in {"duplicate", "rooms_full_no_staff"}]
-    if note_reasons and detail is not None:
-        safe = "；".join(_line_status_label(reason) for reason in sorted(set(note_reasons)))
-        addition = f"[系統通知] LINE 推播未完成（{origin}）：{safe}"
-        note = (detail.notes or "").rstrip()
-        if addition not in note:
-            detail.notes = f"{note}\n{addition}" if note else addition
     audit_model = models.get("AuditLog")
     if audit_model:
         db.add(audit_model(actor_user_id=actor_user_id, action="line_notification_batch", entity_type="appointment", entity_id=str(appointment.id), reason=trigger_type, after_json=json.dumps({"batch_id": batch.id, "dispatch_sequence": sequence, "status": batch_status, "sent": sent, "failed": failed, "skipped": skipped}, ensure_ascii=False)))

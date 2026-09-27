@@ -3658,9 +3658,9 @@ def register_admin_api(
             end_dt = appointment_end(start_dt, duration)
         staff_id = payload.staff_id if "staff_id" in changes else appointment.staff_id
         room_id = payload.room_id if "room_id" in changes else (detail.room_id if detail else None)
-        if not override_time_rules and staff_id and staff_appointment_conflict(db, staff_id, start_dt, end_dt, appointment.id):
+        if requested_status != "cancelled" and not override_time_rules and staff_id and staff_appointment_conflict(db, staff_id, start_dt, end_dt, appointment.id):
             raise HTTPException(status_code=409, detail="師傅時間重疊")
-        if not override_time_rules and room_id and room_appointment_conflict(db, room_id, start_dt, end_dt, appointment.id):
+        if requested_status != "cancelled" and not override_time_rules and room_id and room_appointment_conflict(db, room_id, start_dt, end_dt, appointment.id):
             raise HTTPException(status_code=409, detail="房間時間重疊")
         appointment.start_time = start_dt
         appointment.end_time = end_dt
@@ -3783,7 +3783,26 @@ def register_admin_api(
             raise HTTPException(status_code=404, detail="找不到預約")
         Batch = app.state.admin_models["LineNotificationBatch"]
         rows = db.query(Batch).filter(Batch.appointment_id == appointment_id).order_by(Batch.dispatch_sequence.asc()).all()
-        return [line_notification_batch_dict(row, db) for row in rows]
+        history = [line_notification_batch_dict(row, db) for row in rows]
+        # Keep immutable dispatch rows in the database, but collapse repeated
+        # binding failures in the operator view to the latest occurrence.
+        # A retry still creates a real batch and still evaluates every recipient.
+        latest_by_key: dict[tuple[str, str, str, str], tuple[int, dict[str, Any]]] = {}
+        occurrence_counts: dict[tuple[str, str, str, str], int] = {}
+        for batch_index, batch in enumerate(history):
+            for issue in batch.get("binding_issues", []):
+                entity_key = f"{issue.get('recipient_entity_type') or ''}:{issue.get('recipient_entity_id') or issue.get('recipient_label') or ''}"
+                key = (str(issue.get("kind") or ""), entity_key, str(issue.get("reason") or ""), str(issue.get("uid_status") or ""))
+                occurrence_counts[key] = occurrence_counts.get(key, 0) + 1
+                latest_by_key[key] = (batch_index, issue)
+            batch["binding_issues"] = []
+        for key, (batch_index, issue) in latest_by_key.items():
+            issue["occurrence_count"] = occurrence_counts[key]
+            issue["last_created_at"] = issue.get("created_at")
+            if occurrence_counts[key] > 1:
+                issue["recipient_label"] = f"{issue.get('recipient_label') or '收件人'}（共 {occurrence_counts[key]} 次）"
+            history[batch_index]["binding_issues"].append(issue)
+        return history
 
     @app.post("/api/admin/line-notification-dispatches/{dispatch_id}/rebind")
     def rebind_line_notification_recipient(dispatch_id: int, payload: LineNotificationRebindIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
