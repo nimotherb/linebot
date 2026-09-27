@@ -10,8 +10,6 @@ export type PublishedService = {
   name: string;
   /** Canonical single-line service copy rendered on the public service page. */
   quick_info: string;
-  /** Legacy drafts may still contain summary; it is read only during migration. */
-  summary?: string;
   duration: string;
   price: string;
   visible: boolean;
@@ -151,7 +149,7 @@ export function PublishedServices({ fallbackPlans, fallbackBookingUrl }: { fallb
         english: item.code,
         duration: item.duration,
         price: item.price,
-        quick_info: item.quick_info ?? item.summary ?? '',
+        quick_info: item.quick_info,
         tags: [] as string[],
       };
     });
