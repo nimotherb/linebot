@@ -1326,6 +1326,10 @@ def register_admin_api(
         item = db.query(Appointment).filter(Appointment.id == appointment_id).first()
         if not item:
             raise HTTPException(status_code=404, detail="找不到預約")
+        # Dispatch rows reference both the appointment and its notification
+        # batch. Remove child rows first so MySQL foreign-key checks succeed.
+        db.query(LineNotificationDispatch).filter(LineNotificationDispatch.appointment_id == appointment_id).delete(synchronize_session=False)
+        db.query(LineNotificationBatch).filter(LineNotificationBatch.appointment_id == appointment_id).delete(synchronize_session=False)
         db.query(StaffReturn).filter(StaffReturn.appointment_id == appointment_id).delete(synchronize_session=False)
         db.query(Payment).filter(Payment.appointment_id == appointment_id).delete(synchronize_session=False)
         db.query(AppointmentDetail).filter(AppointmentDetail.appointment_id == appointment_id).delete(synchronize_session=False)
@@ -3064,6 +3068,8 @@ def register_admin_api(
             "staff_returns": db.query(StaffReturn).count(),
             "payments": db.query(Payment).count(),
             "appointment_details": db.query(AppointmentDetail).count(),
+            "line_notification_dispatches": db.query(LineNotificationDispatch).count(),
+            "line_notification_batches": db.query(LineNotificationBatch).count(),
             "booking_requests": db.query(BookingRequest).count(),
             "public_booking_requests": db.query(PublicBookingRequest).count(),
             "appointments": db.query(Appointment).count(),
@@ -3072,6 +3078,8 @@ def register_admin_api(
         db.query(StaffReturn).delete(synchronize_session=False)
         db.query(Payment).delete(synchronize_session=False)
         db.query(AppointmentDetail).delete(synchronize_session=False)
+        db.query(LineNotificationDispatch).delete(synchronize_session=False)
+        db.query(LineNotificationBatch).delete(synchronize_session=False)
         db.query(BookingRequest).delete(synchronize_session=False)
         db.query(PublicBookingRequest).delete(synchronize_session=False)
         db.query(Appointment).delete(synchronize_session=False)

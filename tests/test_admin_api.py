@@ -17,7 +17,7 @@ os.environ["CUSTOMER_SERIAL_START"] = "4800"
 
 import main as main_module  # noqa: E402
 import admin_api as admin_api_module  # noqa: E402
-from main import Base, CustomerPhone, SessionLocal, Staff, User, app, build_booking_web_message, build_line_staff_binding_menu, build_staff_bubble, build_staff_schedule_reminder_flex, build_staff_week_appointments, engine, handle_line_admin_message, handle_root_action, now_taipei_naive, on_startup, parse_staff_profile_text, public_https_url, repair_legacy_staff_profile_fields, set_staff_online_schedule  # noqa: E402
+from main import Appointment, Base, CustomerPhone, SessionLocal, Staff, User, app, build_booking_web_message, build_line_staff_binding_menu, build_staff_bubble, build_staff_schedule_reminder_flex, build_staff_week_appointments, engine, handle_line_admin_message, handle_root_action, now_taipei_naive, on_startup, parse_staff_profile_text, public_https_url, repair_legacy_staff_profile_fields, set_staff_online_schedule  # noqa: E402
 from identifiers import customer_serial  # noqa: E402
 
 
@@ -445,6 +445,83 @@ def test_line_failures_stay_in_history_and_cancel_pending_location_is_allowed(cl
     issues = [issue for batch in batches for issue in batch.get("binding_issues", [])]
     assert len(issues) == len({(issue["kind"], issue.get("recipient_entity_type"), issue.get("recipient_entity_id"), issue["reason"]) for issue in issues})
     assert any(issue.get("occurrence_count", 0) >= 2 for issue in issues)
+
+
+def test_single_appointment_delete_removes_line_history_children(client):
+    headers = login(client)
+    service = client.get("/api/admin/bootstrap", headers=headers).json()["services"][0]
+    created = client.post(
+        "/api/admin/appointments",
+        headers=headers,
+        json={
+            "customer_name": "單筆刪除通知測試",
+            "phone": "0977002233",
+            "service_plan_id": service["id"],
+            "start_time": "2099-12-13T12:00:00",
+            "location_type": "pending",
+        },
+    )
+    assert created.status_code == 201, created.text
+    appointment_id = created.json()["id"]
+    with SessionLocal() as db:
+        models = app.state.admin_models
+        assert db.query(models["LineNotificationBatch"]).filter_by(appointment_id=appointment_id).count() >= 1
+
+    deleted = client.delete(f"/api/admin/appointments/{appointment_id}", headers=headers, params={"reason": "單筆刪除回歸測試"})
+    assert deleted.status_code == 200, deleted.text
+    assert client.get(f"/api/admin/appointments/{appointment_id}/line-notification-history", headers=headers).status_code == 404
+    with SessionLocal() as db:
+        models = app.state.admin_models
+        assert db.get(Appointment, appointment_id) is None
+        assert db.query(models["LineNotificationBatch"]).filter_by(appointment_id=appointment_id).count() == 0
+        assert db.query(models["LineNotificationDispatch"]).filter_by(appointment_id=appointment_id).count() == 0
+
+
+def test_bulk_appointment_delete_removes_only_selected_line_histories(client):
+    headers = login(client)
+    service = client.get("/api/admin/bootstrap", headers=headers).json()["services"][0]
+    appointment_ids = []
+    for index, phone in enumerate(("0977003344", "0977004455"), start=1):
+        created = client.post(
+            "/api/admin/appointments",
+            headers=headers,
+            json={
+                "customer_name": f"多筆刪除通知測試{index}",
+                "phone": phone,
+                "service_plan_id": service["id"],
+                "start_time": f"2099-12-14T{12 + index:02d}:00:00",
+                "location_type": "pending",
+            },
+        )
+        assert created.status_code == 201, created.text
+        appointment_ids.append(created.json()["id"])
+    kept = client.post(
+        "/api/admin/appointments",
+        headers=headers,
+        json={
+            "customer_name": "保留訂單通知測試",
+            "phone": "0977005566",
+            "service_plan_id": service["id"],
+            "start_time": "2099-12-14T16:00:00",
+            "location_type": "pending",
+        },
+    )
+    assert kept.status_code == 201, kept.text
+    kept_id = kept.json()["id"]
+
+    deleted = client.post(
+        "/api/admin/bulk-delete",
+        headers=headers,
+        json={"entity": "appointments", "ids": appointment_ids, "reason": "多筆刪除回歸測試"},
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert set(deleted.json()["deleted_ids"]) == set(appointment_ids)
+    with SessionLocal() as db:
+        models = app.state.admin_models
+        assert all(db.get(Appointment, item_id) is None for item_id in appointment_ids)
+        assert db.get(Appointment, kept_id) is not None
+        assert all(db.query(models["LineNotificationBatch"]).filter_by(appointment_id=item_id).count() == 0 for item_id in appointment_ids)
+        assert db.query(models["LineNotificationBatch"]).filter_by(appointment_id=kept_id).count() >= 1
 
 
 def test_dashboard_finance_counts_today_non_cancelled_orders_only(client):
