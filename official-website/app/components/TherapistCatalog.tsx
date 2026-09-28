@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { usePublishedSiteDraft } from './PublishedSiteContent';
+import { ContentSyncIndicator, PublishedCardGrid, usePublishedSiteDraft } from './PublishedSiteContent';
 
 type Category = string;
 type StaffCategory = { key: string; name: string; sort_order?: number };
@@ -123,12 +123,13 @@ export default function TherapistCatalog() {
 
     <section className="therapist-catalog" aria-live="polite">
       <header><small>CATALOG / {visible.length} PROFILES</small><h2>THERAPIST<br />SELECTION.</h2></header>
-        {loadError && <div className="updating-card"><span>THERAPISTS</span><h2>資料暫時無法取得</h2><p>{loadError}，請稍後重新整理。</p></div>}
-        {!loadError && visible.length === 0 && <div className="updating-card"><span>THERAPISTS</span><h2>內容更新中</h2><p>目前尚未發布服務團隊資料。</p></div>}
+        {loadError && <div className="content-empty-state" aria-label="服務團隊內容暫無資料"><ContentSyncIndicator syncing={false} /></div>}
+        {!loadError && visible.length === 0 && <div className="content-empty-state" aria-label="服務團隊內容暫無資料"><ContentSyncIndicator syncing={false} /></div>}
         <div className="therapist-product-grid">{visible.map((therapist) => <article key={`${therapist.category}-${therapist.slug}`}>
         <div className="therapist-product-image">{portrait(therapist, `${therapist.name}師傅`)}</div>
         <div className="therapist-product-copy"><small>{categoryText(therapist)}</small><h3>{therapist.name}</h3>{therapistSettings?.showMeasurements !== false && (therapist.height || therapist.weight || therapist.role) && <dl>{therapist.height && <div><dt>HEIGHT</dt><dd>{therapist.height} CM</dd></div>}{therapist.weight && <div><dt>WEIGHT</dt><dd>{therapist.weight} KG</dd></div>}{therapist.role && <div><dt>ROLE</dt><dd>{therapist.role}</dd></div>}</dl>}{therapist.bio && <p>{therapist.bio}</p>}{bookingUrl && <a href={therapistBookingUrl(bookingUrl, therapist)} target="_blank" rel="noreferrer">指定 {therapist.name}／送出預約通知 ↗</a>}</div>
       </article>)}</div>
     </section>
+    <PublishedCardGrid slug="therapists" onlyWhenEnabled />
   </>;
 }

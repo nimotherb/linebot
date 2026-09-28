@@ -126,7 +126,7 @@ def test_settlement_manual_values_recalculate_and_clear_per_field(client):
     )
     assert adjusted.status_code == 200, adjusted.text
     row = adjusted.json()
-    assert row["auto_total_amount"] == 3200
+    assert row["auto_total_amount"] == 3300
     assert row["total_amount"] == 4000
     assert row["total_amount_overridden"] is True
     assert row["staff_return_amount"] == 777
@@ -134,7 +134,9 @@ def test_settlement_manual_values_recalculate_and_clear_per_field(client):
     assert row["manual_partner_commission_amount"] == 777
     assert row["shop_recovery_amount"] == 888
     assert row["auto_staff_return_amount"] == 2220
-    assert row["auto_shop_recovery_amount"] == 980
+    assert row["auto_shop_recovery_amount"] == 680
+    assert row["partner_commission_baseline_amount"] == 2300
+    assert row["shop_recovery_baseline_amount"] == 700
     assert row["partner_commission"] == 777
     assert row["shop_recovery"] == 888
 
@@ -154,9 +156,9 @@ def test_settlement_manual_values_recalculate_and_clear_per_field(client):
     )
     assert cleared.status_code == 200, cleared.text
     restored = cleared.json()
-    assert restored["total_amount"] == restored["auto_total_amount"] == 3200
+    assert restored["total_amount"] == restored["auto_total_amount"] == 3300
     assert restored["staff_return_amount"] == restored["auto_staff_return_amount"] == 2220
-    assert restored["shop_recovery_amount"] == restored["auto_shop_recovery_amount"] == 980
+    assert restored["shop_recovery_amount"] == restored["auto_shop_recovery_amount"] == 680
 
     negative = client.patch(
         f"/api/admin/appointments/{appointment_id}",
@@ -171,12 +173,21 @@ def test_settlement_formula_uses_shop_baseline_and_separate_partner_baseline(cli
     calculate = app.state.calculate_settlement_totals
     base = calculate(base_price=3000, baseline_shop_recovery=1200)
     assert (base["total_amount"], base["partner_commission"], base["shop_recovery"]) == (3000, 1800, 1200)
-    employee_discount = calculate(base_price=3000, baseline_shop_recovery=1200, discount_employee_amount=200)
-    assert (employee_discount["total_amount"], employee_discount["partner_commission"], employee_discount["shop_recovery"]) == (2800, 1600, 1200)
-    shop_discount = calculate(base_price=3000, baseline_shop_recovery=1200, discount_shop_amount=200)
-    assert (shop_discount["total_amount"], shop_discount["partner_commission"], shop_discount["shop_recovery"]) == (2800, 1800, 1000)
-    surcharge = calculate(base_price=3000, baseline_shop_recovery=1200, surcharge_employee_amount=100, surcharge_shop_amount=50)
-    assert (surcharge["total_amount"], surcharge["partner_commission"], surcharge["shop_recovery"]) == (3150, 1900, 1250)
+    extra = calculate(base_price=3000, baseline_shop_recovery=1200, extra_amount=600)
+    assert (extra["total_amount"], extra["partner_commission"], extra["shop_recovery"]) == (3600, 1800, 1200)
+    discount = calculate(base_price=3000, baseline_shop_recovery=1200, discount_amount=200)
+    assert (discount["total_amount"], discount["partner_commission"], discount["shop_recovery"]) == (2800, 1800, 1200)
+    extra_and_discount = calculate(base_price=3000, baseline_shop_recovery=1200, extra_amount=600, discount_amount=200)
+    assert (extra_and_discount["total_amount"], extra_and_discount["partner_commission"], extra_and_discount["shop_recovery"]) == (3400, 1800, 1200)
+    adjustments = calculate(
+        base_price=3000,
+        baseline_shop_recovery=1200,
+        discount_employee_amount=200,
+        discount_shop_amount=100,
+        surcharge_employee_amount=50,
+        surcharge_shop_amount=25,
+    )
+    assert (adjustments["total_amount"], adjustments["partner_commission"], adjustments["shop_recovery"]) == (3000, 1650, 1125)
 
 def test_appointment_csv_exports_final_settlement_columns_in_order(client):
     headers = login(client)
@@ -1382,6 +1393,44 @@ def test_site_content_draft_publish_permissions_and_versions(client):
     logs = client.get("/api/admin/audit-logs", headers=admin_headers).json()
     site_actions = {item["action"] for item in logs if item["entity_type"] == "site_content"}
     assert {"save_draft", "publish"}.issubset(site_actions)
+
+
+def test_site_content_card_grid_blocks_are_normalized_and_published(client):
+    headers = login(client, "jerry", "654321")
+    current_version = client.get("/api/admin/site-content", headers=headers).json()["draft_version"]
+    payload = {
+        "pages": {
+            "therapists": {
+                "blocks": [
+                    {
+                        "id": "team-grid",
+                        "block_type": "card_grid",
+                        "sort_order": "bad-order",
+                        "enabled": True,
+                        "content": {
+                            "title": "公告",
+                            "cards": [
+                                {"id": "one", "title": "只填文字", "body": "內容", "image": "", "link": "", "price": 999, "status": True},
+                                {"title": "第二張", "body": "更多內容"},
+                            ],
+                        },
+                        "responsive": {"desktop_columns": 3, "mobile_columns": 1},
+                    },
+                    {"block_type": "", "content": {"cards": [{"title": "忽略"}]}},
+                ]
+            }
+        }
+    }
+    saved = client.put("/api/admin/site-content/draft", headers=headers, json={"content": payload, "expected_version": current_version})
+    assert saved.status_code == 200, saved.text
+    blocks = saved.json()["draft"]["pages"]["therapists"]["blocks"]
+    assert len(blocks) == 1
+    assert blocks[0]["sort_order"] == 0
+    assert blocks[0]["content"]["cards"][0]["title"] == "只填文字"
+    assert "price" not in blocks[0]["content"]["cards"][0]
+    published = client.post("/api/admin/site-content/publish", headers=headers, json={"expected_version": current_version + 1})
+    assert published.status_code == 200, published.text
+    assert client.get("/api/public/site-content").json()["content"]["pages"]["therapists"]["blocks"][0]["block_type"] == "card_grid"
 
 
 def test_catalog_create_and_delete_preserves_historical_order_links(client):

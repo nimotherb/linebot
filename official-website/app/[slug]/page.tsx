@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import TherapistCatalog from '../components/TherapistCatalog';
-import { PublishedOffers, PublishedPageBody, PublishedPageHeader, PublishedPageTitle, PublishedServices } from '../components/PublishedSiteContent';
+import { PublishedLocation, PublishedOffers, PublishedPageBody, PublishedPageHeader, PublishedPageTitle, PublishedServices } from '../components/PublishedSiteContent';
 import { PointerLight, SiteHeader, WingMenu } from '../components/WingMenu';
 
 const pageMeta = {
@@ -34,7 +34,7 @@ function OffersContent() {
 }
 
 function LocationContent() {
-  return <PublishedPageBody slug="location"><div /></PublishedPageBody>;
+  return <PublishedLocation />;
 }
 
 function RecruitContent() {
@@ -93,6 +93,6 @@ export default async function ContentPage({ params }: { params: Promise<{ slug: 
   if (!(slug in pageMeta)) notFound();
   const typedSlug = slug as keyof typeof pageMeta;
   const english = pageMeta[typedSlug];
-  return <main className={`interior-shell page-${typedSlug}`}><PointerLight /><SiteHeader /><article className="interior-page"><header className="page-title"><p>EQUAL SPA / {String(Object.keys(pageMeta).indexOf(typedSlug) + 1).padStart(2, '0')}</p><PublishedPageTitle slug={typedSlug} fallback={english} /><PublishedPageHeader slug={typedSlug} fallbackTitle="" fallbackIntro="" /></header><section className="page-content"><PageContent slug={typedSlug} /></section><footer className="site-footer"><div><b>伊果 SPA</b><span>EQUAL SPA · TAIPEI XIMEN</span></div>{bookingUrl && <a href={bookingUrl} target="_blank" rel="noreferrer">ONLINE BOOKING</a>}<small>© {new Date().getFullYear()} EQUAL SPA</small></footer></article><WingMenu /></main>;
+  return <main className={`interior-shell page-${typedSlug}`}><PointerLight /><SiteHeader /><article className="interior-page"><header className="page-title"><PublishedPageTitle slug={typedSlug} fallback={english} /><PublishedPageHeader slug={typedSlug} fallbackTitle="" fallbackIntro="" /></header><section className="page-content"><PageContent slug={typedSlug} /></section><footer className="site-footer"><div><b>伊果 SPA</b><span>EQUAL SPA · TAIPEI XIMEN</span></div>{bookingUrl && <a href={bookingUrl} target="_blank" rel="noreferrer">ONLINE BOOKING</a>}<small>© {new Date().getFullYear()} EQUAL SPA</small></footer></article><WingMenu /></main>;
 }
 

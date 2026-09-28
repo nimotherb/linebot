@@ -670,9 +670,11 @@ def register_admin_api(
         staff_return_amount = Column(Integer, nullable=False, default=0)
         shop_recovery_amount = Column(Integer, nullable=False, default=0)
         auto_staff_return_amount = Column(Integer, nullable=False, default=0)
+        partner_commission_baseline_amount = Column(Integer, nullable=True)
         manual_staff_return_amount = Column(Integer, nullable=True)
         staff_return_amount_overridden = Column(Boolean, nullable=False, default=False)
         auto_shop_recovery_amount = Column(Integer, nullable=False, default=0)
+        shop_recovery_baseline_amount = Column(Integer, nullable=True)
         manual_shop_recovery_amount = Column(Integer, nullable=True)
         shop_recovery_amount_overridden = Column(Boolean, nullable=False, default=False)
         settlement_overridden_by_admin_id = Column(Integer, ForeignKey("admin_users.id"), nullable=True, index=True)
@@ -1536,11 +1538,13 @@ def register_admin_api(
         return decoded if isinstance(decoded, dict) else {}
 
     def normalize_site_content(content: dict[str, Any]) -> dict[str, Any]:
-        """Normalize legacy service copy into the single public quick_info field.
+        """Normalize the published site document and its extensible page blocks.
 
         Existing drafts may still use ``summary`` or the catalog ``description``
         field.  Keep those records readable while ensuring every saved/published
-        site-content payload has one canonical service copy field.
+        site-content payload has one canonical service copy field.  Page blocks
+        are normalized at the persistence boundary so the editor and public
+        renderer consume one stable structure.
         """
         normalized = json.loads(_json(content))
         services = normalized.get("services")
@@ -1554,6 +1558,58 @@ def register_admin_api(
                 service["quick_info"] = str(quick_info)
                 service.pop("summary", None)
                 service.pop("description", None)
+
+        pages = normalized.get("pages")
+        if isinstance(pages, dict):
+            for page in pages.values():
+                if not isinstance(page, dict):
+                    continue
+                raw_blocks = page.get("blocks")
+                if not isinstance(raw_blocks, list):
+                    continue
+                blocks: list[dict[str, Any]] = []
+                for index, raw_block in enumerate(raw_blocks):
+                    if not isinstance(raw_block, dict):
+                        continue
+                    block_type = raw_block.get("block_type")
+                    if not isinstance(block_type, str) or not block_type.strip():
+                        continue
+                    block_id = raw_block.get("id")
+                    content_value = raw_block.get("content")
+                    style_value = raw_block.get("style")
+                    responsive_value = raw_block.get("responsive")
+                    try:
+                        sort_order = int(raw_block.get("sort_order", index) or index)
+                    except (TypeError, ValueError):
+                        sort_order = index
+                    block: dict[str, Any] = {
+                        "id": str(block_id or f"{block_type.strip()}-{index + 1}"),
+                        "block_type": block_type.strip(),
+                        "sort_order": sort_order,
+                        "enabled": raw_block.get("enabled") is not False,
+                        "content": dict(content_value) if isinstance(content_value, dict) else {},
+                        "style": dict(style_value) if isinstance(style_value, dict) else {},
+                        "responsive": dict(responsive_value) if isinstance(responsive_value, dict) else {},
+                    }
+                    if block["block_type"] == "card_grid":
+                        block_content = block["content"]
+                        cards = block_content.get("cards")
+                        if isinstance(cards, list):
+                            clean_cards: list[dict[str, Any]] = []
+                            for card_index, raw_card in enumerate(cards):
+                                if not isinstance(raw_card, dict):
+                                    continue
+                                clean_cards.append({
+                                    "id": str(raw_card.get("id") or f"card-{card_index + 1}"),
+                                    "label": str(raw_card["label"]) if raw_card.get("label") is not None else None,
+                                    "title": str(raw_card["title"]) if raw_card.get("title") is not None else None,
+                                    "body": str(raw_card["body"]) if raw_card.get("body") is not None else None,
+                                    "image": str(raw_card["image"]) if raw_card.get("image") is not None else None,
+                                    "link": str(raw_card["link"]) if raw_card.get("link") is not None else None,
+                                })
+                            block_content["cards"] = clean_cards
+                    blocks.append(block)
+                page["blocks"] = sorted(blocks, key=lambda item: (item["sort_order"], item["id"]))
         return normalized
 
     def encode_site_content(content: dict[str, Any]) -> str:
@@ -1899,11 +1955,12 @@ def register_admin_api(
                                     manual_total_amount: int | None = None,
                                     manual_staff_return_amount: int | None = None,
                                     manual_shop_recovery_amount: int | None = None) -> dict[str, int | None]:
-        """Calculate the current settlement snapshot without rewriting history.
+        """Calculate the current order total and independent settlement values.
 
-        Return-rule amounts are shop recovery baselines.  Existing ``discount``
-        and ``extra`` totals retain their historical shop-side attribution;
-        explicit A/B/C/D adjustments remain independently editable.
+        ``discount_amount`` and ``extra_amount`` belong only to the customer
+        order total.  A/B/C/D are manual settlement adjustments and never
+        flow back into that total.  Return-rule amounts are shop-recovery
+        baselines; the partner baseline is the remaining original price.
         """
         original = base_price if base_price is not None else (total_amount or 0)
         original = int(round(original or 0))
@@ -1915,12 +1972,12 @@ def register_admin_api(
         d = max(0, int(round(surcharge_shop_amount or 0)))
         existing_discount = max(0, int(round(discount_amount or 0)))
         existing_extra = max(0, int(round(extra_amount or 0)))
-        auto_total = max(0, int(round(original - a - b - existing_discount + c + d + existing_extra)))
+        auto_total = max(0, int(round(original + existing_extra - existing_discount)))
         partner_baseline = max(0, int(round(original - shop_baseline)))
         auto_staff_return = max(0, int(round(partner_baseline - a + c)))
         final_total = int(round(manual_total_amount)) if manual_total_amount is not None else auto_total
         final_staff_return = int(round(manual_staff_return_amount)) if manual_staff_return_amount is not None else auto_staff_return
-        auto_shop_recovery = max(0, int(round(shop_baseline - b - existing_discount + d + existing_extra)))
+        auto_shop_recovery = max(0, int(round(shop_baseline - b + d)))
         final_shop_recovery = int(round(manual_shop_recovery_amount)) if manual_shop_recovery_amount is not None else auto_shop_recovery
         return {
             "auto_total_amount": auto_total,
@@ -2093,6 +2150,8 @@ def register_admin_api(
         service_code = plan.code if plan else (item.plan_name or "").split("-", 1)[0]
         return_rule = cache["rules"].get((rule_set_id, "E" if service_code == "OUT" else service_code)) if rule_set_id else None
         baseline_return = staff_return.amount if staff_return else (return_rule.amount if return_rule else 0)
+        if detail is not None and getattr(detail, "shop_recovery_baseline_amount", None) is not None:
+            baseline_return = int(detail.shop_recovery_baseline_amount or 0)
         base_price = int(getattr(detail, "base_price", 0) if detail else appointment_price_from_legacy(item))
         discount_amount = int(getattr(detail, "discount_amount", 0) if detail else 0)
         extra_amount = int(getattr(detail, "extra_amount", 0) if detail else 0)
@@ -3263,9 +3322,11 @@ def register_admin_api(
             "commission_amount": int(getattr(detail, "commission_amount", 0) or 0),
             "staff_return_amount": int(getattr(detail, "staff_return_amount", 0) or 0),
             "auto_staff_return_amount": int(getattr(detail, "auto_staff_return_amount", getattr(detail, "staff_return_amount", 0)) or 0),
+            "partner_commission_baseline_amount": getattr(detail, "partner_commission_baseline_amount", None),
             "manual_staff_return_amount": getattr(detail, "manual_staff_return_amount", None),
             "shop_recovery_amount": int(getattr(detail, "shop_recovery_amount", 0) or 0),
             "auto_shop_recovery_amount": int(getattr(detail, "auto_shop_recovery_amount", getattr(detail, "shop_recovery_amount", 0)) or 0),
+            "shop_recovery_baseline_amount": getattr(detail, "shop_recovery_baseline_amount", None),
             "manual_shop_recovery_amount": getattr(detail, "manual_shop_recovery_amount", None),
         }
         detail.cancellation_snapshot_json = _json(snapshot)
@@ -3317,7 +3378,10 @@ def register_admin_api(
         detail.manual_staff_return_amount = snapshot.get("manual_staff_return_amount")
         detail.manual_shop_recovery_amount = snapshot.get("manual_shop_recovery_amount")
         baseline = return_rule_for_appointment(db, appointment, detail)
-        for key, value in calculate_settlement_totals(base_price=detail.base_price, baseline_shop_recovery=baseline.amount if baseline else 0, discount_amount=detail.discount_amount, extra_amount=detail.extra_amount, discount_employee_amount=detail.discount_employee_amount, discount_shop_amount=detail.discount_shop_amount, surcharge_employee_amount=detail.surcharge_employee_amount, surcharge_shop_amount=detail.surcharge_shop_amount, manual_total_amount=detail.manual_total_amount, manual_staff_return_amount=detail.manual_staff_return_amount, manual_shop_recovery_amount=detail.manual_shop_recovery_amount).items():
+        baseline_amount = snapshot.get("shop_recovery_baseline_amount")
+        if baseline_amount is None:
+            baseline_amount = baseline.amount if baseline else 0
+        for key, value in calculate_settlement_totals(base_price=detail.base_price, baseline_shop_recovery=baseline_amount, discount_amount=detail.discount_amount, extra_amount=detail.extra_amount, discount_employee_amount=detail.discount_employee_amount, discount_shop_amount=detail.discount_shop_amount, surcharge_employee_amount=detail.surcharge_employee_amount, surcharge_shop_amount=detail.surcharge_shop_amount, manual_total_amount=detail.manual_total_amount, manual_staff_return_amount=detail.manual_staff_return_amount, manual_shop_recovery_amount=detail.manual_shop_recovery_amount).items():
             setattr(detail, key, value)
         appointment.status = status if status not in {"cancelled", "no_show"} else "confirmed"
         if detail.notes:
