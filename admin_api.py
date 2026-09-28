@@ -144,9 +144,11 @@ class AppointmentCreateIn(BaseModel):
     surcharge_employee_amount: int | None = None
     surcharge_shop_amount: int | None = None
     staff_return_amount: int | None = None
+    partner_commission_amount: int | None = None
     shop_recovery_amount: int | None = None
     manual_total_amount: int | None = None
     manual_staff_return_amount: int | None = None
+    manual_partner_commission_amount: int | None = None
     manual_shop_recovery_amount: int | None = None
     is_admin_override: bool = False
 
@@ -181,9 +183,11 @@ class AppointmentPatchIn(BaseModel):
     surcharge_employee_amount: int | None = None
     surcharge_shop_amount: int | None = None
     staff_return_amount: int | None = None
+    partner_commission_amount: int | None = None
     shop_recovery_amount: int | None = None
     manual_total_amount: int | None = None
     manual_staff_return_amount: int | None = None
+    manual_partner_commission_amount: int | None = None
     manual_shop_recovery_amount: int | None = None
     notes: str | None = Field(default=None, max_length=2000)
     force_reason: str | None = Field(default=None, max_length=500)
@@ -1900,8 +1904,11 @@ def register_admin_api(
         auto_staff_return = max(0, baseline - a + c)
         final_total = int(round(manual_total_amount)) if manual_total_amount is not None else auto_total
         final_staff_return = int(round(manual_staff_return_amount)) if manual_staff_return_amount is not None else auto_staff_return
-        auto_shop_recovery = max(0, auto_total - auto_staff_return - b + d)
-        final_shop_recovery = int(round(manual_shop_recovery_amount)) if manual_shop_recovery_amount is not None else max(0, final_total - final_staff_return - b + d)
+        # Shop recovery follows the currently effective total and partner
+        # commission. A manual shop override replaces this automatic result;
+        # it must never alter the upstream automatic values.
+        auto_shop_recovery = max(0, final_total - final_staff_return - b + d)
+        final_shop_recovery = int(round(manual_shop_recovery_amount)) if manual_shop_recovery_amount is not None else auto_shop_recovery
         return {
             "auto_total_amount": auto_total,
             "manual_total_amount": manual_total_amount,
@@ -2155,6 +2162,12 @@ def register_admin_api(
             "expected_return_amount": staff_return.amount if staff_return else (return_rule.amount if return_rule else 0),
             "commission_amount": getattr(detail, "commission_amount", None) if detail else None,
             **settlement,
+            # Canonical public API names. The legacy staff_return_* keys remain
+            # for existing clients and historical integrations.
+            "partner_commission_amount": settlement.get("staff_return_amount", 0),
+            "auto_partner_commission_amount": settlement.get("auto_staff_return_amount", 0),
+            "manual_partner_commission_amount": settlement.get("manual_staff_return_amount"),
+            "partner_commission_amount_overridden": settlement.get("staff_return_amount_overridden", False),
             "staff_return_status": staff_return.status if staff_return else "not_created",
             "settlement_overridden_by_admin_id": getattr(detail, "settlement_overridden_by_admin_id", None) if detail else None,
             "settlement_override_at": _iso(getattr(detail, "settlement_override_at", None)) if detail else None,
@@ -3442,7 +3455,15 @@ def register_admin_api(
         manual_shop_recovery_amount = None
         if payload.is_admin_override and actor.role in {"admin", "manager"}:
             manual_total_amount = payload.manual_total_amount if payload.manual_total_amount is not None else payload.total_amount
-            manual_staff_return_amount = payload.manual_staff_return_amount if payload.manual_staff_return_amount is not None else payload.staff_return_amount
+            manual_staff_return_amount = (
+                payload.manual_staff_return_amount
+                if payload.manual_staff_return_amount is not None
+                else payload.manual_partner_commission_amount
+                if payload.manual_partner_commission_amount is not None
+                else payload.partner_commission_amount
+                if payload.partner_commission_amount is not None
+                else payload.staff_return_amount
+            )
             manual_shop_recovery_amount = payload.manual_shop_recovery_amount if payload.manual_shop_recovery_amount is not None else payload.shop_recovery_amount
         settlement = calculate_settlement_totals(
             total_amount=auto_total_amount,
@@ -3725,8 +3746,8 @@ def register_admin_api(
             "base_price", "discount_amount", "extra_amount", "total_amount",
             "discount_employee_amount", "discount_shop_amount",
             "surcharge_employee_amount", "surcharge_shop_amount",
-            "staff_return_amount", "shop_recovery_amount", "commission_amount",
-            "manual_total_amount", "manual_staff_return_amount", "manual_shop_recovery_amount",
+            "staff_return_amount", "partner_commission_amount", "shop_recovery_amount", "commission_amount",
+            "manual_total_amount", "manual_staff_return_amount", "manual_partner_commission_amount", "manual_shop_recovery_amount",
         }
         if actor.role == "clerk" and monetary_fields.intersection(changes):
             raise HTTPException(status_code=403, detail="客服不能直接覆寫金額，請由店長或 Admin 處理")
@@ -3855,11 +3876,13 @@ def register_admin_api(
             manual_aliases = {
                 "total_amount": "manual_total_amount",
                 "staff_return_amount": "manual_staff_return_amount",
+                "partner_commission_amount": "manual_staff_return_amount",
                 "shop_recovery_amount": "manual_shop_recovery_amount",
             }
             manual_changed = False
-            for source, target in ((key, key) for key in ("manual_total_amount", "manual_staff_return_amount", "manual_shop_recovery_amount")):
+            for source, target in ((key, key) for key in ("manual_total_amount", "manual_staff_return_amount", "manual_partner_commission_amount", "manual_shop_recovery_amount")):
                 if source in changes:
+                    target = "manual_staff_return_amount" if source == "manual_partner_commission_amount" else target
                     setattr(detail, target, None if changes[source] is None else int(changes[source]))
                     manual_changed = True
             for source, target in manual_aliases.items():

@@ -84,9 +84,13 @@ type RawAppointment = {
   surcharge_employee_amount?: number;
   surcharge_shop_amount?: number;
   staff_return_amount?: number;
+  partner_commission_amount?: number;
   auto_staff_return_amount?: number;
+  auto_partner_commission_amount?: number;
   manual_staff_return_amount?: number | null;
+  manual_partner_commission_amount?: number | null;
   staff_return_amount_overridden?: boolean;
+  partner_commission_amount_overridden?: boolean;
   shop_recovery_amount?: number;
   auto_shop_recovery_amount?: number;
   manual_shop_recovery_amount?: number | null;
@@ -343,10 +347,14 @@ export const mapAppointment = (item: RawAppointment): Appointment => {
     discountShopAmount: item.discount_shop_amount ?? 0,
     surchargeEmployeeAmount: item.surcharge_employee_amount ?? 0,
     surchargeShopAmount: item.surcharge_shop_amount ?? 0,
-    staffReturnAmount: item.staff_return_amount ?? item.expected_return_amount ?? 0,
-    autoStaffReturnAmount: item.auto_staff_return_amount ?? item.staff_return_amount ?? item.expected_return_amount ?? 0,
-    manualStaffReturnAmount: item.manual_staff_return_amount ?? null,
-    staffReturnAmountOverridden: item.staff_return_amount_overridden ?? (item.manual_staff_return_amount != null),
+    staffReturnAmount: item.partner_commission_amount ?? item.staff_return_amount ?? item.expected_return_amount ?? 0,
+    partnerCommissionAmount: item.partner_commission_amount ?? item.staff_return_amount ?? item.expected_return_amount ?? 0,
+    autoStaffReturnAmount: item.auto_partner_commission_amount ?? item.auto_staff_return_amount ?? item.staff_return_amount ?? item.expected_return_amount ?? 0,
+    autoPartnerCommissionAmount: item.auto_partner_commission_amount ?? item.auto_staff_return_amount ?? item.staff_return_amount ?? item.expected_return_amount ?? 0,
+    manualStaffReturnAmount: item.manual_partner_commission_amount ?? item.manual_staff_return_amount ?? null,
+    manualPartnerCommissionAmount: item.manual_partner_commission_amount ?? item.manual_staff_return_amount ?? null,
+    staffReturnAmountOverridden: item.partner_commission_amount_overridden ?? item.staff_return_amount_overridden ?? (item.manual_partner_commission_amount != null || item.manual_staff_return_amount != null),
+    partnerCommissionAmountOverridden: item.partner_commission_amount_overridden ?? item.staff_return_amount_overridden ?? (item.manual_partner_commission_amount != null || item.manual_staff_return_amount != null),
     shopRecoveryAmount: item.shop_recovery_amount ?? 0,
     autoShopRecoveryAmount: item.auto_shop_recovery_amount ?? item.shop_recovery_amount ?? 0,
     manualShopRecoveryAmount: item.manual_shop_recovery_amount ?? null,

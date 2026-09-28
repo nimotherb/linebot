@@ -51,9 +51,13 @@ export type Appointment = {
   surchargeEmployeeAmount?: number;
   surchargeShopAmount?: number;
   staffReturnAmount?: number;
+  partnerCommissionAmount?: number;
   autoStaffReturnAmount?: number;
+  autoPartnerCommissionAmount?: number;
   manualStaffReturnAmount?: number | null;
+  manualPartnerCommissionAmount?: number | null;
   staffReturnAmountOverridden?: boolean;
+  partnerCommissionAmountOverridden?: boolean;
   shopRecoveryAmount?: number;
   autoShopRecoveryAmount?: number;
   manualShopRecoveryAmount?: number | null;

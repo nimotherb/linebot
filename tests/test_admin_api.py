@@ -130,14 +130,25 @@ def test_settlement_manual_values_recalculate_and_clear_per_field(client):
     assert row["total_amount"] == 4000
     assert row["total_amount_overridden"] is True
     assert row["staff_return_amount"] == 777
+    assert row["partner_commission_amount"] == 777
+    assert row["manual_partner_commission_amount"] == 777
     assert row["shop_recovery_amount"] == 888
     assert row["auto_staff_return_amount"] == 620
-    assert row["auto_shop_recovery_amount"] == 2660
+    assert row["auto_shop_recovery_amount"] == 3203
+
+    canonical = client.patch(
+        f"/api/admin/appointments/{appointment_id}",
+        headers=headers,
+        json={"manual_partner_commission_amount": 778, "is_admin_override": True},
+    )
+    assert canonical.status_code == 200, canonical.text
+    assert canonical.json()["partner_commission_amount"] == 778
+    assert canonical.json()["manual_partner_commission_amount"] == 778
 
     cleared = client.patch(
         f"/api/admin/appointments/{appointment_id}",
         headers=headers,
-        json={"manual_total_amount": None, "manual_staff_return_amount": None, "manual_shop_recovery_amount": None, "is_admin_override": True},
+        json={"manual_total_amount": None, "manual_partner_commission_amount": None, "manual_staff_return_amount": None, "manual_shop_recovery_amount": None, "is_admin_override": True},
     )
     assert cleared.status_code == 200, cleared.text
     restored = cleared.json()
@@ -193,6 +204,7 @@ def test_appointment_csv_exports_final_settlement_columns_in_order(client):
     assert response.status_code == 200, response.text
     rows = list(csv.reader(response.content.decode("utf-8-sig").splitlines()))
     assert rows[0] == ["訂單編號", "日期", "開始", "結束", "客戶", "電話", "師傅", "方案", "場地", "狀態", "加價", "折扣", "總金額", "扣員工", "扣店家", "加員工", "加店家", "夥伴抽成", "店家回收"]
+    assert not any("自動" in column or "手動" in column or "覆寫" in column for column in rows[0])
     exported = next(row for row in rows[1:] if row[0].endswith(f"-{appointment_id:03d}"))
     assert exported[10:] == ["300", "100", "2500", "10", "20", "30", "40", "900", "1500"]
 
