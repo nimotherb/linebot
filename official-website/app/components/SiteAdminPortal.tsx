@@ -115,6 +115,10 @@ export default function SiteAdminPortal() {
       method: 'POST',
       body: JSON.stringify({ expected_version: expectedVersion }),
     }),
+    revertSiteContent: (expectedVersion: number) => request<SiteContentPayload>('/api/admin/site-content/revert', {
+      method: 'POST',
+      body: JSON.stringify({ expected_version: expectedVersion }),
+    }),
     listServices: () => request<ServiceRecord[]>('/api/admin/services'),
     createService: (payload: Record<string, unknown>) => request<ServiceRecord>('/api/admin/services', { method: 'POST', body: JSON.stringify(payload) }),
     updateService: (id: number, payload: Record<string, unknown>) => request<ServiceRecord>(`/api/admin/services/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),

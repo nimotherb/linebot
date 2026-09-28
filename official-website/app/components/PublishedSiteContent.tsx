@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || 'https://linebot-3r2w.onrender.com').replace(/\/$/, '');
 
@@ -13,11 +13,11 @@ export type PublishedService = {
   price: string;
   visible: boolean;
 };
-export type PublishedOffer = { id?: number; name: string; summary?: string };
+export type PublishedOffer = { id?: number; name: string; summary?: string; status?: '顯示中' | '草稿' };
 export type PublishedNavigationItem = { id: string; slug: string; label: string; english: string; desktopVisible?: boolean; mobileVisible?: boolean };
-export type PublishedPageCard = { id?: string; number?: string; label?: string; title?: string; body?: string; image?: string; link?: string };
-export type PublishedPageBlock = { id: string; block_type: string; sort_order: number; enabled: boolean; content: Record<string, unknown>; style?: Record<string, unknown>; responsive?: Record<string, unknown> };
-export type PublishedPage = { english?: string; title?: string; intro?: string; body?: string; cards?: PublishedPageCard[]; blocks?: PublishedPageBlock[]; cardGridEnabled?: boolean; desktopVisible?: boolean; mobileVisible?: boolean };
+export type PublishedPageCard = { id?: string; title?: string; body?: string; link_url?: string; link_label?: string; sort_order?: number; enabled?: boolean };
+export type PublishedPageBlock = { id: string; page_id?: string; block_type: string; sort_order: number; enabled: boolean; content: Record<string, unknown>; style?: Record<string, unknown>; responsive?: Record<string, unknown> };
+export type PublishedPage = { english?: string; title?: string; intro?: string; body?: string; status?: 'draft' | 'published'; render_mode?: 'legacy' | 'modular'; published_version?: number | null; cards?: PublishedPageCard[]; blocks?: PublishedPageBlock[]; cardGridEnabled?: boolean; desktopVisible?: boolean; mobileVisible?: boolean };
 export type PublishedSiteDraft = {
   navigation?: PublishedNavigationItem[];
   pages?: Record<string, PublishedPage>;
@@ -101,12 +101,12 @@ function recordCards(value: unknown): PublishedPageCard[] {
   if (!Array.isArray(value)) return [];
   return value.filter((card): card is Record<string, unknown> => Boolean(card && typeof card === 'object')).map((card) => ({
     id: typeof card.id === 'string' ? card.id : undefined,
-    label: typeof card.label === 'string' ? card.label : undefined,
-    number: typeof card.number === 'string' ? card.number : undefined,
     title: typeof card.title === 'string' ? card.title : undefined,
     body: typeof card.body === 'string' ? card.body : undefined,
-    image: typeof card.image === 'string' ? card.image : (typeof card.image_url === 'string' ? card.image_url : undefined),
-    link: typeof card.link === 'string' ? card.link : undefined,
+    link_url: typeof card.link_url === 'string' ? card.link_url : (typeof card.link === 'string' ? card.link : undefined),
+    link_label: typeof card.link_label === 'string' ? card.link_label : undefined,
+    sort_order: typeof card.sort_order === 'number' ? card.sort_order : undefined,
+    enabled: card.enabled !== false,
   }));
 }
 
@@ -135,20 +135,11 @@ export function PublishedCardGrid({ slug, fallbackCards, onlyWhenEnabled = false
   if (!block) return <EmptyPublishedContent syncing={syncing} />;
   const cards = recordCards(block.content.cards);
   if (!cards.length) return <EmptyPublishedContent syncing={syncing} />;
-  const style = block.style || {};
-  const responsive = block.responsive || {};
-  const columns = Number(style.columns || responsive.desktop_columns || 3);
-  const gap = Number(style.gap || responsive.gap || 20);
-  const mobileColumns = Number(responsive.mobile_columns || 1);
-  const wrapperStyle = { '--card-columns': String(Number.isFinite(columns) && columns > 0 ? Math.min(columns, 6) : 3), '--mobile-columns': String(Number.isFinite(mobileColumns) && mobileColumns > 0 ? Math.min(mobileColumns, 3) : 1), '--card-gap': `${Number.isFinite(gap) && gap >= 0 ? gap : 20}px` } as CSSProperties;
-  const title = typeof block.content.title === 'string' ? block.content.title : '';
-  const description = typeof block.content.description === 'string' ? block.content.description : '';
-  return <section className="published-card-grid-module" data-desktop-visible={responsive.desktop_visible !== false} data-mobile-visible={responsive.mobile_visible !== false} style={wrapperStyle}>
-    {(title || description) && <header>{title && <h2>{title}</h2>}{description && <p>{description}</p>}</header>}
-    <div className="value-grid" data-card-count={cards.length}>{cards.map((card, index) => {
-      const image = safeUrl(card.image);
-      const href = safeUrl(card.link);
-      const inner = <>{image && <img src={image} alt="" loading="lazy" />}{(card.label || card.number) && <small>{card.label || card.number}</small>}{card.title && <h2>{card.title}</h2>}{card.body && <p>{card.body}</p>}</>;
+  const visibleCards = cards.filter((card) => card.enabled !== false).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  return <section className="published-card-grid-module">
+    <div className="value-grid" data-card-count={visibleCards.length}>{visibleCards.map((card, index) => {
+      const href = safeUrl(card.link_url);
+      const inner = <>{card.title && <h2>{card.title}</h2>}{card.body && <p>{card.body}</p>}{href && <span className="published-card-link">{card.link_label || '了解更多'} ↗</span>}</>;
       return <article key={card.id || `${card.title || 'card'}-${index}`}>{href ? <a href={href}>{inner}</a> : inner}</article>;
     })}</div>
     <ContentSyncIndicator syncing={syncing} />
@@ -159,11 +150,41 @@ type ServicePlanView = { code: string; name: string; english: string; duration: 
 type PublishedBlockRenderer = (block: PublishedPageBlock, context: { bookingUrl: string }) => ReactNode;
 
 export const publishedBlockRegistry: Record<string, PublishedBlockRenderer> = {
+  text: (block) => {
+    const body = typeof block.content.body === 'string' ? block.content.body.trim() : '';
+    return body ? <div key={block.id} className="published-page-copy">{body.split(/\n\s*\n/).filter(Boolean).map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</div> : <div key={block.id} className="content-empty-state"><ContentSyncIndicator syncing={false} /></div>;
+  },
+  card_grid: (block) => {
+    const cards = recordCards(block.content.cards).filter((card) => card.enabled !== false).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    if (!cards.length) return <div key={block.id} className="content-empty-state"><ContentSyncIndicator syncing={false} /></div>;
+    return <section key={block.id} className="published-card-grid-module"><div className="value-grid" data-card-count={cards.length}>{cards.map((card, index) => { const href = safeUrl(card.link_url); const inner = <>{card.title && <h2>{card.title}</h2>}{card.body && <p>{card.body}</p>}{href && <span className="published-card-link">{card.link_label || '了解更多'} ↗</span>}</>; return <article key={card.id || `${card.title || 'card'}-${index}`}>{href ? <a href={href}>{inner}</a> : inner}</article>; })}</div></section>;
+  },
   service_plan: (block, { bookingUrl }) => {
     const plan = block.content as unknown as ServicePlanView;
     return <article key={block.id} className="service-journey"><header><span className="service-index">{String(block.sort_order + 1).padStart(2, '0')}</span><i>{plan.code}</i><div><small>{plan.english}</small><h2>{plan.name}</h2></div><div className="service-quick-info"><small>{plan.quick_info}</small><p>{plan.duration}</p></div><strong>{plan.price}</strong></header><div className="service-journey-body">{plan.tags.length > 0 && <ul>{plan.tags.map((tag) => <li key={tag}>{tag}</li>)}</ul>}{bookingUrl && <a href={bookingUrl} target="_blank" rel="noreferrer">SELECT THIS PLAN ↗</a>}</div></article>;
   },
 };
+
+export function PublishedModularPage({ slug }: { slug: 'about' | 'services' | 'offers' | 'location' | 'recruit' }) {
+  const { content, syncing } = usePublishedSiteState();
+  const page = content?.pages?.[slug];
+  if (!content || !page) return <EmptyPublishedContent syncing={syncing} />;
+  if (slug === 'services') return <PublishedServices fallbackPlans={[]} fallbackBookingUrl="" />;
+  if (slug === 'offers') return <PublishedCardGrid slug="offers" />;
+  if (slug === 'location') return <PublishedLocation />;
+  const blocks = (page.blocks || []).filter((block) => block.enabled).sort((a, b) => a.sort_order - b.sort_order);
+  if (!blocks.length) return <EmptyPublishedContent syncing={syncing} />;
+  return <div className={`published-modular-page page-${slug}`}>{blocks.map((block) => renderPublishedBlock(block, { bookingUrl: content.booking?.url || '' }))}<ContentSyncIndicator syncing={syncing} /></div>;
+}
+
+const modularSlugs = new Set(['about', 'services', 'offers', 'location', 'recruit']);
+
+export function PublishedModularOrLegacy({ slug, legacy }: { slug: string; legacy: ReactNode }) {
+  const { content, syncing } = usePublishedSiteState();
+  if (!content) return <div className="content-empty-state"><ContentSyncIndicator syncing={syncing} /></div>;
+  if (!modularSlugs.has(slug) || content.pages?.[slug]?.render_mode !== 'modular') return <>{legacy}</>;
+  return <PublishedModularPage slug={slug as 'about' | 'services' | 'offers' | 'location' | 'recruit'} />;
+}
 
 function renderPublishedBlock(block: PublishedPageBlock, context: { bookingUrl: string }) {
   if (!block.enabled) return null;
@@ -186,10 +207,10 @@ export function PublishedOffers({ fallbackBookingUrl }: { fallbackBookingUrl: st
   void fallbackBookingUrl;
   const page = content?.pages?.offers;
   if (!content) return <EmptyPublishedContent syncing={syncing} />;
-  if (cardGridBlock(page)) return <PublishedCardGrid slug="offers" />;
-  const cards = Array.isArray(content.offers) ? content.offers.map((offer) => ({ id: offer.id ? String(offer.id) : undefined, title: offer.name, body: offer.summary })) : [];
-  if (!cards.length) return <EmptyPublishedContent syncing={syncing} />;
-  return <section className="published-card-grid-module"><div className="value-grid" data-card-count={cards.length}>{cards.map((card, index) => <article key={card.id || `${card.title}-${index}`}><h2>{card.title}</h2><p>{card.body}</p></article>)}</div><ContentSyncIndicator syncing={syncing} /></section>;
+  if (page?.render_mode === 'modular' && cardGridBlock(page)) return <PublishedCardGrid slug="offers" />;
+  const offers = Array.isArray(content.offers) ? content.offers.filter((offer) => offer.status === '顯示中') : [];
+  if (!offers.length) return <EmptyPublishedContent syncing={syncing} />;
+  return <div className="offer-grid">{offers.map((offer, index) => <article key={offer.id || `${offer.name}-${index}`}><span>{String(index + 1).padStart(2, '0')}</span><small>CURRENT OFFER</small><h2>{offer.name}</h2><p>{offer.summary || ''}</p>{content.booking?.url && <a href={content.booking.url} target="_blank" rel="noreferrer">查看可預約時段 ↗</a>}</article>)}<ContentSyncIndicator syncing={syncing} /></div>;
 }
 
 function validMapUrl(value: string | undefined) {

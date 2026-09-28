@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import TherapistCatalog from '../components/TherapistCatalog';
-import { PublishedLocation, PublishedOffers, PublishedPageBody, PublishedPageHeader, PublishedPageTitle, PublishedServices } from '../components/PublishedSiteContent';
+import { PublishedLocation, PublishedModularOrLegacy, PublishedOffers, PublishedPageBody, PublishedPageHeader, PublishedPageTitle, PublishedServices } from '../components/PublishedSiteContent';
 import { PointerLight, SiteHeader, WingMenu } from '../components/WingMenu';
 
 const pageMeta = {
@@ -50,12 +50,12 @@ function PrivacyContent() {
 }
 
 function PageContent({ slug }: { slug: keyof typeof pageMeta }) {
-  if (slug === 'about') return <AboutContent />;
-  if (slug === 'services') return <ServicesContent />;
+  if (slug === 'about') return <PublishedModularOrLegacy slug={slug} legacy={<AboutContent />} />;
+  if (slug === 'services') return <PublishedModularOrLegacy slug={slug} legacy={<ServicesContent />} />;
   if (slug === 'therapists') return <TherapistsContent />;
-  if (slug === 'offers') return <OffersContent />;
-  if (slug === 'location') return <LocationContent />;
-  if (slug === 'recruit') return <RecruitContent />;
+  if (slug === 'offers') return <PublishedModularOrLegacy slug={slug} legacy={<OffersContent />} />;
+  if (slug === 'location') return <PublishedModularOrLegacy slug={slug} legacy={<LocationContent />} />;
+  if (slug === 'recruit') return <PublishedModularOrLegacy slug={slug} legacy={<RecruitContent />} />;
   if (slug === 'groups' || slug === 'loyalty') return <UpdatingContent type={slug} />;
   return <PrivacyContent />;
 }

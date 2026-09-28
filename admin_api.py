@@ -1561,18 +1561,26 @@ def register_admin_api(
 
         pages = normalized.get("pages")
         if isinstance(pages, dict):
-            for page in pages.values():
+            modular_slugs = {"about", "services", "offers", "location", "recruit"}
+            for slug, page in pages.items():
                 if not isinstance(page, dict):
                     continue
+                requested_mode = page.get("render_mode")
+                page["render_mode"] = requested_mode if slug in modular_slugs and requested_mode in {"legacy", "modular"} else "legacy"
+                page["status"] = page.get("status") if page.get("status") in {"draft", "published"} else "published"
                 raw_blocks = page.get("blocks")
                 if not isinstance(raw_blocks, list):
-                    continue
+                    raw_blocks = []
+                    if slug in modular_slugs and page.get("cardGridEnabled") is True and isinstance(page.get("cards"), list):
+                        raw_blocks = [{"id": f"{slug}-card-grid", "block_type": "card_grid", "sort_order": 0, "enabled": True, "content": {"cards": page.get("cards")}}]
                 blocks: list[dict[str, Any]] = []
                 for index, raw_block in enumerate(raw_blocks):
                     if not isinstance(raw_block, dict):
                         continue
                     block_type = raw_block.get("block_type")
                     if not isinstance(block_type, str) or not block_type.strip():
+                        continue
+                    if block_type.strip() == "card_grid" and slug not in modular_slugs:
                         continue
                     block_id = raw_block.get("id")
                     content_value = raw_block.get("content")
@@ -1584,6 +1592,7 @@ def register_admin_api(
                         sort_order = index
                     block: dict[str, Any] = {
                         "id": str(block_id or f"{block_type.strip()}-{index + 1}"),
+                        "page_id": str(slug),
                         "block_type": block_type.strip(),
                         "sort_order": sort_order,
                         "enabled": raw_block.get("enabled") is not False,
@@ -1592,22 +1601,33 @@ def register_admin_api(
                         "responsive": dict(responsive_value) if isinstance(responsive_value, dict) else {},
                     }
                     if block["block_type"] == "card_grid":
-                        block_content = block["content"]
+                        block_content = {"cards": block["content"].get("cards", [])}
+                        block["content"] = block_content
+                        block["style"] = {}
                         cards = block_content.get("cards")
                         if isinstance(cards, list):
                             clean_cards: list[dict[str, Any]] = []
                             for card_index, raw_card in enumerate(cards):
                                 if not isinstance(raw_card, dict):
                                     continue
+                                try:
+                                    card_sort_order = int(raw_card.get("sort_order", card_index) or card_index)
+                                except (TypeError, ValueError):
+                                    card_sort_order = card_index
                                 clean_cards.append({
                                     "id": str(raw_card.get("id") or f"card-{card_index + 1}"),
-                                    "label": str(raw_card["label"]) if raw_card.get("label") is not None else None,
-                                    "title": str(raw_card["title"]) if raw_card.get("title") is not None else None,
-                                    "body": str(raw_card["body"]) if raw_card.get("body") is not None else None,
-                                    "image": str(raw_card["image"]) if raw_card.get("image") is not None else None,
-                                    "link": str(raw_card["link"]) if raw_card.get("link") is not None else None,
+                                    "title": str(raw_card["title"]) if raw_card.get("title") is not None else "",
+                                    "body": str(raw_card["body"]) if raw_card.get("body") is not None else "",
+                                    "link_url": str(raw_card.get("link_url") or raw_card.get("link") or ""),
+                                    "link_label": str(raw_card.get("link_label") or ""),
+                                    "sort_order": card_sort_order,
+                                    "enabled": raw_card.get("enabled") is not False,
                                 })
                             block_content["cards"] = clean_cards
+                        block["responsive"] = {
+                            key: value for key, value in block["responsive"].items()
+                            if key in {"desktop_visible", "mobile_visible"}
+                        }
                     blocks.append(block)
                 page["blocks"] = sorted(blocks, key=lambda item: (item["sort_order"], item["id"]))
         return normalized
@@ -1618,11 +1638,20 @@ def register_admin_api(
             raise HTTPException(status_code=413, detail="官網內容超過 512 KB，圖片請改存網址，不要直接貼入資料")
         return encoded
 
+    def normalized_site_document(value: str | None, published_version: int | None = None) -> dict[str, Any]:
+        document = normalize_site_content(decode_site_content(value))
+        pages = document.get("pages")
+        if isinstance(pages, dict):
+            for page in pages.values():
+                if isinstance(page, dict):
+                    page["published_version"] = published_version
+        return document
+
     def site_content_payload(item) -> dict[str, Any]:
         return {
             "content_key": item.content_key,
-            "draft": normalize_site_content(decode_site_content(item.draft_json)),
-            "published": normalize_site_content(decode_site_content(item.published_json)),
+            "draft": normalized_site_document(item.draft_json, item.published_version),
+            "published": normalized_site_document(item.published_json, item.published_version),
             "draft_version": item.draft_version,
             "published_version": item.published_version,
             "updated_at": _iso(item.updated_at),
@@ -2783,7 +2812,7 @@ def register_admin_api(
         if not item:
             return {"content": {}, "version": 0, "published_at": None}
         return {
-            "content": normalize_site_content(decode_site_content(item.published_json)),
+            "content": normalized_site_document(item.published_json, item.published_version),
             "version": item.published_version,
             "published_at": _iso(item.published_at),
         }
@@ -4483,6 +4512,31 @@ def register_admin_api(
             item.content_key,
             before={"published_version": previous_version},
             after={"published_version": item.published_version},
+        )
+        db.commit()
+        db.refresh(item)
+        return site_content_payload(item)
+
+    @app.post("/api/admin/site-content/revert")
+    def revert_site_content(payload: SiteContentPublishIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager"))):
+        item = db.query(SiteContent).filter(SiteContent.content_key == "official_site").with_for_update().first()
+        if not item or not item.published_json:
+            raise HTTPException(status_code=422, detail="目前沒有可回復的已發布官網版本")
+        if payload.expected_version is not None and payload.expected_version != item.draft_version:
+            raise HTTPException(status_code=409, detail="草稿版本已更新，請重新讀取後再回復")
+        previous_version = item.draft_version
+        item.draft_json = encode_site_content(normalize_site_content(decode_site_content(item.published_json)))
+        item.draft_version += 1
+        item.updated_by_user_id = actor.id
+        item.updated_at = now_taipei_naive()
+        audit(
+            db,
+            actor,
+            "revert",
+            "site_content",
+            item.content_key,
+            before={"draft_version": previous_version},
+            after={"draft_version": item.draft_version, "published_version": item.published_version},
         )
         db.commit()
         db.refresh(item)

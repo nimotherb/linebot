@@ -1400,7 +1400,8 @@ def test_site_content_card_grid_blocks_are_normalized_and_published(client):
     current_version = client.get("/api/admin/site-content", headers=headers).json()["draft_version"]
     payload = {
         "pages": {
-            "therapists": {
+            "offers": {
+                "render_mode": "modular",
                 "blocks": [
                     {
                         "id": "team-grid",
@@ -1423,14 +1424,45 @@ def test_site_content_card_grid_blocks_are_normalized_and_published(client):
     }
     saved = client.put("/api/admin/site-content/draft", headers=headers, json={"content": payload, "expected_version": current_version})
     assert saved.status_code == 200, saved.text
-    blocks = saved.json()["draft"]["pages"]["therapists"]["blocks"]
+    blocks = saved.json()["draft"]["pages"]["offers"]["blocks"]
     assert len(blocks) == 1
     assert blocks[0]["sort_order"] == 0
+    assert blocks[0]["page_id"] == "offers"
     assert blocks[0]["content"]["cards"][0]["title"] == "只填文字"
     assert "price" not in blocks[0]["content"]["cards"][0]
+    assert "image" not in blocks[0]["content"]["cards"][0]
+    assert blocks[0]["content"]["cards"][0]["link_url"] == ""
+    assert saved.json()["draft"]["pages"]["offers"]["render_mode"] == "modular"
+    assert saved.json()["draft"]["pages"]["offers"]["status"] == "published"
     published = client.post("/api/admin/site-content/publish", headers=headers, json={"expected_version": current_version + 1})
     assert published.status_code == 200, published.text
-    assert client.get("/api/public/site-content").json()["content"]["pages"]["therapists"]["blocks"][0]["block_type"] == "card_grid"
+    assert client.get("/api/public/site-content").json()["content"]["pages"]["offers"]["blocks"][0]["block_type"] == "card_grid"
+
+
+def test_home_and_therapists_reject_modular_card_grid_blocks(client):
+    headers = login(client, "jerry", "654321")
+    current_version = client.get("/api/admin/site-content", headers=headers).json()["draft_version"]
+    saved = client.put(
+        "/api/admin/site-content/draft",
+        headers=headers,
+        json={"content": {"pages": {"home": {"render_mode": "modular", "blocks": [{"block_type": "card_grid", "content": {"cards": [{"title": "不要改 Home"}]}}]}, "therapists": {"render_mode": "modular", "blocks": [{"block_type": "card_grid", "content": {"cards": [{"title": "不要改 Therapists"}]}}]}}}, "expected_version": current_version},
+    )
+    assert saved.status_code == 200, saved.text
+    pages = saved.json()["draft"]["pages"]
+    assert pages["home"]["render_mode"] == "legacy"
+    assert pages["therapists"]["render_mode"] == "legacy"
+    assert pages["home"]["blocks"] == []
+    assert pages["therapists"]["blocks"] == []
+
+
+def test_site_content_revert_restores_published_snapshot(client):
+    headers = login(client, "jerry", "654321")
+    current = client.get("/api/admin/site-content", headers=headers).json()
+    saved = client.put("/api/admin/site-content/draft", headers=headers, json={"content": {"pages": {"offers": {"render_mode": "modular"}}}, "expected_version": current["draft_version"]})
+    assert saved.status_code == 200, saved.text
+    reverted = client.post("/api/admin/site-content/revert", headers=headers, json={"expected_version": saved.json()["draft_version"]})
+    assert reverted.status_code == 200, reverted.text
+    assert reverted.json()["draft"] == reverted.json()["published"]
 
 
 def test_catalog_create_and_delete_preserves_historical_order_links(client):

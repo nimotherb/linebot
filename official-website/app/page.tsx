@@ -1,7 +1,7 @@
 'use client';
 
 import { PointerLight, SiteHeader, WingMenu } from './components/WingMenu';
-import { ContentSyncIndicator, usePublishedSiteDraft, usePublishedSiteState } from './components/PublishedSiteContent';
+import { usePublishedSiteDraft } from './components/PublishedSiteContent';
 
 function MobileSequence({ content }: { content: ReturnType<typeof usePublishedSiteDraft> }) {
   const bookingUrl = content?.booking?.url || '';
@@ -10,7 +10,7 @@ function MobileSequence({ content }: { content: ReturnType<typeof usePublishedSi
     ? content.services.filter((item) => item.visible).map((item) => [item.code, item.name, item.quick_info, item.duration, item.price] as const)
     : [];
   const currentOffer = content && Array.isArray(content.offers)
-    ? content.offers[0]
+    ? content.offers.find((item) => item.status === '顯示中')
     : undefined;
   const address = content?.store?.address || '—';
   const hours = content?.store?.hours || '—';
@@ -25,7 +25,7 @@ function MobileSequence({ content }: { content: ReturnType<typeof usePublishedSi
           <span className="mobile-equal-a">A</span>
           <span className="mobile-equal-l">L</span>
         </h2>
-        <p>{content?.home?.subtitle || homePage?.intro || ''}</p>
+        <p>{content?.home?.subtitle || homePage?.intro || '內容更新中'}</p>
         <span className="mobile-down">SCROLL ↓</span>
       </section>
 
@@ -65,8 +65,8 @@ function MobileSequence({ content }: { content: ReturnType<typeof usePublishedSi
         <div className="offer-number">01</div>
         <p className="offer-kicker">CURRENT SELECTION</p>
         <h2>CURRENT<br />OFFER.</h2>
-        <p className="mobile-translation">{currentOffer?.name || ''}</p>
-        <p>{currentOffer?.summary || ''}</p>
+        <p className="mobile-translation">{currentOffer?.name || '內容更新中'}</p>
+        <p>{currentOffer?.summary || '最新內容將由後台發布。'}</p>
         <a href="/offers">查看所有優惠 →</a>
       </section>
 
@@ -82,10 +82,10 @@ function MobileSequence({ content }: { content: ReturnType<typeof usePublishedSi
 }
 
 export default function Home() {
-  const { content, syncing } = usePublishedSiteState();
+  const content = usePublishedSiteDraft();
   const bookingUrl = content?.booking?.url || '';
   const homePage = content?.pages?.home;
-  if (!content) return <main className="home-shell"><PointerLight /><SiteHeader /><section className="kinetic-stage"><div className="content-empty-state"><ContentSyncIndicator syncing={syncing} /></div></section><WingMenu /></main>;
+  if (!content) return <main className="home-shell"><PointerLight /><SiteHeader /><section className="kinetic-stage"><div className="updating-card"><span>OFFICIAL SITE</span><h2>內容暫時無法取得</h2><p>請稍後重新整理，最新發布內容只從官方資料庫載入。</p></div></section><WingMenu /></main>;
   return (
     <main className="home-shell">
       <PointerLight />
@@ -99,8 +99,8 @@ export default function Home() {
           <span className="letter letter-l">L</span>
         </h1>
         <div className="hero-copy">
-          <p>{homePage?.title || content?.home?.subtitle || ''}</p>
-          <span>{homePage?.body || content?.home?.support || ''}</span>
+          <p>{homePage?.title || content?.home?.subtitle || '內容更新中'}</p>
+          <span>{homePage?.body || content?.home?.support || '官方內容更新中。'}</span>
           {bookingUrl && <a href={bookingUrl} target="_blank" rel="noreferrer">立即線上預約</a>}
         </div>
         <p className="scroll-cue">EQUAL SPA · MOVE · RESET</p>

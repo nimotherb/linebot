@@ -8,9 +8,9 @@ type PageSlug = Exclude<Section, 'navigation'>;
 type ServiceDraft = { id?: number; code: string; name: string; quick_info: string; duration: string; price: string; visible: boolean };
 type OfferDraft = { id?: number; name: string; summary: string; status: '顯示中' | '草稿'; calculationType?: CalculationType; value?: number };
 export type SiteNavigationItem = { id: string; slug: PageSlug; label: string; english: string; desktopVisible: boolean; mobileVisible: boolean };
-export type SitePageCard = { id?: string; number?: string; label?: string; title?: string; body?: string; image?: string; link?: string };
-export type SiteBlockDraft = { id: string; block_type: string; sort_order: number; enabled: boolean; content: Record<string, unknown>; style?: Record<string, unknown>; responsive?: Record<string, unknown> };
-export type SitePageDraft = { english: string; title: string; intro: string; body: string; cards: SitePageCard[]; blocks?: SiteBlockDraft[]; cardGridEnabled: boolean; desktopVisible: boolean; mobileVisible: boolean };
+export type SitePageCard = { id?: string; number?: string; label?: string; title?: string; body?: string; link_url?: string; link_label?: string; sort_order?: number; enabled?: boolean; link?: string };
+export type SiteBlockDraft = { id: string; page_id?: string; block_type: string; sort_order: number; enabled: boolean; content: Record<string, unknown>; style?: Record<string, unknown>; responsive?: Record<string, unknown> };
+export type SitePageDraft = { english: string; title: string; intro: string; body: string; status?: 'draft' | 'published'; render_mode?: 'legacy' | 'modular'; published_version?: number | null; cards: SitePageCard[]; blocks?: SiteBlockDraft[]; cardGridEnabled: boolean; desktopVisible: boolean; mobileVisible: boolean };
 export type ServiceRecord = { id: number; code: string; name: string; duration_minutes: number; price: number; description?: string | null; active: boolean };
 export type PromotionRecord = { id: number; name: string; calculation_type: CalculationType; value: number; description?: string | null; active: boolean };
 export type SiteDraft = {
@@ -41,6 +41,7 @@ export type SiteAdminApi = {
   getAdminSiteContent: () => Promise<SiteContentPayload>;
   saveSiteDraft: (content: SiteDraft, expectedVersion: number) => Promise<SiteContentPayload>;
   publishSiteContent: (expectedVersion: number) => Promise<SiteContentPayload>;
+  revertSiteContent: (expectedVersion: number) => Promise<SiteContentPayload>;
   listServices: () => Promise<ServiceRecord[]>;
   createService: (payload: Record<string, unknown>) => Promise<ServiceRecord>;
   updateService: (id: number, payload: Record<string, unknown>) => Promise<ServiceRecord>;
@@ -91,9 +92,8 @@ const cardGridBlock = (id: string, cards: SitePageCard[], enabled = true): SiteB
   block_type: 'card_grid',
   sort_order: 0,
   enabled,
-  content: { title: '', description: '', cards },
-  style: { columns: 3, gap: 20 },
-  responsive: { desktop_visible: true, mobile_visible: true, desktop_columns: 3, mobile_columns: 1, gap: 20 },
+  content: { cards: cards.map((card, index) => ({ id: card.id || `${id}-card-${index + 1}`, title: card.title || '', body: card.body || '', link_url: card.link_url || card.link || '', link_label: card.link_label || '', sort_order: index, enabled: card.enabled !== false })) },
+  responsive: { desktop_visible: true, mobile_visible: true },
 });
 
 const initialDraft: SiteDraft = {
@@ -109,13 +109,13 @@ const initialDraft: SiteDraft = {
     { id: 'loyalty', slug: 'loyalty', label: '酬賓計畫', english: 'LOYALTY', desktopVisible: true, mobileVisible: true },
   ],
   pages: {
-    home: { english: 'HOME', title: '首頁', intro: 'EQUAL SPA · MOVE · RESET', body: '', cards: [], cardGridEnabled: false, desktopVisible: true, mobileVisible: true },
-    about: { english: 'ABOUT', title: '關於伊果', intro: '平等而細緻，讓每一種身體都能自在被理解。', body: '', cards: [{ number: '01', label: 'VALUE', title: 'EQUALITY', body: '不預設、不評價，讓每位來訪者都能被好好接住。' }, { number: '02', label: 'VALUE', title: 'PRECISION', body: '清楚說明方案與時間，讓需求被準確理解。' }, { number: '03', label: 'VALUE', title: 'EASE', body: '像回到熟悉的地方，安靜放下今天累積的重量。' }], cardGridEnabled: true, desktopVisible: true, mobileVisible: true },
-    services: { english: 'SERVICES', title: '選擇今天需要的節奏', intro: '從六十分鐘的精準釋放，到完整兩小時的深度整理。', body: '', cards: [], cardGridEnabled: false, desktopVisible: true, mobileVisible: true },
-    therapists: { english: 'THERAPISTS', title: '選擇適合你的師傅', intro: '不同氣質與手法，都遵循相同的專業與界線。', body: '', cards: [], blocks: [cardGridBlock('therapists-card-grid', [], false)], cardGridEnabled: false, desktopVisible: true, mobileVisible: true },
-    offers: { english: 'OFFERS', title: '期間限定企劃', intro: '優惠內容隨期間更新，預約前可由 LINE 客服確認。', body: '', cards: [], blocks: [cardGridBlock('offers-card-grid', [{ title: '夜間服務費', body: '服務時間落在 00:00—06:00 時，會依當期公告收取夜間服務費。' }, { title: '預先加時', body: '預約時可先提出延長需求，客服會依師傅班表確認可安排的時間。' }, { title: '現場加時', body: '服務進行中若仍有需要，可先與師傅確認，再由客服協助安排。' }])], cardGridEnabled: true, desktopVisible: true, mobileVisible: true },
-    location: { english: 'LOCATION', title: '歡迎來到西門', intro: '從抵達開始放慢速度。', body: '', cards: [], cardGridEnabled: false, desktopVisible: true, mobileVisible: true },
-    recruit: { english: 'RECRUIT', title: '與伊果一起工作', intro: '一起建立舒服、尊重且長久的工作關係。', body: '', cards: [{ number: '01', label: 'CURRENT STATUS', title: '內容更新中', body: '之後會在這裡放置職缺內容、合作方式、基本條件與聯絡管道。' }], cardGridEnabled: true, desktopVisible: true, mobileVisible: true },
+    home: { english: 'HOME', title: '首頁', intro: 'EQUAL SPA · MOVE · RESET', body: '', render_mode: 'legacy', cards: [], cardGridEnabled: false, desktopVisible: true, mobileVisible: true },
+    about: { english: 'ABOUT', title: '關於伊果', intro: '平等而細緻，讓每一種身體都能自在被理解。', body: '', render_mode: 'legacy', cards: [{ number: '01', label: 'VALUE', title: 'EQUALITY', body: '不預設、不評價，讓每位來訪者都能被好好接住。' }, { number: '02', label: 'VALUE', title: 'PRECISION', body: '清楚說明方案與時間，讓需求被準確理解。' }, { number: '03', label: 'VALUE', title: 'EASE', body: '像回到熟悉的地方，安靜放下今天累積的重量。' }], blocks: [cardGridBlock('about-card-grid', [{ title: 'EQUALITY', body: '不預設、不評價，讓每位來訪者都能被好好接住。' }, { title: 'PRECISION', body: '清楚說明方案與時間，讓需求被準確理解。' }, { title: 'EASE', body: '像回到熟悉的地方，安靜放下今天累積的重量。' }])], cardGridEnabled: true, desktopVisible: true, mobileVisible: true },
+    services: { english: 'SERVICES', title: '選擇今天需要的節奏', intro: '從六十分鐘的精準釋放，到完整兩小時的深度整理。', body: '', render_mode: 'legacy', cards: [], cardGridEnabled: false, desktopVisible: true, mobileVisible: true },
+    therapists: { english: 'THERAPISTS', title: '選擇適合你的師傅', intro: '不同氣質與手法，都遵循相同的專業與界線。', body: '', render_mode: 'legacy', cards: [], cardGridEnabled: false, desktopVisible: true, mobileVisible: true },
+    offers: { english: 'OFFERS', title: '期間限定企劃', intro: '優惠內容隨期間更新，預約前可由 LINE 客服確認。', body: '', render_mode: 'legacy', cards: [], blocks: [cardGridBlock('offers-card-grid', [{ title: '夜間服務費', body: '服務時間落在 00:00—06:00 時，會依當期公告收取夜間服務費。' }, { title: '預先加時', body: '預約時可先提出延長需求，客服會依師傅班表確認可安排的時間。' }, { title: '現場加時', body: '服務進行中若仍有需要，可先與師傅確認，再由後端公告當期內容。' }])], cardGridEnabled: true, desktopVisible: true, mobileVisible: true },
+    location: { english: 'LOCATION', title: '歡迎來到西門', intro: '從抵達開始放慢速度。', body: '', render_mode: 'legacy', cards: [], cardGridEnabled: false, desktopVisible: true, mobileVisible: true },
+    recruit: { english: 'RECRUIT', title: '與伊果一起工作', intro: '一起建立舒服、尊重且長久的工作關係。', body: '', render_mode: 'legacy', cards: [{ number: '01', label: 'CURRENT STATUS', title: '內容更新中', body: '之後會在這裡放置職缺內容、合作方式、基本條件與聯絡管道。' }], blocks: [cardGridBlock('recruit-card-grid', [{ title: '內容更新中', body: '之後會在這裡放置職缺內容、合作方式、基本條件與聯絡管道。' }])], cardGridEnabled: true, desktopVisible: true, mobileVisible: true },
     groups: { english: 'GROUP', title: '社群內容準備中', intro: '最新社群資訊與活動整理。', body: '', cards: [], cardGridEnabled: false, desktopVisible: true, mobileVisible: true },
     loyalty: { english: 'LOYALTY', title: '回訪計畫準備中', intro: '為熟悉伊果的你，準備更完整的回訪體驗。', body: '', cards: [], cardGridEnabled: false, desktopVisible: true, mobileVisible: true },
   },
@@ -171,20 +171,37 @@ function Field({ label, value, onChange, multiline = false, hint }: { label: str
   return <label className="studio-field"><span>{label}</span>{multiline ? <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={4} /> : <input value={value} onChange={(event) => onChange(event.target.value)} />}{hint && <small>{hint}</small>}</label>;
 }
 
-function PageSettings({ page, onChange, includeBody = true }: { page: SitePageDraft; onChange: (patch: Partial<SitePageDraft>) => void; includeBody?: boolean }) {
-  return <div className="studio-form-card studio-page-settings"><small>PAGE TEMPLATE</small><h3>頁面標題與副標</h3><Field label="英文頁面標題／標籤" value={page.english} onChange={(english) => onChange({ english })} /><Field label="中文頁面標題" value={page.title} onChange={(title) => onChange({ title })} /><Field label="中文副標（可換行）" value={page.intro} onChange={(intro) => onChange({ intro })} multiline />{includeBody && <Field label="頁面補充內容（每段空一行）" value={page.body} onChange={(body) => onChange({ body })} multiline />}<div className="studio-visibility-grid"><label className="studio-check"><input type="checkbox" checked={page.desktopVisible} onChange={(event) => onChange({ desktopVisible: event.target.checked })} />桌機顯示</label><label className="studio-check"><input type="checkbox" checked={page.mobileVisible} onChange={(event) => onChange({ mobileVisible: event.target.checked })} />手機顯示</label></div></div>;
+function PageSettings({ page, onChange, includeBody = true, allowModular = false }: { page: SitePageDraft; onChange: (patch: Partial<SitePageDraft>) => void; includeBody?: boolean; allowModular?: boolean }) {
+  return <div className="studio-form-card studio-page-settings"><small>PAGE TEMPLATE</small><h3>頁面標題與副標</h3><Field label="英文頁面標題／標籤" value={page.english} onChange={(english) => onChange({ english })} /><Field label="中文頁面標題" value={page.title} onChange={(title) => onChange({ title })} /><Field label="中文副標（可換行）" value={page.intro} onChange={(intro) => onChange({ intro })} multiline />{includeBody && <Field label="頁面補充內容（每段空一行）" value={page.body} onChange={(body) => onChange({ body })} multiline />}{allowModular && <label className="studio-catalog-field"><span>公開渲染模式</span><select value={page.render_mode || 'legacy'} onChange={(event) => onChange({ render_mode: event.target.value as 'legacy' | 'modular' })}><option value="legacy">Legacy 固定頁面</option><option value="modular">Modular 模組化頁面</option></select><small>模組化內容通過驗證後才切換；隨時可切回 Legacy。</small></label>}<div className="studio-visibility-grid"><label className="studio-check"><input type="checkbox" checked={page.desktopVisible} onChange={(event) => onChange({ desktopVisible: event.target.checked })} />桌機顯示</label><label className="studio-check"><input type="checkbox" checked={page.mobileVisible} onChange={(event) => onChange({ mobileVisible: event.target.checked })} />手機顯示</label></div></div>;
 }
 
 function PageCardsEditor({ page, onChange }: { page: SitePageDraft; onChange: (patch: Partial<SitePageDraft>) => void }) {
-  const existing = page.blocks?.find((block) => block.block_type === 'card_grid');
+  const existing = page.blocks?.find((item) => item.block_type === 'card_grid');
   const block = existing || cardGridBlock(`${page.english.toLowerCase()}-card-grid`, page.cards, page.cardGridEnabled);
-  const cards = Array.isArray(block.content.cards) ? block.content.cards as SitePageCard[] : [];
-  const updateBlock = (next: SiteBlockDraft) => onChange({ blocks: [...(page.blocks || []).filter((item) => item.block_type !== 'card_grid'), next], cardGridEnabled: next.enabled, cards: Array.isArray(next.content.cards) ? next.content.cards as SitePageCard[] : [] });
-  const updateCard = (index: number, patch: Partial<SitePageCard>) => updateBlock({ ...block, content: { ...block.content, cards: cards.map((card, cardIndex) => cardIndex === index ? { ...card, ...patch } : card) } });
-  const addCard = () => updateBlock({ ...block, content: { ...block.content, cards: [...cards, { id: `card-${Date.now()}`, title: '', body: '', image: '', link: '' }] } });
-  const removeCard = (index: number) => updateBlock({ ...block, content: { ...block.content, cards: cards.filter((_, cardIndex) => cardIndex !== index) } });
-  const moveCard = (index: number, direction: -1 | 1) => { const next = index + direction; if (next < 0 || next >= cards.length) return; const ordered = [...cards]; [ordered[index], ordered[next]] = [ordered[next], ordered[index]]; updateBlock({ ...block, content: { ...block.content, cards: ordered } }); };
-  return <div className="studio-form-card studio-page-cards"><header><div><small>CARD GRID MODULE</small><h3>通用卡片網格</h3><p>卡片可用於優惠、公告、服務介紹或其他品牌內容，不要求金額、狀態或員工欄位。</p></div><label className="studio-switch"><input type="checkbox" checked={block.enabled} onChange={(event) => updateBlock({ ...block, enabled: event.target.checked })} /><span />{block.enabled ? '啟用' : '停用'}</label></header><div className="studio-card-grid-settings"><Field label="模組標題" value={String(block.content.title || '')} onChange={(title) => updateBlock({ ...block, content: { ...block.content, title } })} /><Field label="模組說明" value={String(block.content.description || '')} onChange={(description) => updateBlock({ ...block, content: { ...block.content, description } })} multiline /><label className="studio-catalog-field"><span>桌機欄數</span><input type="number" min="1" max="6" value={Number(block.style?.columns || 3)} onChange={(event) => updateBlock({ ...block, style: { ...(block.style || {}), columns: Number(event.target.value) || 3 } })} /></label><label className="studio-catalog-field"><span>卡片間距（px）</span><input type="number" min="0" max="120" value={Number(block.style?.gap || 20)} onChange={(event) => updateBlock({ ...block, style: { ...(block.style || {}), gap: Number(event.target.value) || 0 } })} /></label><div className="studio-visibility-grid"><label className="studio-check"><input type="checkbox" checked={block.responsive?.desktop_visible !== false} onChange={(event) => updateBlock({ ...block, responsive: { ...(block.responsive || {}), desktop_visible: event.target.checked } })} />桌機顯示</label><label className="studio-check"><input type="checkbox" checked={block.responsive?.mobile_visible !== false} onChange={(event) => updateBlock({ ...block, responsive: { ...(block.responsive || {}), mobile_visible: event.target.checked } })} />手機顯示</label></div></div><div className="studio-page-card-list">{cards.map((card, index) => <article key={card.id || index}><b>{String(index + 1).padStart(2, '0')}</b><div><Field label="標題" value={card.title || ''} onChange={(title) => updateCard(index, { title })} multiline /><Field label="內文" value={card.body || ''} onChange={(body) => updateCard(index, { body })} multiline /><Field label="圖片網址（可選）" value={card.image || ''} onChange={(image) => updateCard(index, { image })} /><Field label="連結（可選）" value={card.link || ''} onChange={(link) => updateCard(index, { link })} /></div><div className="studio-catalog-actions"><button type="button" onClick={() => moveCard(index, -1)} disabled={index === 0}>上移</button><button type="button" onClick={() => moveCard(index, 1)} disabled={index === cards.length - 1}>下移</button><button className="danger" type="button" onClick={() => removeCard(index)}>刪除卡片</button></div></article>)}</div><button className="studio-add-page" type="button" onClick={addCard}>＋ 新增卡片</button></div>;
+  const rawCards = Array.isArray(block.content.cards) ? block.content.cards as SitePageCard[] : [];
+  const cards = rawCards.map((card, index) => ({ id: card.id || `card-${index + 1}`, title: card.title || '', body: card.body || '', link_url: card.link_url || card.link || '', link_label: card.link_label || '', sort_order: index, enabled: card.enabled !== false }));
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const updateBlock = (next: SiteBlockDraft) => {
+    const nextCards = Array.isArray(next.content.cards) ? next.content.cards as SitePageCard[] : [];
+    onChange({ blocks: [...(page.blocks || []).filter((item) => item.block_type !== 'card_grid'), next], cardGridEnabled: next.enabled, cards: nextCards });
+  };
+  const withCards = (nextCards: SitePageCard[]) => updateBlock({ ...block, content: { cards: nextCards.map((card, index) => ({ ...card, sort_order: index })) } });
+  const updateCard = (index: number, patch: Partial<SitePageCard>) => withCards(cards.map((card, cardIndex) => cardIndex === index ? { ...card, ...patch } : card));
+  const addCard = () => withCards([...cards, { id: `card-${Date.now()}`, title: '', body: '', link_url: '', link_label: '', enabled: true }]);
+  const removeCard = (index: number) => withCards(cards.filter((_, cardIndex) => cardIndex !== index));
+  const moveCard = (from: number, to: number) => { if (to < 0 || to >= cards.length) return; const ordered = [...cards]; const [moved] = ordered.splice(from, 1); ordered.splice(to, 0, moved); withCards(ordered); };
+  const dropCard = (index: number) => { if (dragIndex !== null && dragIndex !== index) moveCard(dragIndex, index); setDragIndex(null); };
+  const linkPreview = (value: string) => { if (!value.trim()) return ''; if (value.trim().startsWith('/')) return value.trim(); try { const url = new URL(value.trim()); return url.protocol === 'https:' || url.protocol === 'http:' ? url.toString() : ''; } catch { return ''; } };
+  return <div className="studio-form-card studio-page-cards"><header><div><small>CARD GRID MODULE</small><h3>通用卡片網格</h3><p>卡片可用於優惠、公告、服務介紹或其他品牌內容；欄數由系統響應式規則決定。</p></div><div className="studio-catalog-actions"><label className="studio-switch"><input type="checkbox" checked={block.enabled} onChange={(event) => updateBlock({ ...block, enabled: event.target.checked })} /><span />{block.enabled ? '啟用' : '停用'}</label><button className="danger" type="button" onClick={() => onChange({ blocks: (page.blocks || []).filter((item) => item.block_type !== 'card_grid'), cards: [], cardGridEnabled: false })}>刪除模組</button></div></header><p className="privacy-note">桌機 4 欄／平板 2 欄／手機 1 欄。卡片排序可拖曳，也可用上下移動按鈕調整。</p><div className="studio-page-card-list">{cards.map((card, index) => <article key={card.id || index} draggable onDragStart={() => setDragIndex(index)} onDragOver={(event) => event.preventDefault()} onDrop={() => dropCard(index)}><b>{String(index + 1).padStart(2, '0')}</b><div><Field label="標題" value={card.title} onChange={(title) => updateCard(index, { title })} multiline /><Field label="內文" value={card.body} onChange={(body) => updateCard(index, { body })} multiline /><Field label="連結網址（可選）" value={card.link_url || ''} onChange={(link_url) => updateCard(index, { link_url })} hint={card.link_url && !linkPreview(card.link_url) ? '網址格式無效，請使用 http(s) 或站內路徑。' : (linkPreview(card.link_url) ? `預覽：${linkPreview(card.link_url)}` : undefined)} /><Field label="連結文字（可選）" value={card.link_label || ''} onChange={(link_label) => updateCard(index, { link_label })} /></div><div className="studio-catalog-actions"><label className="studio-check"><input type="checkbox" checked={card.enabled !== false} onChange={(event) => updateCard(index, { enabled: event.target.checked })} />啟用</label><button type="button" onClick={() => moveCard(index, index - 1)} disabled={index === 0}>上移</button><button type="button" onClick={() => moveCard(index, index + 1)} disabled={index === cards.length - 1}>下移</button><button className="danger" type="button" onClick={() => removeCard(index)}>刪除卡片</button></div></article>)}</div><button className="studio-add-page" type="button" onClick={addCard}>＋ 新增卡片</button></div>;
+}
+
+function PageTextModuleEditor({ page, onChange }: { page: SitePageDraft; onChange: (patch: Partial<SitePageDraft>) => void }) {
+  const existing = page.blocks?.find((item) => item.block_type === 'text');
+  const updateBlocks = (next: SiteBlockDraft[]) => onChange({ blocks: next });
+  const addText = () => updateBlocks([...(page.blocks || []), { id: `${page.english.toLowerCase()}-text-${Date.now()}`, block_type: 'text', sort_order: page.blocks?.length || 0, enabled: true, content: { body: '' }, style: {}, responsive: {} }]);
+  const updateText = (patch: Record<string, unknown>) => { if (!existing) return; updateBlocks((page.blocks || []).map((item) => item.id === existing.id ? { ...item, ...patch } : item)); };
+  if (!existing) return <div className="studio-form-card"><small>TEXT MODULE</small><h3>文字模組</h3><p>ABOUT 可另外加入資料驅動的文字模組。</p><button className="studio-add-page" type="button" onClick={addText}>＋ 新增文字模組</button></div>;
+  return <div className="studio-form-card"><header><div><small>TEXT MODULE</small><h3>文字模組</h3></div><div className="studio-catalog-actions"><label className="studio-switch"><input type="checkbox" checked={existing.enabled} onChange={(event) => updateText({ enabled: event.target.checked })} /><span />{existing.enabled ? '啟用' : '停用'}</label><button className="danger" type="button" onClick={() => updateBlocks((page.blocks || []).filter((item) => item.id !== existing.id))}>刪除模組</button></div></header><Field label="文字內容" value={String(existing.content.body || '')} onChange={(body) => updateText({ content: { ...existing.content, body } })} multiline /></div>;
 }
 
 export default function SiteAdminEditor({ api, notify }: { api: SiteAdminApi; notify: (msg: string) => void }) {
@@ -342,6 +359,24 @@ export default function SiteAdminEditor({ api, notify }: { api: SiteAdminApi; no
     }
   };
 
+  const revertPublished = async () => {
+    if (!window.confirm('確定要回復上一個已發布版本嗎？目前草稿會被已發布內容取代。')) return;
+    try {
+      setNotice('回復中...');
+      const result = await api.revertSiteContent(version);
+      setVersion(result.draft_version);
+      if (result.draft) {
+        setDraft((current) => ({ ...current, ...result.draft, pages: { ...current.pages, ...(result.draft?.pages || {}) } } as SiteDraft));
+      }
+      setNotice('已回復上一個已發布版本');
+      notify('已回復上一個已發布版本。');
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : '回復失敗';
+      setNotice(`回復失敗: ${msg}`);
+      notify(msg);
+    }
+  };
+
   const updateService = (index: number, patch: Partial<ServiceDraft>) => {
     const services = draft.services.map((service, serviceIndex) => serviceIndex === index ? { ...service, ...patch } : service);
     markChanged({ ...draft, services });
@@ -436,7 +471,7 @@ export default function SiteAdminEditor({ api, notify }: { api: SiteAdminApi; no
           <span style={{ fontSize: '10px', color: '#a3afac' }}>草稿版本 v{version}</span><br/>
           <span style={{ fontSize: '10px', color: '#a3afac' }}>{publishedAt ? `上次發布: ${publishedAt}` : '尚未發布'}</span>
         </div>
-        <button className="publish" type="button" onClick={publish}>發布更新</button>
+        <button type="button" onClick={revertPublished}>回復已發布</button><button className="publish" type="button" onClick={publish}>發布更新</button>
       </div>
     </header>
 
@@ -466,7 +501,7 @@ export default function SiteAdminEditor({ api, notify }: { api: SiteAdminApi; no
         </div>}
 
         {active === 'services' && <div className="studio-catalog-editor">
-          <PageSettings page={draft.pages.services} onChange={(patch) => updatePage('services', patch)} />
+          <PageSettings page={draft.pages.services} onChange={(patch) => updatePage('services', patch)} allowModular />
           <header className="studio-catalog-toolbar"><div><small>MYSQL SERVICE CATALOG</small><h3>目前方案</h3><p>新增與刪除會同步預約方案。刪除只結束後續使用，舊訂單會保留當時的方案連結。</p></div><button type="button" onClick={() => setShowNewService((current) => !current)}>{showNewService ? '取消新增' : '＋ 新增方案'}</button></header>
           {showNewService && <form className="studio-new-catalog" onSubmit={createService}>
             <label><span>方案代碼</span><input name="code" required maxLength={30} placeholder="例如 F" /></label>
@@ -485,13 +520,12 @@ export default function SiteAdminEditor({ api, notify }: { api: SiteAdminApi; no
 
         {active === 'therapists' && <div className="studio-form-grid">
           <PageSettings page={draft.pages.therapists} onChange={(patch) => updatePage('therapists', patch)} />
-          <PageCardsEditor page={draft.pages.therapists} onChange={(patch) => updatePage('therapists', patch)} />
           <div className="studio-form-card"><small>CATALOG</small><h3>員工目錄設定</h3><Field label="目錄介紹" value={draft.therapists.intro} onChange={(intro) => markChanged({ ...draft, therapists: { ...draft.therapists, intro } })} multiline />{/* 輪播速度暫時固定於前端，保留欄位以相容既有草稿。 */}<label className="studio-check"><input type="checkbox" checked={draft.therapists.showMeasurements} onChange={(event) => markChanged({ ...draft, therapists: { ...draft.therapists, showMeasurements: event.target.checked } })} />公開顯示身高、體重與角色</label></div>
           <div className="studio-form-card studio-upload-card"><small>LIVE DIRECTORY</small><h3>公開名單</h3><div className="upload-placeholder"><b>員工資料由後台管理</b><p>公開名單、分類、照片與在職狀態會由 Back office 員工管理頁同步至官網。</p></div><p className="privacy-note">健康資訊只留在營運後台，不會出現在官網編輯器或公開頁面。</p></div>
         </div>}
 
         {active === 'offers' && <div className="studio-catalog-editor">
-          <PageSettings page={draft.pages.offers} onChange={(patch) => updatePage('offers', patch)} includeBody={false} />
+          <PageSettings page={draft.pages.offers} onChange={(patch) => updatePage('offers', patch)} includeBody={false} allowModular />
           <PageCardsEditor page={draft.pages.offers} onChange={(patch) => updatePage('offers', patch)} />
           {/* 優惠頁只由通用 Card Grid 發布；營運用優惠資料仍由後台訂單流程管理。 */}
           {false && <header className="studio-catalog-toolbar"><div><small>MYSQL PROMOTION CATALOG</small><h3>優惠內容</h3><p>優惠可保留在草稿或設為顯示中；刪除後舊訂單仍會保存原優惠。</p></div><button type="button" onClick={() => setShowNewOffer((current) => !current)}>{showNewOffer ? '取消新增' : '＋ 新增優惠'}</button></header>}
@@ -506,12 +540,12 @@ export default function SiteAdminEditor({ api, notify }: { api: SiteAdminApi; no
         </div>}
 
         {active === 'location' && <div className="studio-form-grid">
-          <PageSettings page={draft.pages.location} onChange={(patch) => updatePage('location', patch)} includeBody={false} />
+          <PageSettings page={draft.pages.location} onChange={(patch) => updatePage('location', patch)} includeBody={false} allowModular />
           <div className="studio-form-card"><small>STUDIO INFORMATION</small><h3>店鋪資料</h3><Field label="地址" value={draft.store.address} onChange={(address) => markChanged({ ...draft, store: { ...draft.store, address } })} /><Field label="營業時間" value={draft.store.hours} onChange={(hours) => markChanged({ ...draft, store: { ...draft.store, hours } })} /><Field label="付款方式" value={draft.store.payment} onChange={(payment) => markChanged({ ...draft, store: { ...draft.store, payment } })} /></div>
           <div className="studio-form-card"><small>MAP</small><h3>Google 地圖</h3><Field label="嵌入網址" value={draft.store.mapUrl} onChange={(mapUrl) => markChanged({ ...draft, store: { ...draft.store, mapUrl } })} multiline /><p className="privacy-note">請貼上 Google My Maps 的 embed 網址，預覽與發布時會自動更新。</p></div>
         </div>}
 
-        {(active === 'about' || active === 'recruit') && <div className="studio-form-grid"><PageSettings page={draft.pages[active]} onChange={(patch) => updatePage(active, patch)} /><PageCardsEditor page={draft.pages[active]} onChange={(patch) => updatePage(active, patch)} /></div>}
+        {(active === 'about' || active === 'recruit') && <div className="studio-form-grid"><PageSettings page={draft.pages[active]} onChange={(patch) => updatePage(active, patch)} allowModular />{active === 'about' && <PageTextModuleEditor page={draft.pages[active]} onChange={(patch) => updatePage(active, patch)} />}<PageCardsEditor page={draft.pages[active]} onChange={(patch) => updatePage(active, patch)} /></div>}
         {(active === 'groups' || active === 'loyalty') && <div className="studio-form-grid"><PageSettings page={draft.pages[active]} onChange={(patch) => updatePage(active, patch)} /><div className="studio-form-card"><small>CONTENT TEMPLATE</small><h3>{activeMeta.label}內容</h3><p>桌機版面以此頁設定為主；手機版只依上方勾選決定是否顯示此頁籤。</p></div></div>}
       </section>
 
