@@ -134,28 +134,30 @@ function AmountEditorFields({ appointment, showAdjustments = true }: AmountEdito
   const discountShopValue = readAmount(discountShop);
   const surchargeEmployeeValue = readAmount(surchargeEmployee);
   const surchargeShopValue = readAmount(surchargeShop);
-  const autoTotal = nonNegativeAmount(base + extra - discount);
-  const baselineReturn = nonNegativeAmount((appointment.autoPartnerCommissionAmount ?? appointment.autoStaffReturnAmount ?? appointment.partnerCommissionAmount ?? appointment.staffReturnAmount ?? 0) + (appointment.discountEmployeeAmount ?? 0) - (appointment.surchargeEmployeeAmount ?? 0));
-  const autoPartner = nonNegativeAmount(baselineReturn - discountEmployeeValue + surchargeEmployeeValue);
+  const shopRecoveryBaseline = nonNegativeAmount(appointment.shopRecoveryBaselineAmount ?? ((appointment.autoShopRecoveryAmount ?? appointment.autoShopRecovery ?? 0) + (appointment.discountShopAmount ?? 0) + discount - (appointment.surchargeShopAmount ?? 0) - extra));
+  const partnerCommissionBaseline = nonNegativeAmount((appointment.autoPartnerCommission ?? appointment.autoPartnerCommissionAmount ?? appointment.autoStaffReturnAmount) != null
+    ? (appointment.autoPartnerCommission ?? appointment.autoPartnerCommissionAmount ?? appointment.autoStaffReturnAmount ?? 0) + discountEmployeeValue - surchargeEmployeeValue
+    : (appointment.partnerCommissionBaselineAmount ?? (base - shopRecoveryBaseline)));
+  const autoTotal = nonNegativeAmount(base - discountEmployeeValue - discountShopValue - discount + surchargeEmployeeValue + surchargeShopValue + extra);
+  const autoPartner = nonNegativeAmount(partnerCommissionBaseline - discountEmployeeValue + surchargeEmployeeValue);
+  const autoShop = nonNegativeAmount(shopRecoveryBaseline - discountShopValue - discount + surchargeShopValue + extra);
   const finalTotal = manualTotal.trim() === '' ? autoTotal : roundAmount(readAmount(manualTotal));
   const finalPartner = manualPartner.trim() === '' ? autoPartner : roundAmount(readAmount(manualPartner));
-  const autoShop = nonNegativeAmount(finalTotal - finalPartner - discountShopValue + surchargeShopValue);
   const finalShop = manualShop.trim() === '' ? autoShop : roundAmount(readAmount(manualShop));
   const warnings = [
     Number(manualTotal) < 0 && '最終總金額為負數，仍會以手動值保存。',
     Number(manualPartner) < 0 && '最終夥伴抽成為負數，仍會以手動值保存。',
     Number(manualShop) < 0 && '最終店家回收為負數，仍會以手動值保存。',
-    manualTotal.trim() !== '' && finalTotal !== autoTotal && '最終總金額與自動試算不同。',
-    manualPartner.trim() !== '' && finalPartner !== autoPartner && '最終夥伴抽成與自動試算不同。',
-    manualShop.trim() !== '' && finalShop !== autoShop && '最終店家回收與自動試算不同。',
+    manualTotal.trim() !== '' && finalTotal !== autoTotal && '總金額與系統計算不同。',
+    manualPartner.trim() !== '' && finalPartner !== autoPartner && '夥伴抽成與系統計算不同。',
+    manualShop.trim() !== '' && finalShop !== autoShop && '店家回收與系統計算不同。',
   ].filter(Boolean) as string[];
   const amountInput = (label: string, name: string, value: string, setter: (value: string) => void) => (
     <label>{label}<input name={name} type="text" inputMode="numeric" value={value} onChange={updateAmount(setter)} /></label>
   );
   const overrideInput = (label: string, name: string, value: string, setter: (value: string) => void, autoValue: number, finalValue: number) => (
     <div className="amount-override-field">
-      <label>{label}<input name={name} type="text" inputMode="numeric" value={value} onChange={updateAmount(setter)} placeholder={`自動計算 ${formatCurrency(autoValue)}`} /></label>
-      <small>自動試算 {formatCurrency(autoValue)}・目前生效 {formatCurrency(finalValue)}（{value.trim() === '' ? '自動計算' : '人工覆寫'}）</small>
+      <label>{label}<input name={name} type="text" inputMode="numeric" value={value} onChange={updateAmount(setter)} placeholder={`系統計算 ${formatCurrency(autoValue)}`} /></label>
     </div>
   );
   return <>
@@ -163,14 +165,14 @@ function AmountEditorFields({ appointment, showAdjustments = true }: AmountEdito
       {amountInput('原價', 'basePrice', basePrice, setBasePrice)}
       {amountInput('加價合計', 'extraAmount', extraAmount, setExtraAmount)}
       {amountInput('折扣合計', 'discountAmount', discountAmount, setDiscountAmount)}
-      {overrideInput('總金額人工覆寫（選填）', 'manualTotalAmount', manualTotal, setManualTotal, autoTotal, finalTotal)}
+      {overrideInput('總金額', 'manualTotalAmount', manualTotal, setManualTotal, autoTotal, finalTotal)}
       {showAdjustments && <>
         {amountInput('扣員工', 'discountEmployeeAmount', discountEmployee, setDiscountEmployee)}
         {amountInput('扣店家', 'discountShopAmount', discountShop, setDiscountShop)}
         {amountInput('加員工', 'surchargeEmployeeAmount', surchargeEmployee, setSurchargeEmployee)}
         {amountInput('加店家', 'surchargeShopAmount', surchargeShop, setSurchargeShop)}
-        {overrideInput('夥伴抽成人工覆寫（選填）', 'manualPartnerCommissionAmount', manualPartner, setManualPartner, autoPartner, finalPartner)}
-        {overrideInput('店家回收人工覆寫（選填）', 'manualShopRecoveryAmount', manualShop, setManualShop, autoShop, finalShop)}
+        {overrideInput('夥伴抽成', 'manualPartnerCommissionAmount', manualPartner, setManualPartner, autoPartner, finalPartner)}
+        {overrideInput('店家回收', 'manualShopRecoveryAmount', manualShop, setManualShop, autoShop, finalShop)}
       </>}
     </div>
     {inputError && <div className="form-note warning-note">{inputError}</div>}
@@ -1096,11 +1098,11 @@ export default function Home() {
       else if (data.has('manualTotalAmount')) payload.manual_total_amount = null;
       else if (data.has('totalAmount')) payload.total_amount = Number(data.get('totalAmount') || 0);
       const manualPartner = String(data.get('manualPartnerCommissionAmount') || '').trim();
-      if (manualPartner) payload.manual_partner_commission_amount = Number(manualPartner);
-      else if (data.has('manualPartnerCommissionAmount')) payload.manual_partner_commission_amount = null;
+      if (manualPartner) payload.manual_partner_commission = Number(manualPartner);
+      else if (data.has('manualPartnerCommissionAmount')) payload.manual_partner_commission = null;
       const manualShop = String(data.get('manualShopRecoveryAmount') || '').trim();
-      if (manualShop) payload.manual_shop_recovery_amount = Number(manualShop);
-      else if (data.has('manualShopRecoveryAmount')) payload.manual_shop_recovery_amount = null;
+      if (manualShop) payload.manual_shop_recovery = Number(manualShop);
+      else if (data.has('manualShopRecoveryAmount')) payload.manual_shop_recovery = null;
     }
     try {
       const updated = await api.updateAppointment(appointment.apiId, payload);

@@ -126,20 +126,22 @@ def test_settlement_manual_values_recalculate_and_clear_per_field(client):
     )
     assert adjusted.status_code == 200, adjusted.text
     row = adjusted.json()
-    assert row["auto_total_amount"] == 3300
+    assert row["auto_total_amount"] == 3200
     assert row["total_amount"] == 4000
     assert row["total_amount_overridden"] is True
     assert row["staff_return_amount"] == 777
     assert row["partner_commission_amount"] == 777
     assert row["manual_partner_commission_amount"] == 777
     assert row["shop_recovery_amount"] == 888
-    assert row["auto_staff_return_amount"] == 620
-    assert row["auto_shop_recovery_amount"] == 3203
+    assert row["auto_staff_return_amount"] == 2220
+    assert row["auto_shop_recovery_amount"] == 980
+    assert row["partner_commission"] == 777
+    assert row["shop_recovery"] == 888
 
     canonical = client.patch(
         f"/api/admin/appointments/{appointment_id}",
         headers=headers,
-        json={"manual_partner_commission_amount": 778, "is_admin_override": True},
+        json={"manual_partner_commission": 778, "is_admin_override": True},
     )
     assert canonical.status_code == 200, canonical.text
     assert canonical.json()["partner_commission_amount"] == 778
@@ -148,13 +150,13 @@ def test_settlement_manual_values_recalculate_and_clear_per_field(client):
     cleared = client.patch(
         f"/api/admin/appointments/{appointment_id}",
         headers=headers,
-        json={"manual_total_amount": None, "manual_partner_commission_amount": None, "manual_staff_return_amount": None, "manual_shop_recovery_amount": None, "is_admin_override": True},
+        json={"manual_total_amount": None, "manual_partner_commission": None, "manual_staff_return_amount": None, "manual_shop_recovery": None, "is_admin_override": True},
     )
     assert cleared.status_code == 200, cleared.text
     restored = cleared.json()
-    assert restored["total_amount"] == restored["auto_total_amount"] == 3300
-    assert restored["staff_return_amount"] == restored["auto_staff_return_amount"] == 620
-    assert restored["shop_recovery_amount"] == restored["auto_shop_recovery_amount"] == 2660
+    assert restored["total_amount"] == restored["auto_total_amount"] == 3200
+    assert restored["staff_return_amount"] == restored["auto_staff_return_amount"] == 2220
+    assert restored["shop_recovery_amount"] == restored["auto_shop_recovery_amount"] == 980
 
     negative = client.patch(
         f"/api/admin/appointments/{appointment_id}",
@@ -164,6 +166,17 @@ def test_settlement_manual_values_recalculate_and_clear_per_field(client):
     assert negative.status_code == 200, negative.text
     assert negative.json()["total_amount"] == -10
 
+
+def test_settlement_formula_uses_shop_baseline_and_separate_partner_baseline(client):
+    calculate = app.state.calculate_settlement_totals
+    base = calculate(base_price=3000, baseline_shop_recovery=1200)
+    assert (base["total_amount"], base["partner_commission"], base["shop_recovery"]) == (3000, 1800, 1200)
+    employee_discount = calculate(base_price=3000, baseline_shop_recovery=1200, discount_employee_amount=200)
+    assert (employee_discount["total_amount"], employee_discount["partner_commission"], employee_discount["shop_recovery"]) == (2800, 1600, 1200)
+    shop_discount = calculate(base_price=3000, baseline_shop_recovery=1200, discount_shop_amount=200)
+    assert (shop_discount["total_amount"], shop_discount["partner_commission"], shop_discount["shop_recovery"]) == (2800, 1800, 1000)
+    surcharge = calculate(base_price=3000, baseline_shop_recovery=1200, surcharge_employee_amount=100, surcharge_shop_amount=50)
+    assert (surcharge["total_amount"], surcharge["partner_commission"], surcharge["shop_recovery"]) == (3150, 1900, 1250)
 
 def test_appointment_csv_exports_final_settlement_columns_in_order(client):
     headers = login(client)

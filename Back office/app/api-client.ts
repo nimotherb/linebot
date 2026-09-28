@@ -85,16 +85,26 @@ type RawAppointment = {
   surcharge_shop_amount?: number;
   staff_return_amount?: number;
   partner_commission_amount?: number;
+  partner_commission?: number;
   auto_staff_return_amount?: number;
   auto_partner_commission_amount?: number;
+  auto_partner_commission?: number;
   manual_staff_return_amount?: number | null;
   manual_partner_commission_amount?: number | null;
+  manual_partner_commission?: number | null;
   staff_return_amount_overridden?: boolean;
   partner_commission_amount_overridden?: boolean;
+  partner_commission_overridden?: boolean;
   shop_recovery_amount?: number;
+  shop_recovery?: number;
   auto_shop_recovery_amount?: number;
+  auto_shop_recovery?: number;
   manual_shop_recovery_amount?: number | null;
+  manual_shop_recovery?: number | null;
   shop_recovery_amount_overridden?: boolean;
+  shop_recovery_overridden?: boolean;
+  shop_recovery_baseline_amount?: number;
+  partner_commission_baseline_amount?: number;
   settlement_overridden_by_admin_id?: number;
   settlement_override_at?: string;
   commission_amount?: number;
@@ -347,18 +357,28 @@ export const mapAppointment = (item: RawAppointment): Appointment => {
     discountShopAmount: item.discount_shop_amount ?? 0,
     surchargeEmployeeAmount: item.surcharge_employee_amount ?? 0,
     surchargeShopAmount: item.surcharge_shop_amount ?? 0,
-    staffReturnAmount: item.partner_commission_amount ?? item.staff_return_amount ?? item.expected_return_amount ?? 0,
-    partnerCommissionAmount: item.partner_commission_amount ?? item.staff_return_amount ?? item.expected_return_amount ?? 0,
-    autoStaffReturnAmount: item.auto_partner_commission_amount ?? item.auto_staff_return_amount ?? item.staff_return_amount ?? item.expected_return_amount ?? 0,
-    autoPartnerCommissionAmount: item.auto_partner_commission_amount ?? item.auto_staff_return_amount ?? item.staff_return_amount ?? item.expected_return_amount ?? 0,
-    manualStaffReturnAmount: item.manual_partner_commission_amount ?? item.manual_staff_return_amount ?? null,
-    manualPartnerCommissionAmount: item.manual_partner_commission_amount ?? item.manual_staff_return_amount ?? null,
-    staffReturnAmountOverridden: item.partner_commission_amount_overridden ?? item.staff_return_amount_overridden ?? (item.manual_partner_commission_amount != null || item.manual_staff_return_amount != null),
-    partnerCommissionAmountOverridden: item.partner_commission_amount_overridden ?? item.staff_return_amount_overridden ?? (item.manual_partner_commission_amount != null || item.manual_staff_return_amount != null),
-    shopRecoveryAmount: item.shop_recovery_amount ?? 0,
-    autoShopRecoveryAmount: item.auto_shop_recovery_amount ?? item.shop_recovery_amount ?? 0,
-    manualShopRecoveryAmount: item.manual_shop_recovery_amount ?? null,
-    shopRecoveryAmountOverridden: item.shop_recovery_amount_overridden ?? (item.manual_shop_recovery_amount != null),
+    staffReturnAmount: item.partner_commission ?? item.partner_commission_amount ?? item.staff_return_amount ?? item.expected_return_amount ?? 0,
+    partnerCommissionAmount: item.partner_commission ?? item.partner_commission_amount ?? item.staff_return_amount ?? item.expected_return_amount ?? 0,
+    autoStaffReturnAmount: item.auto_partner_commission ?? item.auto_partner_commission_amount ?? item.auto_staff_return_amount ?? item.staff_return_amount ?? item.expected_return_amount ?? 0,
+    autoPartnerCommissionAmount: item.auto_partner_commission ?? item.auto_partner_commission_amount ?? item.auto_staff_return_amount ?? item.staff_return_amount ?? item.expected_return_amount ?? 0,
+    manualStaffReturnAmount: item.manual_partner_commission ?? item.manual_partner_commission_amount ?? item.manual_staff_return_amount ?? null,
+    manualPartnerCommissionAmount: item.manual_partner_commission ?? item.manual_partner_commission_amount ?? item.manual_staff_return_amount ?? null,
+    staffReturnAmountOverridden: item.partner_commission_overridden ?? item.partner_commission_amount_overridden ?? item.staff_return_amount_overridden ?? (item.manual_partner_commission != null || item.manual_partner_commission_amount != null || item.manual_staff_return_amount != null),
+    partnerCommissionAmountOverridden: item.partner_commission_overridden ?? item.partner_commission_amount_overridden ?? item.staff_return_amount_overridden ?? (item.manual_partner_commission != null || item.manual_partner_commission_amount != null || item.manual_staff_return_amount != null),
+    shopRecoveryAmount: item.shop_recovery ?? item.shop_recovery_amount ?? 0,
+    autoShopRecoveryAmount: item.auto_shop_recovery ?? item.auto_shop_recovery_amount ?? item.shop_recovery_amount ?? 0,
+    manualShopRecoveryAmount: item.manual_shop_recovery ?? item.manual_shop_recovery_amount ?? null,
+    shopRecoveryAmountOverridden: item.shop_recovery_overridden ?? item.shop_recovery_amount_overridden ?? (item.manual_shop_recovery != null || item.manual_shop_recovery_amount != null),
+    partnerCommission: item.partner_commission ?? item.partner_commission_amount ?? item.staff_return_amount ?? 0,
+    autoPartnerCommission: item.auto_partner_commission ?? item.auto_partner_commission_amount ?? item.auto_staff_return_amount ?? 0,
+    manualPartnerCommission: item.manual_partner_commission ?? item.manual_partner_commission_amount ?? item.manual_staff_return_amount ?? null,
+    partnerCommissionOverridden: item.partner_commission_overridden ?? item.partner_commission_amount_overridden ?? item.staff_return_amount_overridden ?? false,
+    shopRecovery: item.shop_recovery ?? item.shop_recovery_amount ?? 0,
+    autoShopRecovery: item.auto_shop_recovery ?? item.auto_shop_recovery_amount ?? item.shop_recovery_amount ?? 0,
+    manualShopRecovery: item.manual_shop_recovery ?? item.manual_shop_recovery_amount ?? null,
+    shopRecoveryOverridden: item.shop_recovery_overridden ?? item.shop_recovery_amount_overridden ?? false,
+    shopRecoveryBaselineAmount: item.shop_recovery_baseline_amount,
+    partnerCommissionBaselineAmount: item.partner_commission_baseline_amount,
     settlementOverriddenByAdminId: item.settlement_overridden_by_admin_id,
     settlementOverrideAt: item.settlement_override_at,
     commissionAmount: item.commission_amount ?? 0,
