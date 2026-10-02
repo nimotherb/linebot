@@ -1,9 +1,9 @@
 'use client';
 
 import { PointerLight, SiteHeader, WingMenu } from './components/WingMenu';
-import { usePublishedSiteDraft } from './components/PublishedSiteContent';
+import { ContentSyncIndicator, usePublishedSiteState, type PublishedSiteDraft } from './components/PublishedSiteContent';
 
-function MobileSequence({ content }: { content: ReturnType<typeof usePublishedSiteDraft> }) {
+function MobileSequence({ content }: { content: PublishedSiteDraft | undefined }) {
   const bookingUrl = content?.booking?.url || '';
   const homePage = content?.pages?.home;
   const services = content && Array.isArray(content.services)
@@ -82,10 +82,10 @@ function MobileSequence({ content }: { content: ReturnType<typeof usePublishedSi
 }
 
 export default function Home() {
-  const content = usePublishedSiteDraft();
+  const { content, syncing } = usePublishedSiteState();
   const bookingUrl = content?.booking?.url || '';
   const homePage = content?.pages?.home;
-  if (!content) return <main className="home-shell"><PointerLight /><SiteHeader /><section className="kinetic-stage"><div className="updating-card"><span>OFFICIAL SITE</span><h2>內容暫時無法取得</h2><p>請稍後重新整理，最新發布內容只從官方資料庫載入。</p></div></section><WingMenu /></main>;
+  if (!content) return <main className="home-shell"><PointerLight /><SiteHeader /><section className="kinetic-stage"><div className="content-empty-state" aria-label="尚無已發布內容"><ContentSyncIndicator syncing={syncing} /></div></section><WingMenu /></main>;
   return (
     <main className="home-shell">
       <PointerLight />
