@@ -631,6 +631,16 @@ export class SpaApi {
     return this.request<RawShift>('/api/admin/shifts', { method: 'POST', body: JSON.stringify(payload) });
   }
 
+  listShifts(start: string, end: string) {
+    const query = new URLSearchParams({ start: `${start}T00:00:00`, end: `${end}T00:00:00` });
+    return this.request<RawShift[]>(`/api/admin/shifts?${query.toString()}`);
+  }
+
+  listStaffShifts(start: string, end: string) {
+    const query = new URLSearchParams({ start: `${start}T00:00:00`, end: `${end}T00:00:00` });
+    return this.request<RawShift[]>(`/api/staff/shifts?${query.toString()}`);
+  }
+
   notifyAppointmentLine(id: number) {
     return this.request<{ batch_id: number; dispatch_sequence: number; trigger_type: string; status: string; status_label: string; sent: number; skipped: number; failed: number; results: Array<Record<string, unknown>> }>(`/api/admin/appointments/${id}/notify-line`, { method: 'POST' });
   }
@@ -819,8 +829,12 @@ export class SpaApi {
     });
   }
 
-  publicSchedule(token: string) {
-    return this.request<{ staff: { id: number; name: string }; rules: { minimum_hours: number; lock_minutes: number }; shifts: RawShift[] }>(`/api/staff/schedule/${encodeURIComponent(token)}`);
+  publicSchedule(token: string, start?: string, end?: string) {
+    const query = new URLSearchParams();
+    if (start) query.set('start', `${start}T00:00:00`);
+    if (end) query.set('end', `${end}T00:00:00`);
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return this.request<{ staff: { id: number; name: string }; rules: { minimum_hours: number; lock_minutes: number }; shifts: RawShift[] }>(`/api/staff/schedule/${encodeURIComponent(token)}${suffix}`);
   }
 
   publicCreateShift(token: string, payload: { start_time: string; end_time: string; is_next_day?: boolean }) {

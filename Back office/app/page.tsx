@@ -250,6 +250,12 @@ const buildBusinessWeek = (weekOffset: number, reference = new Date()) => {
   });
 };
 const weekRangeLabel = (days: ReturnType<typeof buildBusinessWeek>) => `${days[0].label}–${days[6].label}`;
+const scheduleWeekRange = (week: 'current' | 'next', reference = new Date()) => {
+  const days = buildBusinessWeek(week === 'current' ? 0 : 1, reference);
+  const end = new Date(`${days[0].date}T00:00:00Z`);
+  end.setUTCDate(end.getUTCDate() + 7);
+  return { start: days[0].date, end: end.toISOString().slice(0, 10) };
+};
 const nextBookableSlot = () => {
   const threshold = Date.now() + 90 * 60 * 1000;
   const rounded = new Date(Math.ceil(threshold / (30 * 60 * 1000)) * 30 * 60 * 1000);
@@ -336,6 +342,9 @@ export default function Home() {
   const [scheduleReminderBusy, setScheduleReminderBusy] = useState(false);
   const [scheduleReminderHistoryLoading, setScheduleReminderHistoryLoading] = useState(false);
   const [week, setWeek] = useState<'current' | 'next'>('current');
+  const [scheduleReloadKey, setScheduleReloadKey] = useState(0);
+  const [scheduleLoading, setScheduleLoading] = useState(false);
+  const [scheduleError, setScheduleError] = useState('');
   const [appMode, setAppMode] = useState<'checking' | 'unavailable' | 'login' | 'live' | 'staff' | 'staffLink'>('checking');
   const [connectionError, setConnectionError] = useState('');
   const [token, setToken] = useState('');
@@ -426,7 +435,8 @@ export default function Home() {
       if (scheduleToken) {
         setStaffToken(scheduleToken);
         try {
-          const data = await new SpaApi().publicSchedule(scheduleToken);
+          const initialRange = scheduleWeekRange('current');
+          const data = await new SpaApi().publicSchedule(scheduleToken, initialRange.start, initialRange.end);
           if (!activeRequest) return;
           setStaffPortalName(data.staff.name);
           setShifts(data.shifts.map((shift) => mapShift({ ...shift, staff_name: data.staff.name })));
@@ -588,6 +598,42 @@ export default function Home() {
     }
   };
 
+  useEffect(() => {
+    if (!['live', 'staff', 'staffLink'].includes(appMode)) return;
+    if (appMode === 'staffLink' && !staffToken) return;
+    const range = scheduleWeekRange(week);
+    let activeRequest = true;
+    setScheduleLoading(true);
+    setScheduleError('');
+    setShifts([]);
+    const load = async () => {
+      try {
+        if (appMode === 'live') {
+          const rows = await api.listShifts(range.start, range.end);
+          if (activeRequest) setShifts(rows.map(mapShift));
+        } else if (appMode === 'staff') {
+          const rows = await api.listStaffShifts(range.start, range.end);
+          if (activeRequest) setShifts(rows.map(mapShift));
+        } else {
+          const data = await api.publicSchedule(staffToken, range.start, range.end);
+          if (activeRequest) {
+            setStaffPortalName(data.staff.name);
+            setShifts(data.shifts.map((shift) => mapShift({ ...shift, staff_name: data.staff.name })));
+          }
+        }
+      } catch (error) {
+        if (activeRequest) {
+          setShifts([]);
+          setScheduleError(error instanceof Error ? error.message : '排班資料取得失敗，請稍後再試。');
+        }
+      } finally {
+        if (activeRequest) setScheduleLoading(false);
+      }
+    };
+    void load();
+    return () => { activeRequest = false; };
+  }, [api, appMode, staffToken, week, scheduleReloadKey]);
+
   const completedAppointments = appointments.filter((item) => item.status === '已完成' || item.status === '已取消');
   const activeAppointments = appointments.filter((item) => item.status !== '已完成' && item.status !== '已取消');
   const todayAppointments = appointments.filter((item) => item.date === todayIso);
@@ -630,6 +676,10 @@ export default function Home() {
   const canCreateAppointments = appMode === 'live' || isStaffUser;
   const sensitiveVisible = appMode === 'live';
   const currentLoginLabel = isStaffUser ? '員工' : role === 'admin' ? 'Admin' : role === 'manager' ? '店長' : role === 'clerk' ? '客服' : '';
+  const selectScheduleWeek = (value: 'current' | 'next') => {
+    setWeek(value);
+    setScheduleReloadKey((current) => current + 1);
+  };
   const hiddenForViewer = new Set<SectionId>(['checkout', 'customers', 'exports', 'users']);
   const hiddenForStaff = new Set<SectionId>(['checkout', 'customers', 'exports', 'users']);
   const visibleNavGroups = navGroups.map((group) => ({ ...group, items: group.items.filter((item) => isViewer ? !hiddenForViewer.has(item.id) : isStaffUser ? !hiddenForStaff.has(item.id) : true) }));
@@ -1631,7 +1681,8 @@ export default function Home() {
       <>
         <section className="rule-banner"><div><strong>90 分鐘鎖定規則</strong><span>師傅端距開始 90 分鐘內不可新增、修改或撤銷；店長與 Admin 可填寫原因強制處理。</span></div>{appMode === 'live' && <button onClick={() => navigateTo('staffPortal')}>預覽師傅畫面</button>}</section>
         <section className="panel roster-panel">
-          <div className="toolbar"><div className="segmented"><button className={week === 'current' ? 'active' : ''} onClick={() => setWeek('current')}>本週 {weekRangeLabel(currentWeekDays)}</button><button className={week === 'next' ? 'active' : ''} onClick={() => setWeek('next')}>下週 {weekRangeLabel(followingWeekDays)}</button></div><select value={scheduleCategoryFilter} onChange={(event) => setScheduleCategoryFilter(event.target.value as typeof scheduleCategoryFilter)}><option value="全部">全部師傅</option>{staffCategories.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}</select><div className="filter-note"><strong>{filteredScheduleStaff.length}</strong><span>位符合篩選</span></div><div className="toolbar-spacer" />{appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('shifts')}>⇩ 匯出班表</button>}{canManageShifts && <><button className="secondary-button" disabled={selectedScheduleStaffIds.length === 0 || scheduleReminderBusy} onClick={() => dispatchScheduleReminders()}>{scheduleReminderBusy ? '派發中…' : '排班通知'}</button><button className="secondary-button" disabled={scheduleReminderHistoryLoading} onClick={loadScheduleReminderHistory}>{scheduleReminderHistoryLoading ? '讀取中…' : '通知紀錄'}</button></>}{(canManageShifts || isStaffUser) && <button className="primary-button" onClick={() => { setShiftMode('single'); setModal({ type: 'shift', origin: isStaffUser ? 'staff' : 'admin' }); }}>＋ 新增排班</button>}</div>
+          <div className="toolbar"><div className="segmented"><button type="button" className={week === 'current' ? 'active' : ''} disabled={scheduleLoading} onClick={() => selectScheduleWeek('current')}>本週 {weekRangeLabel(currentWeekDays)}</button><button type="button" className={week === 'next' ? 'active' : ''} disabled={scheduleLoading} onClick={() => selectScheduleWeek('next')}>下週 {weekRangeLabel(followingWeekDays)}</button></div><select value={scheduleCategoryFilter} onChange={(event) => setScheduleCategoryFilter(event.target.value as typeof scheduleCategoryFilter)}><option value="全部">全部師傅</option>{staffCategories.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}</select><div className="filter-note"><strong>{filteredScheduleStaff.length}</strong><span>位符合篩選</span></div><div className="toolbar-spacer" />{scheduleLoading && <span className="subtle-label">排班讀取中…</span>}{appMode === 'live' && <button className="secondary-button" onClick={() => exportCsv('shifts')}>⇩ 匯出班表</button>}{canManageShifts && <><button className="secondary-button" disabled={selectedScheduleStaffIds.length === 0 || scheduleReminderBusy} onClick={() => dispatchScheduleReminders()}>{scheduleReminderBusy ? '派發中…' : '排班通知'}</button><button className="secondary-button" disabled={scheduleReminderHistoryLoading} onClick={loadScheduleReminderHistory}>{scheduleReminderHistoryLoading ? '讀取中…' : '通知紀錄'}</button></>}{(canManageShifts || isStaffUser) && <button className="primary-button" onClick={() => { setShiftMode('single'); setModal({ type: 'shift', origin: isStaffUser ? 'staff' : 'admin' }); }}>＋ 新增排班</button>}</div>
+          {scheduleError && <div className="auth-error" role="alert">{scheduleError}</div>}
           {canManageShifts && <div className="bulk-tools schedule-staff-tools"><label className="selection-check"><input type="checkbox" checked={allScheduleStaffSelected} onChange={(event) => setSelectedScheduleStaffIds(event.target.checked ? scheduleStaffIds : [])} /><span>全選員工</span></label><span>已選 {selectedScheduleStaffIds.length} 位</span></div>}
           <BulkTools entity="shifts" ids={visibleShiftIds} label="排班" />
           <div className="roster-grid" style={{ gridTemplateColumns: `120px repeat(${days.length}, minmax(112px, 1fr))` }}>

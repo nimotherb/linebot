@@ -1024,6 +1024,43 @@ def test_staff_passwordless_session_only_returns_own_data(client):
     assert all(item["staff_id"] == staff["id"] for item in data["shifts"])
 
 
+def test_admin_and_staff_shift_queries_share_future_week_boundaries(client):
+    admin_headers = login(client)
+    created = client.post(
+        "/api/admin/staff",
+        headers=admin_headers,
+        json={"name": "未來週查詢測試師傅", "category": "gay", "phone": "0999000001"},
+    )
+    assert created.status_code == 201, created.text
+    staff = created.json()
+    shifts = []
+    for start_time, end_time in [
+        ("2099-10-05T12:00:00", "2099-10-05T20:00:00"),
+        ("2099-10-11T23:00:00", "2099-10-11T23:30:00"),
+        ("2099-10-12T00:00:00", "2099-10-12T01:00:00"),
+    ]:
+        response = client.post(
+            "/api/admin/shifts",
+            headers=admin_headers,
+            json={"staff_id": staff["id"], "start_time": start_time, "end_time": end_time},
+        )
+        assert response.status_code == 201, response.text
+        shifts.append(response.json())
+
+    params = {"start": "2099-10-05T00:00:00", "end": "2099-10-12T00:00:00"}
+    admin_rows = client.get("/api/admin/shifts", headers=admin_headers, params=params)
+    assert admin_rows.status_code == 200, admin_rows.text
+    admin_ids = {item["id"] for item in admin_rows.json() if item["staff_id"] == staff["id"]}
+    assert admin_ids == {shifts[0]["id"], shifts[1]["id"]}
+
+    staff_login = client.post("/api/staff/auth/login", json={"phone": "0999000001"})
+    assert staff_login.status_code == 200, staff_login.text
+    staff_headers = {"Authorization": f"Bearer {staff_login.json()['access_token']}"}
+    staff_rows = client.get("/api/staff/shifts", headers=staff_headers, params=params)
+    assert staff_rows.status_code == 200, staff_rows.text
+    assert {item["id"] for item in staff_rows.json()} == admin_ids
+
+
 def test_permanent_staff_delete_is_confirmed_and_preserves_history(client):
     headers = login(client)
     removable = client.post(

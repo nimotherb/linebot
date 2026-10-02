@@ -7,7 +7,7 @@ these helpers so a future UTC migration has one well-defined boundary.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 
@@ -24,14 +24,24 @@ def now_taipei_naive() -> datetime:
     return datetime.now(TAIPEI).replace(tzinfo=None)
 
 
+def taipei_week_bounds(reference: date | datetime | None = None, week_offset: int = 0) -> tuple[datetime, datetime]:
+    """Return a Monday-start, exclusive-next-Monday Taipei week range.
+
+    Stored timestamps are naive Taipei wall-clock values, so the returned
+    boundaries are also naive.  Keeping the exclusive end boundary here gives
+    admin, staff and reminder queries the same Sunday-inclusive semantics.
+    """
+    value = reference or now_taipei_naive()
+    current = value.date() if isinstance(value, datetime) else value
+    monday = current - timedelta(days=current.weekday()) + timedelta(days=week_offset * 7)
+    start = datetime.combine(monday, datetime.min.time())
+    return start, start + timedelta(days=7)
+
+
 def staff_schedule_reminder_week_starts(reference: datetime | None = None) -> tuple[datetime, datetime]:
     """Return the Monday starts for the next and following business weeks."""
-    current = (reference or now_taipei_naive()).date()
-    current_monday = current - timedelta(days=current.weekday())
-    return (
-        datetime.combine(current_monday + timedelta(days=7), datetime.min.time()),
-        datetime.combine(current_monday + timedelta(days=14), datetime.min.time()),
-    )
+    current_monday, _ = taipei_week_bounds(reference)
+    return current_monday + timedelta(days=7), current_monday + timedelta(days=14)
 
 
 def parse_local_datetime(value: str | datetime) -> datetime:

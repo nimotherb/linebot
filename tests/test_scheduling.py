@@ -8,9 +8,18 @@ from scheduling import (
     periods_overlap,
     staff_may_change_shift,
     staff_schedule_reminder_week_starts,
+    taipei_week_bounds,
     validate_booking_start,
     validate_shift_period,
 )
+
+
+def test_taipei_week_bounds_are_monday_to_next_monday_exclusive():
+    start, end = taipei_week_bounds(datetime(2026, 10, 2, 23, 59))
+    assert start == datetime(2026, 9, 28)
+    assert end == datetime(2026, 10, 5)
+    next_start, next_end = taipei_week_bounds(datetime(2026, 10, 2), week_offset=1)
+    assert (next_start, next_end) == (datetime(2026, 10, 5), datetime(2026, 10, 12))
 
 
 def test_staff_schedule_reminder_weeks_are_next_two_mondays():

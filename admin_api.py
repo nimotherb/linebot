@@ -3040,6 +3040,26 @@ def register_admin_api(
             "return_rule_sets": [],
         }
 
+    @app.get("/api/staff/shifts")
+    def list_staff_shifts(
+        start: datetime | None = None,
+        end: datetime | None = None,
+        db: Session = Depends(get_db),
+        staff_obj=Depends(current_staff),
+    ):
+        """Return the signed-in employee's shifts for an explicit range.
+
+        The range uses an inclusive start and exclusive end, matching the
+        admin and public schedule endpoints.  No current-date cutoff is
+        applied: future shifts remain visible as soon as they are saved.
+        """
+        query = db.query(Shift).filter(Shift.staff_id == staff_obj.id, Shift.status == "active")
+        if start:
+            query = query.filter(Shift.end_time > parse_local_datetime(start))
+        if end:
+            query = query.filter(Shift.start_time < parse_local_datetime(end))
+        return [shift_dict(item) | {"staff_name": staff_obj.name} for item in query.order_by(Shift.start_time).all()]
+
     @app.post("/api/staff/profile/phone-request")
     def request_staff_phone_change(payload: StaffPhoneChangeIn, db: Session = Depends(get_db), staff_obj=Depends(current_staff)):
         phone = unique_staff_phone(db, payload.phone, exclude_staff_id=staff_obj.id)
