@@ -48,8 +48,9 @@ type RawAppointment = {
   customer_name: string;
   gender?: 'male' | 'female' | 'other' | null;
   gender_other?: string | null;
-  phone?: string;
-  phone_masked?: string | null;
+  phone?: string | null;
+  customer_line_user_id?: string | null;
+  customer_line_uid_status?: 'bound' | 'missing' | 'invalid' | string;
   staff_id?: number;
   staff_name: string;
   service_plan_id?: number;
@@ -205,7 +206,7 @@ export type BootstrapData = {
   promotions: Array<{ id: number; name: string; calculation_type: string; value: number; active: boolean; starts_at?: string; ends_at?: string }>;
   rooms: Array<{ id: number; name: string; active: boolean }>;
   venues?: Array<{ id: number; name: string; address?: string; room_name?: string; rental_cost: number; notes?: string; active: boolean }>;
-  customers?: Array<{ id: number; customer_grade: 'SSR' | 'SR' | 'R' | 'N'; vip_serial: string; display_name?: string; birthday?: string; birthday_pending?: string; gender?: 'male' | 'female' | 'other'; gender_other?: string; primary_phone?: string; primary_phone_masked?: string | null; phones: string[]; phones_masked?: string[]; visits: number; spent: number; last_visit?: string }>;
+  customers?: Array<{ id: number; customer_grade: 'SSR' | 'SR' | 'R' | 'N'; vip_serial: string; display_name?: string; birthday?: string; birthday_pending?: string; gender?: 'male' | 'female' | 'other'; gender_other?: string; primary_phone?: string | null; phones: string[]; phone_data_status?: 'valid' | 'missing' | 'invalid_masked_source' | string; line_user_id?: string | null; line_uid_status?: 'bound' | 'missing' | 'invalid' | string; visits: number; spent: number; last_visit?: string }>;
   admin_users?: AdminIdentity[];
   return_rule_sets?: ReturnRuleSetView[];
   audit_logs?: Array<{
@@ -284,9 +285,10 @@ export type RawBookingRequest = {
   customer_name: string;
   gender?: 'male' | 'female' | 'other' | null;
   gender_other?: string | null;
-  phone: string;
+  phone: string | null;
   phone_value?: string;
-  phone_masked?: string | null;
+  line_user_id?: string | null;
+  line_uid_status?: 'bound' | 'missing' | 'invalid' | string;
   staff_id?: number;
   staff_name: string;
   service_plan_id: number;
@@ -330,8 +332,8 @@ export const mapAppointment = (item: RawAppointment): Appointment => {
     end: end.time,
     customerSerial: item.customer_serial,
     customer: item.customer_name,
-    phone: item.phone_masked || '未提供',
-    phoneValue: item.phone,
+    phone: item.phone || '',
+    phoneValue: item.phone || undefined,
     staff: item.staff_name || '我的班表',
     staffId: item.staff_id ? String(item.staff_id) : undefined,
     serviceId: item.service_plan_id ? String(item.service_plan_id) : '',
@@ -478,10 +480,12 @@ export const mapCustomer = (item: NonNullable<BootstrapData['customers']>[number
   genderOther: item.gender_other,
   birthdayPending: (item as typeof item & { birthday_pending?: string }).birthday_pending,
   lineName: item.display_name || '未取得',
-  phone: item.primary_phone_masked || '未提供',
-  phones: item.phones_masked || [],
-  phonesMasked: item.phones_masked || [],
+  phone: item.primary_phone || '',
+  phones: item.phones || [],
   phoneValues: item.phones || [],
+  lineUserId: item.line_user_id || undefined,
+  lineUidStatus: item.line_uid_status,
+  phoneDataStatus: item.phone_data_status,
   visits: item.visits,
   spent: item.spent,
   lastVisit: item.last_visit || '—',

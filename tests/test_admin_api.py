@@ -1158,7 +1158,8 @@ def test_customer_name_serial_and_multiple_phone_ids(client):
     assert updated.status_code == 200, updated.text
     assert updated.json()["display_name"] == "王先生"
     assert updated.json()["phones"] == ["0966000001", "0966000002"]
-    assert updated.json()["phones_masked"] == ["09******01", "09******02"]
+    assert updated.json()["primary_phone"] == "0966000001"
+    assert "phones_masked" not in updated.json()
     assert updated.json()["vip_serial"] == "SSR-0001"
 
     reordered = client.patch(
@@ -1172,7 +1173,24 @@ def test_customer_name_serial_and_multiple_phone_ids(client):
     appointments = client.get("/api/admin/appointments", headers=headers).json()
     appointment = next(item for item in appointments if item["customer_id"] == customer_id)
     assert appointment["customer_serial"] == "SSR-0001"
-    assert appointment["phone_masked"] == "09******01"
+    assert appointment["phone"] == "0966000001"
+    assert "phone_masked" not in appointment
+
+    line_uid = "U" + "a" * 32
+    with SessionLocal() as db:
+        db.query(User).filter(User.id == customer_id).update({"line_user_id": line_uid})
+        db.commit()
+    customer_row = next(item for item in client.get("/api/admin/customers", headers=headers).json() if item["id"] == customer_id)
+    assert customer_row["line_user_id"] == line_uid
+    assert customer_row["line_uid_status"] == "bound"
+
+    three_phone_customer = client.patch(
+        f"/api/admin/customers/{customer_id}",
+        headers=headers,
+        json={"display_name": "王先生", "phones": ["0966000002", "0966000001", "0966000003"], "customer_grade": "SSR"},
+    )
+    assert three_phone_customer.status_code == 200, three_phone_customer.text
+    assert three_phone_customer.json()["phones"] == ["0966000002", "0966000001", "0966000003"]
 
 
 def test_public_booking_checks_availability_and_is_idempotent(client):

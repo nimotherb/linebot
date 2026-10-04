@@ -136,8 +136,10 @@ export type Customer = {
   lineName: string;
   phone: string;
   phones: string[];
-  phonesMasked: string[];
   phoneValues: string[];
+  phoneDataStatus?: 'valid' | 'missing' | 'invalid_masked_source' | string;
+  lineUserId?: string;
+  lineUidStatus?: 'bound' | 'missing' | 'invalid' | string;
   visits: number;
   spent: number;
   lastVisit: string;

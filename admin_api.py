@@ -62,11 +62,33 @@ _PUBLIC_BOOKING_LOCK = threading.Lock()
 LINE_USER_ID_PATTERN = re.compile(r"^U[0-9a-fA-F]{32}$")
 
 
-def _masked_line_uid(uid: str | None) -> str:
+def _admin_phone_value(value: str | None) -> str | None:
+    """Return a real stored mobile for an authenticated admin response.
+
+    Masked values are presentation data, not phone numbers.  They must never
+    be sent back through an admin editing/display field as if they were the
+    source value.
+    """
+    normalized = (value or "").strip()
+    return normalized if re.fullmatch(r"09\d{8}", normalized) else None
+
+
+def _admin_line_uid_fields(uid: str | None) -> tuple[str | None, str]:
+    """Expose a complete valid UID to the admin UI, or a safe status only."""
     value = (uid or "").strip()
     if not value:
-        return "未綁定"
-    return f"{value[:4]}…{value[-4:]}" if len(value) > 8 else "••••"
+        return None, "missing"
+    if LINE_USER_ID_PATTERN.fullmatch(value):
+        return value, "bound"
+    return None, "invalid"
+
+
+def _admin_line_uid_display(uid: str | None) -> str:
+    """Display complete valid UIDs in authorized admin-only responses."""
+    value, status = _admin_line_uid_fields(uid)
+    if value:
+        return value
+    return "未綁定" if status == "missing" else "資料格式錯誤"
 DEFAULT_CUSTOMER_SERVICE_URL = "https://line.me/R/ti/p/@684wdola"
 
 STATUS_TO_ZH = {
@@ -2244,7 +2266,15 @@ def register_admin_api(
             settlement["shop_recovery"] = settlement.get("shop_recovery_amount", 0)
             settlement["manual_shop_recovery"] = settlement.get("manual_shop_recovery_amount")
             settlement["shop_recovery_overridden"] = settlement.get("shop_recovery_amount_overridden", False)
-        phone = (detail.contact_phone if detail and detail.contact_phone else getattr(user, "phone", None)) or getattr(item, "customer_phone_snapshot", None)
+        phone = next(
+            (candidate for candidate in (
+                _admin_phone_value(getattr(detail, "contact_phone", None)) if detail else None,
+                _admin_phone_value(getattr(user, "phone", None)),
+                _admin_phone_value(getattr(item, "customer_phone_snapshot", None)),
+            ) if candidate),
+            None,
+        )
+        customer_line_user_id, customer_line_uid_status = _admin_line_uid_fields(getattr(user, "line_user_id", None))
         grade = getattr(user, "customer_grade", "N") if user else "N"
         canonical_status = (
             "pending" if item.status in {"pending", "待確認"}
@@ -2272,7 +2302,8 @@ def register_admin_api(
             "gender_other": getattr(item, "customer_gender_other_snapshot", None) or getattr(user, "gender_other", None),
             "customer_name": (getattr(item, "customer_name_snapshot", None) if getattr(user, "line_user_id", "") == "guest:anonymous" else None) or getattr(user, "display_name", None) or getattr(item, "customer_name_snapshot", None) or "未命名客戶",
             "phone": phone,
-            "phone_masked": mask_phone(phone),
+            "customer_line_user_id": customer_line_user_id,
+            "customer_line_uid_status": customer_line_uid_status,
             "staff_id": item.staff_id,
             "staff_name": staff_obj.name if staff_obj else getattr(item, "staff_name_snapshot", None) or "未指定",
             "service_plan_id": plan.id if plan else None,
@@ -2365,7 +2396,7 @@ def register_admin_api(
                         "recipient_label": dispatch.recipient_label,
                         "recipient_entity_type": dispatch.recipient_entity_type,
                         "recipient_entity_id": dispatch.recipient_entity_id,
-                        "uid": "未綁定" if dispatch.reason == "missing_uid" else _masked_line_uid(dispatch.uid),
+                        "uid": _admin_line_uid_display(dispatch.uid),
                         "uid_status": dispatch.reason,
                         "reason": dispatch.reason,
                         "created_at": _iso(dispatch.created_at),
@@ -2389,7 +2420,7 @@ def register_admin_api(
 
     def public_appointment_dict(db: Session, item, cache: dict[str, Any] | None = None) -> dict[str, Any]:
         row = appointment_dict(db, item, cache)
-        for key in ("customer_id", "customer_serial", "customer_name", "phone", "phone_masked", "gender", "gender_other", "base_price", "discount_amount", "extra_amount", "total_amount", "notes", "payment_method", "cash_return_status", "expected_return_amount", "staff_return_status", "commission_amount", "discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount", "promotion_id", "promotion_ids", "promotion_name"):
+        for key in ("customer_id", "customer_serial", "customer_name", "phone", "customer_line_user_id", "customer_line_uid_status", "gender", "gender_other", "base_price", "discount_amount", "extra_amount", "total_amount", "notes", "payment_method", "cash_return_status", "expected_return_amount", "staff_return_status", "commission_amount", "discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount", "promotion_id", "promotion_ids", "promotion_name"):
             row.pop(key, None)
         row["customer_name"] = "已隱藏"
         row["phone"] = None
@@ -2426,13 +2457,21 @@ def register_admin_api(
             cache["details"][appointment.id].total_amount if appointment.id in cache["details"] else appointment_price_from_legacy(appointment)
             for appointment in visits
         )
-        phones = cache["phones"].get(item.id, [])
+        raw_phone_values = cache["phones"].get(item.id, []) or ([item.phone] if item.phone else [])
+        # CustomerPhone rows are expected to be normalized, but old data may
+        # contain a presentation mask or another invalid value.  Never expose
+        # that value as a real phone in an editable admin response.
+        phones = [phone for phone in (_admin_phone_value(value) for value in raw_phone_values) if phone]
+        phone_data_status = "invalid_masked_source" if any(
+            str(value or "").strip() and _admin_phone_value(value) is None for value in raw_phone_values
+        ) else ("valid" if phones else "missing")
+        line_user_id, line_uid_status = _admin_line_uid_fields(getattr(item, "line_user_id", None))
         return {
             "id": item.id,
             "customer_grade": getattr(item, "customer_grade", "N"),
             "vip_serial": customer_serial(
                 item.id,
-                phones[0] if phones else item.phone,
+                phones[0] if phones else None,
                 getattr(item, "customer_grade", "N"),
                 original_phone=getattr(item, "original_phone_snapshot", None),
                 registered_at=getattr(item, "created_at", None),
@@ -2442,10 +2481,11 @@ def register_admin_api(
             "birthday_pending": getattr(item, "birthday_pending", None),
             "gender": getattr(item, "gender", None),
             "gender_other": getattr(item, "gender_other", None),
-            "primary_phone": phones[0] if phones else item.phone,
-            "primary_phone_masked": mask_phone(phones[0] if phones else item.phone),
-            "phones": phones or ([item.phone] if item.phone else []),
-            "phones_masked": [masked for phone in (phones or ([item.phone] if item.phone else [])) if (masked := mask_phone(phone))],
+            "primary_phone": phones[0] if phones else None,
+            "phones": phones,
+            "phone_data_status": phone_data_status,
+            "line_user_id": line_user_id,
+            "line_uid_status": line_uid_status,
             "visits": len(visits),
             "spent": spent,
             "last_visit": _iso(max((appointment.start_time for appointment in visits), default=None)),
@@ -2485,9 +2525,10 @@ def register_admin_api(
             "customer_grade": getattr(customer, "customer_grade", "N"),
             "customer_name": getattr(item, "customer_name_snapshot", None) or getattr(customer, "display_name", None) or "未命名客戶",
             "birthday": getattr(item, "customer_birthday_snapshot", None) or getattr(customer, "birthday", None),
-            "phone": mask_phone(item.contact_phone) or "未提供",
+            "phone": _admin_phone_value(item.contact_phone),
             "phone_value": item.contact_phone,
-            "phone_masked": mask_phone(item.contact_phone),
+            "line_user_id": _admin_line_uid_fields(getattr(customer, "line_user_id", None))[0],
+            "line_uid_status": _admin_line_uid_fields(getattr(customer, "line_user_id", None))[1],
             "staff_id": item.requested_staff_id,
             "staff_name": staff_obj.name if staff_obj else "未指定",
             "service_plan_id": item.service_plan_id,
@@ -4218,7 +4259,7 @@ def register_admin_api(
         setattr(entity, "line_user_id", normalized)
         audit(db, actor, "line_rebind", entity_type, entity_id, reason="通知歷程重新綁定", before={"line_user_id": before_uid}, after={"line_user_id": normalized})
         db.commit()
-        return {"ok": True, "kind": {"customer": "client", "staff": "staff", "admin_user": "service"}[entity_type], "recipient_label": dispatch.recipient_label, "uid": _masked_line_uid(normalized)}
+        return {"ok": True, "kind": {"customer": "client", "staff": "staff", "admin_user": "service"}[entity_type], "recipient_label": dispatch.recipient_label, "uid": _admin_line_uid_display(normalized)}
 
     @app.get("/api/admin/shifts")
     def list_shifts(start: datetime | None = None, end: datetime | None = None, db: Session = Depends(get_db), user=Depends(current_admin)):
@@ -5201,7 +5242,7 @@ def register_admin_api(
             for item, row in zip(items, appointment_dicts(db, items)):
                 writer.writerow([
                     row["order_id"], item.start_time.date(), item.start_time.strftime("%H:%M"), item.end_time.strftime("%H:%M"),
-                    row["customer_name"], row.get("phone_masked") or "未提供", row["staff_name"], row["service_name"],
+                    row["customer_name"], row.get("phone") or "—", row["staff_name"], row["service_name"],
                     row["room_name"] or row["venue_name"] or row["location_type"], row["status_label"],
                     int(row.get("extra_amount") or 0), int(row.get("discount_amount") or 0), int(row.get("total_amount") or 0),
                     int(row.get("discount_employee_amount") or 0), int(row.get("discount_shop_amount") or 0),
