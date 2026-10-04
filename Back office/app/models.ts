@@ -21,6 +21,7 @@ export type Appointment = {
   customerSerial?: string;
   customer: string;
   phone: string;
+  phoneValue?: string;
   staff: string;
   staffId?: string;
   serviceId: string;
@@ -135,6 +136,8 @@ export type Customer = {
   lineName: string;
   phone: string;
   phones: string[];
+  phonesMasked: string[];
+  phoneValues: string[];
   visits: number;
   spent: number;
   lastVisit: string;

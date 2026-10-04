@@ -1158,7 +1158,21 @@ def test_customer_name_serial_and_multiple_phone_ids(client):
     assert updated.status_code == 200, updated.text
     assert updated.json()["display_name"] == "王先生"
     assert updated.json()["phones"] == ["0966000001", "0966000002"]
+    assert updated.json()["phones_masked"] == ["09******01", "09******02"]
     assert updated.json()["vip_serial"] == "SSR-0001"
+
+    reordered = client.patch(
+        f"/api/admin/customers/{customer_id}",
+        headers=headers,
+        json={"display_name": "王先生", "phones": ["0966000002", "0966000001"], "customer_grade": "SSR"},
+    )
+    assert reordered.status_code == 200, reordered.text
+    assert reordered.json()["phones"] == ["0966000002", "0966000001"]
+    assert reordered.json()["vip_serial"] == "SSR-0001"
+    appointments = client.get("/api/admin/appointments", headers=headers).json()
+    appointment = next(item for item in appointments if item["customer_id"] == customer_id)
+    assert appointment["customer_serial"] == "SSR-0001"
+    assert appointment["phone_masked"] == "09******01"
 
 
 def test_public_booking_checks_availability_and_is_idempotent(client):

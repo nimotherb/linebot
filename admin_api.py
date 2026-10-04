@@ -46,7 +46,7 @@ from scheduling import (
     parse_extended_local_datetime,
     staff_schedule_reminder_week_starts,
 )
-from identifiers import customer_serial
+from identifiers import customer_serial, mask_phone
 
 
 logger = logging.getLogger(__name__)
@@ -1055,7 +1055,7 @@ def register_admin_api(
         return phone
 
     def customer_phone_rows(db: Session, customer) -> list:
-        rows = db.query(CustomerPhone).filter(CustomerPhone.user_id == customer.id).order_by(CustomerPhone.is_primary.desc(), CustomerPhone.id).all()
+        rows = db.query(CustomerPhone).filter(CustomerPhone.user_id == customer.id).order_by(CustomerPhone.is_primary.desc(), CustomerPhone.sort_order, CustomerPhone.id).all()
         if not rows and customer.phone:
             try:
                 normalized = normalize_phone(customer.phone)
@@ -1063,7 +1063,7 @@ def register_admin_api(
                 return []
             owner = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
             if not owner:
-                owner = CustomerPhone(user_id=customer.id, phone=normalized, is_primary=True)
+                owner = CustomerPhone(user_id=customer.id, phone=normalized, is_primary=True, sort_order=0)
                 db.add(owner)
                 db.flush()
                 rows = [owner]
@@ -1083,6 +1083,7 @@ def register_admin_api(
             if owner:
                 raise HTTPException(status_code=409, detail=f"手機號碼 {phone} 已屬於其他客戶")
         existing = {row.phone: row for row in db.query(CustomerPhone).filter(CustomerPhone.user_id == customer.id).all()}
+        had_existing = bool(existing)
         for phone, row in existing.items():
             if phone not in normalized_values:
                 db.delete(row)
@@ -1090,9 +1091,12 @@ def register_admin_api(
             row = existing.get(phone)
             if row:
                 row.is_primary = index == 0
+                row.sort_order = index
             else:
-                db.add(CustomerPhone(user_id=customer.id, phone=phone, is_primary=index == 0))
+                db.add(CustomerPhone(user_id=customer.id, phone=phone, is_primary=index == 0, sort_order=index))
         customer.phone = normalized_values[0]
+        if not getattr(customer, "original_phone_snapshot", None) and not had_existing:
+            customer.original_phone_snapshot = normalized_values[0]
         return normalized_values
 
     def attach_customer_phone(db: Session, customer, phone: str) -> str:
@@ -1100,10 +1104,15 @@ def register_admin_api(
         owner = db.query(CustomerPhone).filter(CustomerPhone.phone == normalized).first()
         if owner and owner.user_id != customer.id:
             raise HTTPException(status_code=409, detail="此手機號碼已綁定其他客戶，請聯絡真人客服協助合併")
+        existing_rows = db.query(CustomerPhone).filter(CustomerPhone.user_id == customer.id).all()
         if not owner:
-            db.add(CustomerPhone(user_id=customer.id, phone=normalized, is_primary=not bool(customer.phone)))
+            is_first = not existing_rows
+            next_order = max((int(row.sort_order or 0) for row in existing_rows), default=-1) + 1
+            db.add(CustomerPhone(user_id=customer.id, phone=normalized, is_primary=is_first, sort_order=0 if is_first else next_order))
         if not customer.phone:
             customer.phone = normalized
+        if not getattr(customer, "original_phone_snapshot", None) and not existing_rows:
+            customer.original_phone_snapshot = normalized
         return normalized
 
     def resolve_public_customer(db: Session, payload: PublicBookingCreateIn):
@@ -2251,12 +2260,19 @@ def register_admin_api(
             "id": item.id,
             "order_id": f"AP-{item.start_time.strftime('%m%d')}-{item.id:03d}",
             "customer_id": item.user_id,
-            "customer_serial": customer_serial(item.user_id, phone, grade),
+            "customer_serial": customer_serial(
+                item.user_id,
+                phone,
+                grade,
+                original_phone=getattr(user, "original_phone_snapshot", None),
+                registered_at=getattr(user, "created_at", None),
+            ),
             "customer_grade": grade,
             "gender": getattr(item, "customer_gender_snapshot", None) or getattr(user, "gender", None),
             "gender_other": getattr(item, "customer_gender_other_snapshot", None) or getattr(user, "gender_other", None),
             "customer_name": (getattr(item, "customer_name_snapshot", None) if getattr(user, "line_user_id", "") == "guest:anonymous" else None) or getattr(user, "display_name", None) or getattr(item, "customer_name_snapshot", None) or "未命名客戶",
             "phone": phone,
+            "phone_masked": mask_phone(phone),
             "staff_id": item.staff_id,
             "staff_name": staff_obj.name if staff_obj else getattr(item, "staff_name_snapshot", None) or "未指定",
             "service_plan_id": plan.id if plan else None,
@@ -2373,7 +2389,7 @@ def register_admin_api(
 
     def public_appointment_dict(db: Session, item, cache: dict[str, Any] | None = None) -> dict[str, Any]:
         row = appointment_dict(db, item, cache)
-        for key in ("customer_id", "customer_serial", "customer_name", "phone", "gender", "gender_other", "base_price", "discount_amount", "extra_amount", "total_amount", "notes", "payment_method", "cash_return_status", "expected_return_amount", "staff_return_status", "commission_amount", "discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount", "promotion_id", "promotion_ids", "promotion_name"):
+        for key in ("customer_id", "customer_serial", "customer_name", "phone", "phone_masked", "gender", "gender_other", "base_price", "discount_amount", "extra_amount", "total_amount", "notes", "payment_method", "cash_return_status", "expected_return_amount", "staff_return_status", "commission_amount", "discount_employee_amount", "discount_shop_amount", "surcharge_employee_amount", "surcharge_shop_amount", "staff_return_amount", "shop_recovery_amount", "promotion_id", "promotion_ids", "promotion_name"):
             row.pop(key, None)
         row["customer_name"] = "已隱藏"
         row["phone"] = None
@@ -2386,7 +2402,7 @@ def register_admin_api(
         phones_by_user: dict[int, list[str]] = {user_id: [] for user_id in user_ids}
         if user_ids:
             phone_rows = db.query(CustomerPhone).filter(CustomerPhone.user_id.in_(user_ids)).order_by(
-                CustomerPhone.user_id, CustomerPhone.is_primary.desc(), CustomerPhone.id,
+                CustomerPhone.user_id, CustomerPhone.is_primary.desc(), CustomerPhone.sort_order, CustomerPhone.id,
             ).all()
             for row in phone_rows:
                 phones_by_user.setdefault(row.user_id, []).append(row.phone)
@@ -2414,14 +2430,22 @@ def register_admin_api(
         return {
             "id": item.id,
             "customer_grade": getattr(item, "customer_grade", "N"),
-            "vip_serial": customer_serial(item.id, phones[0] if phones else item.phone, getattr(item, "customer_grade", "N")),
+            "vip_serial": customer_serial(
+                item.id,
+                phones[0] if phones else item.phone,
+                getattr(item, "customer_grade", "N"),
+                original_phone=getattr(item, "original_phone_snapshot", None),
+                registered_at=getattr(item, "created_at", None),
+            ),
             "display_name": getattr(item, "display_name", None),
             "birthday": getattr(item, "birthday", None),
             "birthday_pending": getattr(item, "birthday_pending", None),
             "gender": getattr(item, "gender", None),
             "gender_other": getattr(item, "gender_other", None),
             "primary_phone": phones[0] if phones else item.phone,
+            "primary_phone_masked": mask_phone(phones[0] if phones else item.phone),
             "phones": phones or ([item.phone] if item.phone else []),
+            "phones_masked": [masked for phone in (phones or ([item.phone] if item.phone else [])) if (masked := mask_phone(phone))],
             "visits": len(visits),
             "spent": spent,
             "last_visit": _iso(max((appointment.start_time for appointment in visits), default=None)),
@@ -2451,11 +2475,19 @@ def register_admin_api(
             "id": item.id,
             "request_id": f"BR-{item.start_time.strftime('%m%d')}-{item.id:03d}",
             "customer_id": item.user_id,
-            "customer_serial": customer_serial(item.user_id, item.contact_phone, getattr(customer, "customer_grade", "N")),
+            "customer_serial": customer_serial(
+                item.user_id,
+                item.contact_phone,
+                getattr(customer, "customer_grade", "N"),
+                original_phone=getattr(customer, "original_phone_snapshot", None),
+                registered_at=getattr(customer, "created_at", None),
+            ),
             "customer_grade": getattr(customer, "customer_grade", "N"),
             "customer_name": getattr(item, "customer_name_snapshot", None) or getattr(customer, "display_name", None) or "未命名客戶",
             "birthday": getattr(item, "customer_birthday_snapshot", None) or getattr(customer, "birthday", None),
-            "phone": item.contact_phone,
+            "phone": mask_phone(item.contact_phone) or "未提供",
+            "phone_value": item.contact_phone,
+            "phone_masked": mask_phone(item.contact_phone),
             "staff_id": item.requested_staff_id,
             "staff_name": staff_obj.name if staff_obj else "未指定",
             "service_plan_id": item.service_plan_id,
@@ -5169,7 +5201,7 @@ def register_admin_api(
             for item, row in zip(items, appointment_dicts(db, items)):
                 writer.writerow([
                     row["order_id"], item.start_time.date(), item.start_time.strftime("%H:%M"), item.end_time.strftime("%H:%M"),
-                    row["customer_name"], row["phone"], row["staff_name"], row["service_name"],
+                    row["customer_name"], row.get("phone_masked") or "未提供", row["staff_name"], row["service_name"],
                     row["room_name"] or row["venue_name"] or row["location_type"], row["status_label"],
                     int(row.get("extra_amount") or 0), int(row.get("discount_amount") or 0), int(row.get("total_amount") or 0),
                     int(row.get("discount_employee_amount") or 0), int(row.get("discount_shop_amount") or 0),
@@ -5200,7 +5232,18 @@ def register_admin_api(
             customers = {item["id"]: item for item in customer_dicts(db, items)}
             for item in items:
                 phones = customers[item.id]["phones"]
-                writer.writerow([customer_serial(item.id, phones[0] if phones else item.phone, getattr(item, "customer_grade", "N")), getattr(item, "display_name", None) or "未命名客戶", "、".join(phones), item.created_at])
+                writer.writerow([
+                    customer_serial(
+                        item.id,
+                        phones[0] if phones else item.phone,
+                        getattr(item, "customer_grade", "N"),
+                        original_phone=getattr(item, "original_phone_snapshot", None),
+                        registered_at=getattr(item, "created_at", None),
+                    ),
+                    getattr(item, "display_name", None) or "未命名客戶",
+                    "、".join(mask_phone(phone) or "未提供" for phone in phones),
+                    item.created_at,
+                ])
         else:
             writer.writerow(["回帳編號", "訂單編號", "師傅", "夥伴抽成", "狀態", "建立時間", "確認時間"])
             query = db.query(StaffReturn)

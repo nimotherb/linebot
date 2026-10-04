@@ -14,7 +14,7 @@ import re
 from urllib.parse import parse_qs, urlencode
 
 from scheduling import CANCELLED_APPOINTMENT_STATUSES, appointment_end, now_taipei_naive, parse_local_datetime, validate_booking_start
-from identifiers import customer_serial
+from identifiers import customer_serial, mask_phone
 from therapist_catalog import THERAPIST_PROFILES, therapist_photo_url
 
 # LINE SDK
@@ -108,6 +108,10 @@ class User(Base):
     line_user_id = Column(String(255), unique=True, nullable=True)
     phone = Column(String(50), nullable=True)
     phone_temp = Column(String(50), nullable=True)
+    # Immutable first phone captured when the customer is first registered.
+    # Current phone rows may be edited/reordered, but this snapshot is never
+    # replaced and is the canonical source for the customer serial suffix.
+    original_phone_snapshot = Column(String(20), nullable=True)
     display_name = Column(String(255), nullable=True)
     customer_grade = Column(String(10), default="N", nullable=False)
     birthday = Column(String(10), nullable=True)
@@ -126,6 +130,7 @@ class CustomerPhone(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     phone = Column(String(20), unique=True, nullable=False, index=True)
     is_primary = Column(Boolean, default=False, nullable=False)
+    sort_order = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     user = relationship("User", back_populates="phones")
 
@@ -283,6 +288,8 @@ def vip_serial(user: User | None) -> str:
         user.id if user else None,
         getattr(user, "phone", None),
         getattr(user, "customer_grade", "N"),
+        original_phone=getattr(user, "original_phone_snapshot", None),
+        registered_at=getattr(user, "created_at", None),
     )
 
 
@@ -381,7 +388,7 @@ def repair_legacy_staff_profile_fields(staff) -> bool:
 def customer_phone_values(db: Session, user: User | None) -> list[str]:
     if not user:
         return []
-    values = [row.phone for row in db.query(CustomerPhone).filter(CustomerPhone.user_id == user.id).order_by(CustomerPhone.is_primary.desc(), CustomerPhone.id).all()]
+    values = [row.phone for row in db.query(CustomerPhone).filter(CustomerPhone.user_id == user.id).order_by(CustomerPhone.is_primary.desc(), CustomerPhone.sort_order, CustomerPhone.id).all()]
     if not values and user.phone:
         values.append(user.phone)
     return values
@@ -403,11 +410,15 @@ def add_customer_phone(db: Session, user: User, phone: str, *, primary: bool = F
     if primary:
         db.query(CustomerPhone).filter(CustomerPhone.user_id == user.id).update({CustomerPhone.is_primary: False})
     if not existing:
-        db.add(CustomerPhone(user_id=user.id, phone=normalized, is_primary=primary))
+        last_order = db.query(CustomerPhone.sort_order).filter(CustomerPhone.user_id == user.id).order_by(CustomerPhone.sort_order.desc(), CustomerPhone.id.desc()).first()
+        db.add(CustomerPhone(user_id=user.id, phone=normalized, is_primary=primary, sort_order=0 if primary else ((last_order[0] if last_order else -1) + 1)))
     elif primary:
         existing.is_primary = True
+        existing.sort_order = 0
     if primary or not user.phone:
         user.phone = normalized
+    if not getattr(user, "original_phone_snapshot", None) and db.query(CustomerPhone).filter(CustomerPhone.user_id == user.id).count() <= 1:
+        user.original_phone_snapshot = normalized
     return normalized
 
 
@@ -896,8 +907,9 @@ def build_appointment_bubble(appointment, is_staff_notify=False, db=None, show_r
     ]
     if not is_staff_notify:
         customer_rows.append({"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶", "size": "sm", "color": "#555555"}, {"type": "text", "text": customer_name, "size": "sm", "color": "#111111", "align": "end"}]})
-        if customer_phone:
-            customer_rows.append({"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶手機", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": customer_phone, "size": "sm", "color": "#111111", "align": "end"}]})
+        masked_customer_phone = mask_phone(customer_phone)
+        if masked_customer_phone:
+            customer_rows.append({"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "客戶手機", "size": "sm", "color": "#555555", "flex": 0}, {"type": "text", "text": masked_customer_phone, "size": "sm", "color": "#111111", "align": "end"}]})
     
     bubble = {
         "type": "bubble",
@@ -1002,7 +1014,7 @@ def build_booking_request_bubble(booking_request, db: Session, *, customer_copy:
     if not customer_copy:
         rows.extend([
             ("客戶", getattr(customer, "display_name", None) or "未命名客戶"),
-            ("手機", booking_request.contact_phone),
+            ("手機", mask_phone(booking_request.contact_phone) or "未提供"),
             ("來源", booking_request.source),
         ])
     bubble = {
@@ -2488,6 +2500,7 @@ def on_startup():
     with engine.begin() as conn:
         queries = [
             "ALTER TABLE users ADD COLUMN phone_temp VARCHAR(50);",
+            "ALTER TABLE users ADD COLUMN original_phone_snapshot VARCHAR(20) NULL;",
             "ALTER TABLE users ADD COLUMN display_name VARCHAR(255);",
             "ALTER TABLE users ADD COLUMN customer_grade VARCHAR(10) NOT NULL DEFAULT 'N';",
             "ALTER TABLE users ADD COLUMN birthday VARCHAR(10) NULL;",
@@ -2569,6 +2582,7 @@ def on_startup():
             "ALTER TABLE booking_requests ADD COLUMN customer_gender_snapshot VARCHAR(20) NULL;",
             "ALTER TABLE booking_requests ADD COLUMN customer_gender_other_snapshot VARCHAR(120) NULL;",
             "ALTER TABLE staff_categories ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE customer_phones ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;",
         ]
         for q in queries:
             try:
@@ -2636,6 +2650,20 @@ def on_startup():
             staff_obj.photo_url = therapist_photo_url(profile)
         for staff_obj in db.query(Staff).all():
             repair_legacy_staff_profile_fields(staff_obj)
+        # Preserve the original input order for every customer's phone list.
+        # Rows created before sort_order existed are ordered by their earliest
+        # traceable creation timestamp/id. This preserves the first input
+        # phone for the immutable registration snapshot instead of trusting a
+        # later primary-phone edit.
+        phone_rows_by_user: dict[int, list[CustomerPhone]] = {}
+        for phone_row in db.query(CustomerPhone).order_by(CustomerPhone.user_id, CustomerPhone.created_at, CustomerPhone.id).all():
+            phone_rows_by_user.setdefault(phone_row.user_id, []).append(phone_row)
+        for rows in phone_rows_by_user.values():
+            ordered = sorted(rows, key=lambda row: (row.created_at or datetime.min, row.id))
+            for index, phone_row in enumerate(ordered):
+                phone_row.sort_order = index
+                phone_row.is_primary = index == 0
+
         existing_phone_rows = {item.phone: item for item in db.query(CustomerPhone).all()}
         for customer in db.query(User).filter(User.phone.isnot(None)).order_by(User.id).all():
             try:
@@ -2650,12 +2678,34 @@ def on_startup():
                 continue
             owner = existing_phone_rows.get(normalized)
             if not owner:
-                owner = CustomerPhone(user_id=customer.id, phone=normalized, is_primary=True)
+                owner = CustomerPhone(user_id=customer.id, phone=normalized, is_primary=True, sort_order=0)
                 db.add(owner)
                 existing_phone_rows[normalized] = owner
                 customer.phone = normalized
             elif owner.user_id == customer.id:
                 owner.is_primary = True
+        # Backfill the immutable registration phone once. The earliest
+        # traceable customer_phones row wins; legacy users with no phone row
+        # use the current valid users.phone value. If neither is valid,
+        # customer_serial() deterministically falls back to created_at MMDD.
+        for customer in db.query(User).order_by(User.id).all():
+            if getattr(customer, "original_phone_snapshot", None):
+                continue
+            candidates = sorted(
+                phone_rows_by_user.get(customer.id, []),
+                key=lambda row: (row.created_at or datetime.min, row.id),
+            )
+            for phone_row in candidates:
+                try:
+                    customer.original_phone_snapshot = normalize_phone(phone_row.phone)
+                    break
+                except ValueError:
+                    continue
+            if not getattr(customer, "original_phone_snapshot", None):
+                try:
+                    customer.original_phone_snapshot = normalize_phone(customer.phone)
+                except (TypeError, ValueError):
+                    customer.original_phone_snapshot = None
         db.commit()
     except Exception:
         db.rollback()

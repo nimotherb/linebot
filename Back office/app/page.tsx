@@ -692,7 +692,7 @@ export default function Home() {
 
   const filteredCustomers = useMemo(() => customers.filter((customer) => {
     const query = customerSearch.trim().toLowerCase();
-    return !query || [customer.vipSerial, customer.name, customer.lineName, ...customer.phones].some((value) => value.toLowerCase().includes(query));
+    return !query || [customer.vipSerial, customer.name, customer.lineName, ...customer.phonesMasked].some((value) => value.toLowerCase().includes(query));
   }), [customerSearch, customers]);
 
   const filteredStaff = useMemo(() => staff.filter((member) => staffCategoryFilter === '全部' || (member.categories || [member.category]).includes(staffCategoryFilter as StaffMember['category'])), [staff, staffCategoryFilter]);
@@ -1116,7 +1116,7 @@ export default function Home() {
     const staffValue = String(data.get('staffId') || '').trim();
     const payload: Record<string, unknown> = {
       customer_name: String(data.get('customer')),
-      phone: String(data.get('phone')),
+      phone: String(data.get('phone') || '').includes('*') ? appointment.phoneValue : String(data.get('phone')),
       start_time: `${data.get('date')}T${data.get('start')}:00`,
       service_plan_id: Number(data.get('serviceId')),
       promotion_id: Number(data.get('promotionId') || 0),
@@ -1161,7 +1161,8 @@ export default function Home() {
     event.preventDefault();
     if (!selectedCustomer?.apiId || appMode !== 'live') return;
     const data = new FormData(event.currentTarget);
-    const phones = String(data.get('phones') || '').split(/[\s,，、]+/).map((value) => value.trim()).filter(Boolean);
+    const phoneInput = String(data.get('phones') || '');
+    const phones = phoneInput.includes('*') ? selectedCustomer.phoneValues : phoneInput.split(/[\s,，、]+/).map((value) => value.trim()).filter(Boolean);
     try {
       const updated = await api.updateCustomer(selectedCustomer.apiId, {
         display_name: String(data.get('displayName') || '').trim(),
@@ -1319,7 +1320,7 @@ export default function Home() {
     try {
       const updated = await api.updateBookingRequest(request.id, {
         customer_name: String(data.get('customerName') || '').trim(),
-        phone: String(data.get('phone') || '').trim(),
+        phone: (String(data.get('phone') || '').includes('*') ? request.phone_value : String(data.get('phone') || '').trim()) || '',
         staff_id: Number(data.get('staffId') || 0) || null,
         service_plan_id: Number(data.get('servicePlanId') || 0),
         promotion_id: Number(data.get('promotionId') || 0) || null,
@@ -1734,7 +1735,7 @@ export default function Home() {
   );
 
   const renderCustomers = () => (
-    <section className="panel table-panel"><div className="toolbar"><div className="search-box"><span>⌕</span><input value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="搜尋名稱、手機或客人識別" /></div><InternalRefreshButton busy={refreshing} onClick={refreshBackendData} label="重新取得客戶資料" /><button className="secondary-button" onClick={() => exportCsv('customers')}>⇩ 匯出客戶</button></div><BulkTools entity="customers" ids={filteredCustomers.flatMap((item) => item.apiId ? [item.apiId] : [])} label="客戶" /><div className="data-table customer-table"><div className="table-head"><span>客戶名稱</span><span>客人識別</span><span>手機 ID</span><span>到訪</span><span>累計消費</span><span>最近到訪</span></div>{filteredCustomers.map((customer) => <div className="table-row customer-edit-row interactive" role="button" tabIndex={0} key={customer.id} onClick={() => setModal({ type: 'customer', id: customer.id })}><span><label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={!!customer.apiId && (selectedIds.customers || []).includes(customer.apiId)} onChange={() => customer.apiId && toggleSelected('customers', customer.apiId)} /><span>選取</span></label><strong>{customer.name}</strong><small>名稱可由後台或 LINE 建立</small></span><span><strong>{customer.vipSerial}</strong><small>客戶訂單與確認通知使用</small></span><span><strong>{customer.phones.join('、') || '未提供'}</strong><small>{customer.phones.length > 1 ? `${customer.phones.length} 支手機` : '主要手機'}</small></span><span><strong>{customer.visits} 次</strong></span><span><strong>{formatCurrency(customer.spent)}</strong></span><span><strong>{customer.lastVisit}</strong><small>{customer.note}</small></span></div>)}</div></section>
+    <section className="panel table-panel"><div className="toolbar"><div className="search-box"><span>⌕</span><input value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="搜尋名稱、手機或客人識別" /></div><InternalRefreshButton busy={refreshing} onClick={refreshBackendData} label="重新取得客戶資料" /><button className="secondary-button" onClick={() => exportCsv('customers')}>⇩ 匯出客戶</button></div><BulkTools entity="customers" ids={filteredCustomers.flatMap((item) => item.apiId ? [item.apiId] : [])} label="客戶" /><div className="data-table customer-table"><div className="table-head"><span>客戶名稱</span><span>客人識別</span><span>手機 ID</span><span>到訪</span><span>累計消費</span><span>最近到訪</span></div>{filteredCustomers.map((customer) => <div className="table-row customer-edit-row interactive" role="button" tabIndex={0} key={customer.id} onClick={() => setModal({ type: 'customer', id: customer.id })}><span><label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={!!customer.apiId && (selectedIds.customers || []).includes(customer.apiId)} onChange={() => customer.apiId && toggleSelected('customers', customer.apiId)} /><span>選取</span></label><strong>{customer.name}</strong><small>名稱可由後台或 LINE 建立</small></span><span><strong>{customer.vipSerial}</strong><small>客戶訂單與確認通知使用</small></span><span><strong>{customer.phonesMasked.join('、') || '未提供'}</strong><small>{customer.phonesMasked.length > 1 ? `${customer.phonesMasked.length} 支手機` : '主要手機'}</small></span><span><strong>{customer.visits} 次</strong></span><span><strong>{formatCurrency(customer.spent)}</strong></span><span><strong>{customer.lastVisit}</strong><small>{customer.note}</small></span></div>)}</div></section>
   );
 
   const renderStaff = () => (
