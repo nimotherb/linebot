@@ -1163,6 +1163,13 @@ def test_customer_name_serial_and_multiple_phone_ids(client):
     assert "phones_masked" not in updated.json()
     assert updated.json()["vip_serial"] == "SSR-0001"
 
+    unbound_customer = next(
+        item for item in client.get("/api/admin/customers", headers=headers).json()
+        if item["id"] == customer_id
+    )
+    assert unbound_customer["line_user_id"] is None
+    assert unbound_customer["phones"] == ["0966000001", "0966000002"]
+
     reordered = client.patch(
         f"/api/admin/customers/{customer_id}",
         headers=headers,
@@ -1192,6 +1199,12 @@ def test_customer_name_serial_and_multiple_phone_ids(client):
     )
     assert three_phone_customer.status_code == 200, three_phone_customer.text
     assert three_phone_customer.json()["phones"] == ["0966000002", "0966000001", "0966000003"]
+    exported = client.get("/api/admin/export/customers", headers=headers)
+    assert exported.status_code == 200, exported.text
+    rows = list(csv.reader(exported.content.decode("utf-8-sig").splitlines()))
+    exported_customer = next(row for row in rows[1:] if row[0] == "SSR-0001")
+    assert exported_customer[2] == "0966000002、0966000001、0966000003"
+    assert "*" not in exported_customer[2]
 
 
 def test_public_booking_checks_availability_and_is_idempotent(client):

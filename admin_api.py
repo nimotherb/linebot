@@ -46,7 +46,7 @@ from scheduling import (
     parse_extended_local_datetime,
     staff_schedule_reminder_week_starts,
 )
-from identifiers import customer_serial, mask_phone
+from identifiers import customer_serial
 
 
 logger = logging.getLogger(__name__)
@@ -3529,7 +3529,11 @@ def register_admin_api(
 
     @app.get("/api/admin/customers")
     def list_customers(db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
-        return customer_dicts(db, db.query(User).filter(User.line_user_id != "guest:anonymous").order_by(User.created_at.desc()).limit(1000).all())
+        # Keep customers without a LINE binding. SQL NULL does not satisfy a
+        # plain ``!=`` predicate, so explicitly include missing UIDs while
+        # still excluding the anonymous booking sentinel.
+        query = db.query(User).filter(or_(User.line_user_id.is_(None), User.line_user_id != "guest:anonymous"))
+        return customer_dicts(db, query.order_by(User.created_at.desc()).limit(1000).all())
 
     @app.patch("/api/admin/customers/{customer_id}")
     def update_customer(customer_id: int, payload: CustomerPatchIn, db: Session = Depends(get_db), actor=Depends(require_roles("admin", "manager", "clerk"))):
@@ -5274,7 +5278,11 @@ def register_admin_api(
             items = query.order_by(User.id).all()
             customers = {item["id"]: item for item in customer_dicts(db, items)}
             for item in items:
-                phones = customers[item.id]["phones"]
+                customer = customers[item.id]
+                phones = customer["phones"]
+                phone_output = "、".join(phones)
+                if not phone_output and customer["phone_data_status"] == "invalid_masked_source":
+                    phone_output = "資料需修正"
                 writer.writerow([
                     customer_serial(
                         item.id,
@@ -5284,7 +5292,7 @@ def register_admin_api(
                         registered_at=getattr(item, "created_at", None),
                     ),
                     getattr(item, "display_name", None) or "未命名客戶",
-                    "、".join(mask_phone(phone) or "未提供" for phone in phones),
+                    phone_output,
                     item.created_at,
                 ])
         else:
