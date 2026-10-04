@@ -317,6 +317,9 @@ export default function Home() {
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [staffCategories, setStaffCategories] = useState<StaffCategoryView[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customersLoaded, setCustomersLoaded] = useState(false);
+  const [customersLoading, setCustomersLoading] = useState(false);
+  const [customersError, setCustomersError] = useState('');
   const [promotions, setPromotions] = useState<PromotionView[]>([]);
   const [adminUsers, setAdminUsers] = useState<ReturnType<typeof mapAdminUser>[]>([]);
   const [supportUrl, setSupportUrl] = useState('https://line.me/R/ti/p/@684wdola');
@@ -389,7 +392,6 @@ export default function Home() {
     setPromotions(data.promotions.map(mapPromotion));
     setRooms((data.rooms || []).map((room) => ({ id: room.id, name: normalizeRoomName(room.name) })));
     setVenues(data.venues || []);
-    setCustomers((data.customers || []).map(mapCustomer));
     setAdminUsers((data.admin_users || []).map(mapAdminUser));
     setSupportUrl(data.settings?.customer_service_url || 'https://line.me/R/ti/p/@684wdola');
     setDashboardStats(data.dashboard || { service_finance_visible: false });
@@ -571,6 +573,9 @@ export default function Home() {
     setToken('');
     setIdentity(null);
     setStaffIdentity(null);
+    setCustomers([]);
+    setCustomersLoaded(false);
+    setCustomersError('');
     setRole('viewer');
     setActive('dashboard');
     setAppMode('login');
@@ -583,10 +588,38 @@ export default function Home() {
     window.setTimeout(() => setToast(null), 3200);
   };
 
+  const loadCustomers = async (force = false) => {
+    if (appMode !== 'live' || customersLoading || (!force && customersLoaded)) return;
+    setCustomersLoading(true);
+    setCustomersError('');
+    try {
+      const rows = await api.listCustomers();
+      setCustomers(rows.map(mapCustomer));
+      setCustomersLoaded(true);
+    } catch (error) {
+      setCustomers([]);
+      setCustomersLoaded(false);
+      setCustomersError(error instanceof Error ? error.message : '客戶資料載入失敗，請稍後再試。');
+    } finally {
+      setCustomersLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (appMode === 'live' && (active === 'customers' || active === 'exports') && !customersLoaded) {
+      void loadCustomers();
+    }
+  }, [active, appMode, customersLoaded, token]);
+
   const refreshBackendData = async () => {
     if (refreshing || (appMode !== 'live' && appMode !== 'staff')) return;
     setRefreshing(true);
     try {
+      if (active === 'customers' || active === 'exports') {
+        await loadCustomers(true);
+        notify('客戶資料已從後端更新。');
+        return;
+      }
       const data = appMode === 'staff' ? await api.staffBootstrap() : await api.bootstrap();
       applyBootstrap(data, appMode === 'staff' ? 'staff' : 'live');
       notify('資料已從後端更新。');
@@ -1735,7 +1768,7 @@ export default function Home() {
   );
 
   const renderCustomers = () => (
-      <section className="panel table-panel"><div className="toolbar"><div className="search-box"><span>⌕</span><input value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="搜尋名稱、手機或客人識別" /></div><InternalRefreshButton busy={refreshing} onClick={refreshBackendData} label="重新取得客戶資料" /><button className="secondary-button" onClick={() => exportCsv('customers')}>⇩ 匯出客戶</button></div><BulkTools entity="customers" ids={filteredCustomers.flatMap((item) => item.apiId ? [item.apiId] : [])} label="客戶" /><div className="data-table customer-table"><div className="table-head"><span>客戶名稱</span><span>客人識別</span><span>手機 ID</span><span>到訪</span><span>累計消費</span><span>最近到訪</span></div>{filteredCustomers.map((customer) => { const displayPhones = customer.phones.length > 2 ? [...customer.phones.slice(0, 2), '......'] : customer.phones; const phoneFallback = customer.phoneDataStatus === 'invalid_masked_source' ? '資料需修正' : '—'; return <div className="table-row customer-edit-row interactive" role="button" tabIndex={0} key={customer.id} onClick={() => setModal({ type: 'customer', id: customer.id })}><span><label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={!!customer.apiId && (selectedIds.customers || []).includes(customer.apiId)} onChange={() => customer.apiId && toggleSelected('customers', customer.apiId)} /><span>選取</span></label><strong>{customer.name}</strong><small>名稱可由後台或 LINE 建立</small></span><span><strong>{customer.vipSerial}</strong><small>客戶訂單與確認通知使用</small></span><span><strong>{displayPhones.join('、') || phoneFallback}</strong><small>{customer.phones.length > 1 ? `${customer.phones.length} 支手機` : '主要手機'}</small></span><span><strong>{customer.visits} 次</strong></span><span><strong>{formatCurrency(customer.spent)}</strong></span><span><strong>{customer.lastVisit}</strong><small>{customer.note}</small></span></div>; })}</div></section>
+      <section className="panel table-panel"><div className="toolbar"><div className="search-box"><span>⌕</span><input value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="搜尋名稱、手機或客人識別" /></div><InternalRefreshButton busy={refreshing || customersLoading} onClick={refreshBackendData} label="重新取得客戶資料" /><button className="secondary-button" onClick={() => exportCsv('customers')}>⇩ 匯出客戶</button></div>{customersError && <div className="auth-error" role="alert">{customersError}</div>}{customersLoading && <div className="empty-state">正在取得客戶資料…</div>}{!customersLoading && !customersError && <><BulkTools entity="customers" ids={filteredCustomers.flatMap((item) => item.apiId ? [item.apiId] : [])} label="客戶" /><div className="data-table customer-table"><div className="table-head"><span>客戶名稱</span><span>客人識別</span><span>手機 ID</span><span>到訪</span><span>累計消費</span><span>最近到訪</span></div>{filteredCustomers.map((customer) => { const displayPhones = customer.phones.length > 2 ? [...customer.phones.slice(0, 2), '......'] : customer.phones; const phoneFallback = customer.phoneDataStatus === 'invalid_masked_source' ? '資料需修正' : '—'; return <div className="table-row customer-edit-row interactive" role="button" tabIndex={0} key={customer.id} onClick={() => setModal({ type: 'customer', id: customer.id })}><span><label className="selection-check" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={!!customer.apiId && (selectedIds.customers || []).includes(customer.apiId)} onChange={() => customer.apiId && toggleSelected('customers', customer.apiId)} /><span>選取</span></label><strong>{customer.name}</strong><small>名稱可由後台或 LINE 建立</small></span><span><strong>{customer.vipSerial}</strong><small>客戶訂單與確認通知使用</small></span><span><strong>{displayPhones.join('、') || phoneFallback}</strong><small>{customer.phones.length > 1 ? `${customer.phones.length} 支手機` : '主要手機'}</small></span><span><strong>{customer.visits} 次</strong></span><span><strong>{formatCurrency(customer.spent)}</strong></span><span><strong>{customer.lastVisit}</strong><small>{customer.note}</small></span></div>; })}</div></>}</section>
   );
 
   const renderStaff = () => (

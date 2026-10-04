@@ -609,6 +609,10 @@ export class SpaApi {
 
   staffBootstrap() { return this.request<BootstrapData>('/api/staff/bootstrap'); }
 
+  listCustomers() {
+    return this.request<NonNullable<BootstrapData['customers']>>('/api/admin/customers');
+  }
+
   requestStaffPhoneChange(phone: string) {
     return this.request<RawStaff>('/api/staff/profile/phone-request', { method: 'POST', body: JSON.stringify({ phone }) });
   }

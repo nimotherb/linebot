@@ -386,6 +386,7 @@ def test_login_is_required_and_bootstrap_seeds_two_rooms(client):
     staff_rows = response.json()["staff"]
     assert len(staff_rows) == 47
     assert all(item["photo_url"].startswith("https://") for item in staff_rows)
+    assert response.json()["customers"] == []
     assert customer_serial(phone="0912345678", grade="SSR") == "SSR-5678"
 
 
@@ -1598,7 +1599,7 @@ def test_admin_can_reset_booking_data_without_deleting_master_data(client):
     before = client.get("/api/admin/bootstrap", headers=admin_headers).json()
     assert before["appointments"]
     staff_count = len(before["staff"])
-    customer_count = len(before["customers"])
+    customer_count = len(client.get("/api/admin/customers", headers=admin_headers).json())
     service_count = len(before["services"])
 
     denied = client.post(
@@ -1626,7 +1627,7 @@ def test_admin_can_reset_booking_data_without_deleting_master_data(client):
     assert after["appointments"] == []
     assert after["booking_requests"] == []
     assert len(after["staff"]) == staff_count
-    assert len(after["customers"]) == customer_count
+    assert len(client.get("/api/admin/customers", headers=admin_headers).json()) == customer_count
     assert len(after["services"]) == service_count
 
 

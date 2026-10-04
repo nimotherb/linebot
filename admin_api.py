@@ -3280,7 +3280,6 @@ def register_admin_api(
         booking_requests = db.query(BookingRequest).order_by(BookingRequest.created_at.desc()).limit(500).all()
         shift_rows = db.query(Shift).filter(Shift.status == "active").order_by(Shift.start_time).limit(500).all()
         shift_staff = _model_map(db, Staff, {item.staff_id for item in shift_rows})
-        customers = db.query(User).order_by(User.created_at.desc()).limit(1000).all()
         audit_rows = db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(20).all()
         audit_actors = _model_map(db, AdminUser, {item.actor_user_id for item in audit_rows if item.actor_user_id})
         return {
@@ -3296,7 +3295,10 @@ def register_admin_api(
             "promotions": [promotion_dict(item) for item in db.query(Promotion).filter(Promotion.deleted_at.is_(None)).order_by(Promotion.id).all()],
             "rooms": [{"id": item.id, "name": item.name, "active": item.active} for item in db.query(Room).order_by(Room.id).all()],
             "venues": [{"id": item.id, "name": item.name, "address": item.address, "room_name": item.room_name, "rental_cost": item.rental_cost, "notes": item.notes, "active": item.active} for item in db.query(Venue).order_by(Venue.name).all()],
-            "customers": customer_dicts(db, customers),
+            # Customer records are loaded through /api/admin/customers only
+            # when the customer/export views need them. Keep this shared
+            # bootstrap staff-safe so employee pages never receive a customer list.
+            "customers": [],
             "admin_users": [serialize_admin(item) for item in db.query(AdminUser).order_by(AdminUser.id).all()] if user.role in {"admin", "manager"} else [],
             "return_rule_sets": return_rule_sets_dict(db),
             "settings": {
