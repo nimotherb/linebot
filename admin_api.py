@@ -1294,7 +1294,7 @@ def register_admin_api(
         value.strip().rstrip("/")
         for value in os.getenv(
             "ADMIN_ALLOWED_ORIGINS",
-            "https://equalspa.tw,https://www.equalspa.tw,https://admin.equalspa.tw,https://equalspa.pages.dev,https://equalspa-admin.pages.dev,http://localhost:3000",
+            "https://equalspa.pages.dev,https://equalspa-admin.pages.dev,http://localhost:3000",
         ).split(",")
         if value.strip()
     ]
@@ -4393,7 +4393,7 @@ def register_admin_api(
             else:
                 try:
                     raw_token = issue_staff_schedule_link(staff_obj, db)
-                    schedule_base = os.getenv("STAFF_SCHEDULE_BASE_URL", "https://admin.equalspa.tw/?staff_token=")
+                    schedule_base = os.getenv("STAFF_SCHEDULE_BASE_URL", "https://equalspa-admin.pages.dev/?staff_token=")
                     schedule_url = f"{schedule_base}{raw_token}"
                     message = staff_schedule_reminder_builder([later_key, following_key], schedule_url)
                     card_snapshot = _json({"alt_text": getattr(message, "alt_text", "下／後週排班提醒"), "contents": getattr(message, "contents", None)})
@@ -4956,7 +4956,7 @@ def register_admin_api(
             db.add(StaffScheduleToken(staff_id=staff_id, token_hash=_token_hash(raw_token)))
         audit(db, actor, "rotate_schedule_link", "staff", staff_id)
         db.commit()
-        base = os.getenv("STAFF_SCHEDULE_BASE_URL", "https://admin.equalspa.tw/?staff_token=")
+        base = os.getenv("STAFF_SCHEDULE_BASE_URL", "https://equalspa-admin.pages.dev/?staff_token=")
         return {"token": raw_token, "url": f"{base}{raw_token}", "staff_name": staff_obj.name}
 
     @app.get("/api/admin/staff/{staff_id}/private-health")

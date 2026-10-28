@@ -3,6 +3,7 @@ import './globals.css';
 import { NavigationLoadingProvider } from './components/NavigationLoading';
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://equalspa-admin.pages.dev'),
   title: '伊果 SPA｜營運管理後台',
   description: '伊果 SPA 的預約、排班、現場進度與完成訂單中心。',
   openGraph: {

@@ -66,7 +66,8 @@ else:
             "read_timeout": _bounded_env_int("DATABASE_READ_TIMEOUT_SECONDS", 20, 1, 120),
             "write_timeout": _bounded_env_int("DATABASE_WRITE_TIMEOUT_SECONDS", 20, 1, 120),
         }
-        if "ssl_ca=" not in DATABASE_URL and "ssl_cert=" not in DATABASE_URL:
+        local_ssl_disabled = os.getenv("DATABASE_SSL_DISABLED", "").strip().lower() in {"1", "true", "yes"}
+        if not local_ssl_disabled and "ssl_ca=" not in DATABASE_URL and "ssl_cert=" not in DATABASE_URL:
             # Aiven requires encrypted MySQL connections. This matches
             # ssl-mode=REQUIRED when no CA path was supplied in the URL.
             mysql_connect_args["ssl"] = {"check_hostname": False}
@@ -79,8 +80,8 @@ LINE_ADMIN_PENDING: dict[str, datetime] = {}
 VALID_STAFF_ROLES = {"攻擊手", "守備方", "無特定", "攻守兼備"}
 DEFAULT_CUSTOMER_SERVICE_URL = "https://line.me/R/ti/p/@684wdola"
 SUPPORT_URL = os.getenv("CUSTOMER_SERVICE_URL", DEFAULT_CUSTOMER_SERVICE_URL)
-BOOKING_WEB_URL = os.getenv("BOOKING_WEB_URL", "https://admin.equalspa.tw/booking")
-ADMIN_DASHBOARD_URL = os.getenv("ADMIN_DASHBOARD_URL", "https://admin.equalspa.tw/")
+BOOKING_WEB_URL = os.getenv("BOOKING_WEB_URL", "https://equalspa-admin.pages.dev/booking")
+ADMIN_DASHBOARD_URL = os.getenv("ADMIN_DASHBOARD_URL", "https://equalspa-admin.pages.dev/")
 PUBLIC_API_BASE_URL = (
     os.getenv("PUBLIC_API_BASE_URL")
     or os.getenv("RENDER_EXTERNAL_URL")
